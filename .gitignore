@@ -16,6 +16,7 @@ env/
 
 # PyInstaller
 *.spec
+!GenosLauncher.spec
 dist/
 build/
 
