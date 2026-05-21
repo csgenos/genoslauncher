@@ -17,11 +17,11 @@ import traceback
 # Ensure src/ is on sys.path when running directly (not needed in bundled build)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt, QCoreApplication
+from PySide6.QtCore import Qt, QCoreApplication, QDialog, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from src.core.config import LOGS_DIR
+from src.core.config import LOGS_DIR, config
 from src.core.logging_setup import setup_logging
 
 
@@ -76,21 +76,46 @@ def main() -> int:
     else:
         app.setWindowIcon(_fallback_icon())
 
-    try:
-        from src.ui.main_window import MainWindow
+    # ── Splash screen ────────────────────────────────────────────────────
+    from src.ui.splash_screen import SplashScreen
+    splash = SplashScreen()
+    splash.show()
+    app.processEvents()
 
-        window = MainWindow()
-        window.show()
-    except Exception:
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        crash_log = LOGS_DIR / "startup-crash.log"
-        crash_log.write_text(traceback.format_exc(), encoding="utf-8")
-        QMessageBox.critical(
-            None,
-            "GenosLauncher failed to start",
-            f"Startup failed. Details were written to:\n{crash_log}",
-        )
-        return 1
+    first_run = config.get("first_run", True)
+
+    def _open_main() -> None:
+        try:
+            from src.ui.main_window import MainWindow
+            w = MainWindow()
+            w.show()
+        except Exception:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            crash_log = LOGS_DIR / "startup-crash.log"
+            crash_log.write_text(traceback.format_exc(), encoding="utf-8")
+            QMessageBox.critical(
+                None,
+                "GenosLauncher failed to start",
+                f"Startup failed. Details were written to:\n{crash_log}",
+            )
+
+    if first_run:
+        # Brief splash (600 ms) then wizard
+        def _show_wizard() -> None:
+            splash.close_animated(lambda: _run_wizard())
+
+        def _run_wizard() -> None:
+            from src.ui.setup_wizard import SetupWizard
+            wizard = SetupWizard()
+            if wizard.exec() == QDialog.Accepted:
+                _open_main()
+            else:
+                app.quit()
+
+        QTimer.singleShot(600, _show_wizard)
+    else:
+        # Normal launch — splash for 1400 ms then main window
+        QTimer.singleShot(1400, lambda: splash.close_animated(_open_main))
 
     try:
         return app.exec()

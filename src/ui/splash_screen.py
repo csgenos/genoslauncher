@@ -1,8 +1,9 @@
 """
-GenosLauncher — Splash screen shown on startup.
+GenosLauncher — Splash screen shown during startup.
 
-Clean 440×270 frameless window with an animated indeterminate progress bar
-and a smooth fade-out via close_animated().
+440×270 frameless, centered, white background.
+Animated indeterminate progress bar at the bottom (accent blue, 3 px).
+Public API: close_animated(callback) — fades opacity 1→0 over 250 ms.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ class SplashScreen(QWidget):
         self._build_ui()
         self._center_on_screen()
 
-        # Indeterminate progress animation — advance the "fake" value in a loop
+        # Drive the "fake" indeterminate progress with a QTimer
         self._prog_value: int = 0
         self._prog_timer = QTimer(self)
         self._prog_timer.setInterval(30)
@@ -68,7 +69,7 @@ class SplashScreen(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Main content area ─────────────────────────────────────────
+        # ── Content area ─────────────────────────────────────────────────
         content = QWidget()
         content.setStyleSheet("background: transparent;")
         content_layout = QVBoxLayout(content)
@@ -76,49 +77,44 @@ class SplashScreen(QWidget):
         content_layout.setSpacing(0)
         content_layout.setAlignment(Qt.AlignCenter)
 
-        # G icon box
+        # G icon box — 44×44 dark rounded square
         icon_box = self._make_icon_box(44)
         icon_row = QHBoxLayout()
         icon_row.setAlignment(Qt.AlignCenter)
         icon_row.addWidget(icon_box)
         content_layout.addLayout(icon_row)
-
         content_layout.addSpacing(20)
 
-        # App name
+        # App title
         title = QLabel("GenosLauncher")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
-            f"color: {C['text_primary']}; "
-            f"font-size: 26px; "
-            f"font-weight: 700; "
-            f"letter-spacing: -0.5px; "
-            f"background: transparent;"
+            f"color: {C['text_primary']};"
+            "font-size: 26px;"
+            "font-weight: 700;"
+            "letter-spacing: -0.5px;"
+            "background: transparent;"
         )
         content_layout.addWidget(title)
-
         content_layout.addSpacing(8)
 
         # Tagline
         tagline = QLabel("Open-source · Fast · Elegant")
         tagline.setAlignment(Qt.AlignCenter)
         tagline.setStyleSheet(
-            f"color: {C['text_tertiary']}; "
-            f"font-size: {FONT['sm']}; "
-            f"background: transparent;"
+            f"color: {C['text_tertiary']};"
+            f"font-size: {FONT['sm']};"
+            "background: transparent;"
         )
         content_layout.addWidget(tagline)
-
         content_layout.addStretch()
 
         root.addWidget(content, stretch=1)
 
-        # ── Progress bar strip at the very bottom ─────────────────────
+        # ── Progress bar — bottom edge, 3 px, accent blue ─────────────
         self._progress = QProgressBar()
         self._progress.setFixedHeight(3)
         self._progress.setTextVisible(False)
-        # min == max == 0 triggers Qt's built-in indeterminate animation
-        # but cross-platform support is inconsistent, so we drive it manually.
         self._progress.setMinimum(0)
         self._progress.setMaximum(100)
         self._progress.setValue(0)
@@ -137,8 +133,9 @@ class SplashScreen(QWidget):
         )
         root.addWidget(self._progress)
 
-    def _make_icon_box(self, size: int) -> QLabel:
-        """Return a QLabel painted as the dark G icon box."""
+    @staticmethod
+    def _make_icon_box(size: int) -> QLabel:
+        """Return a QLabel rendered as a dark rounded-square G icon."""
         pix = QPixmap(size, size)
         pix.fill(Qt.transparent)
         painter = QPainter(pix)
@@ -159,11 +156,10 @@ class SplashScreen(QWidget):
         return label
 
     # ------------------------------------------------------------------
-    # Progress bar animation (fake indeterminate)
+    # Fake-indeterminate progress animation
     # ------------------------------------------------------------------
 
     def _tick_progress(self) -> None:
-        """Advance a bouncing progress indicator."""
         self._prog_value = (self._prog_value + 2) % 101
         self._progress.setValue(self._prog_value)
 
@@ -183,8 +179,8 @@ class SplashScreen(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def close_animated(self, callback: Optional[Callable] = None) -> None:
-        """Fade opacity 1→0 over 250 ms, then call callback and close."""
+    def close_animated(self, callback: Optional[Callable[[], None]] = None) -> None:
+        """Fade from opacity 1 → 0 over 250 ms, then call callback and close."""
         self._prog_timer.stop()
 
         effect = QGraphicsOpacityEffect(self)
@@ -203,5 +199,5 @@ class SplashScreen(QWidget):
 
         anim.finished.connect(_on_finished)
         anim.start()
-        # Keep a reference so the animation is not garbage-collected
+        # Keep a reference so the GC doesn't collect the animation mid-flight
         self._fade_anim = anim
