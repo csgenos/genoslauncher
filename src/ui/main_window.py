@@ -231,7 +231,11 @@ class MainWindow(QMainWindow):
         self._home_tab.set_launch_state(True)
         self._home_tab.update_progress(0, 100, f"Preparing {version_id}…")
 
-        username = config.get("last_account") or "Player"
+        # Auth priority: logged-in MS account → last_account config → "Player" (#5)
+        if auth_manager.is_logged_in:
+            username = auth_manager.username
+        else:
+            username = config.get("last_account") or "Player"
         self._launch_worker = LaunchWorker(version_id, username, self)
         self._launch_worker.status_changed.connect(self._on_launch_status)
         self._launch_worker.process_started.connect(self._on_process_started)
@@ -250,6 +254,7 @@ class MainWindow(QMainWindow):
     def _on_process_ended(self, _exit_code: int) -> None:
         self._launch_worker = None
         self._home_tab.set_launch_state(False)
+        self._home_tab.refresh_versions()   # refresh picker after game exits
         if self.isHidden():
             self.show()
 

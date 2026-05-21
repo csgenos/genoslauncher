@@ -28,10 +28,12 @@ class VersionCard(QWidget):
     Shadow deepens on hover (no color change to the card itself).
 
     Signals:
-        launch_requested(str)  — emitted with version_id on button click
+        launch_requested(str)  — emitted with version_id when already installed
+        install_requested(str) — emitted with version_id when not yet installed
     """
 
     launch_requested = Signal(str)
+    install_requested = Signal(str)
 
     _TYPE_META: dict[str, tuple[str, str, str]] = {
         # type: (label, text-color, bg-color)
@@ -118,6 +120,7 @@ class VersionCard(QWidget):
         badge_row = QHBoxLayout()
         badge_row.setContentsMargins(0, 0, 0, 0)
         badge_row.setSpacing(6)
+        self._badge_row_layout = badge_row
 
         label, text_color, bg_color = self._TYPE_META.get(
             self._version_type,
@@ -157,12 +160,35 @@ class VersionCard(QWidget):
         btn.setFixedHeight(34)
         btn.setMinimumWidth(80)
         btn.clicked.connect(self._on_action)
+        self._action_btn = btn
         right.addWidget(btn)
 
         outer.addLayout(right)
 
     def _on_action(self) -> None:
-        self.launch_requested.emit(self._version_id)
+        if self._is_installed:
+            self.launch_requested.emit(self._version_id)
+        else:
+            self.install_requested.emit(self._version_id)
+
+    # --- Public state mutators ---------------------------------------------
+
+    def set_installed(self) -> None:
+        """Mark this version as installed: update state, button text, and add badge."""
+        self._is_installed = True
+        self._action_btn.setText("Launch")
+        self._action_btn.setEnabled(True)
+        # Insert the Installed badge before the trailing stretch (last item)
+        stretch_index = self._badge_row_layout.count() - 1
+        self._badge_row_layout.insertWidget(
+            stretch_index,
+            self._badge("  Installed", C['accent_green'], C['accent_green_soft']),
+        )
+
+    def set_installing(self, label: str = "Installing…") -> None:
+        """Disable the button and show a progress label."""
+        self._action_btn.setEnabled(False)
+        self._action_btn.setText(label)
 
     # --- Events ------------------------------------------------------------
 
