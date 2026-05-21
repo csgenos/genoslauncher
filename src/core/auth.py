@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+log = logging.getLogger(__name__)
 
 import requests as _req
 
@@ -49,12 +52,15 @@ from .config import APP_DIR, config
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# Register your Azure App at portal.azure.com:
+# Register your own Azure App at portal.azure.com:
 #   - Accounts: Personal Microsoft accounts only
 #   - Platform: Mobile and desktop applications (public client)
 #   - Enable: "Allow public client flows" → Device code flow
 #   - No client secret needed
-APP_CLIENT_ID = "c36a9fb6-4bf4-4b2f-b640-dc2d4e8b7d88"  # Prism Launcher public client — replace before distributing
+# Then set the GENOS_AZURE_CLIENT_ID environment variable (or CI secret) to
+# your Application (client) ID.  Leaving it empty causes the sign-in flow to
+# surface a clear configuration error instead of using another project's quota.
+APP_CLIENT_ID = os.environ.get("GENOS_AZURE_CLIENT_ID", "")
 
 # ---------------------------------------------------------------------------
 # Microsoft / Xbox / Minecraft API endpoints
@@ -101,23 +107,25 @@ def _derive_fallback_key() -> bytes:
 
 
 def _encrypt(payload: str) -> bytes:
-    if _CRYPTO_OK:
-        return Fernet(_derive_fallback_key()).encrypt(payload.encode())
-    import base64
-    return base64.b64encode(payload.encode())
+    if not _CRYPTO_OK:
+        raise RuntimeError(
+            "The 'cryptography' package is required to store credentials securely "
+            "when the system keyring is unavailable.  "
+            "Run: pip install cryptography"
+        )
+    return Fernet(_derive_fallback_key()).encrypt(payload.encode())
 
 
 def _decrypt(data: bytes) -> str:
     if _CRYPTO_OK:
-        try:
-            return Fernet(_derive_fallback_key()).decrypt(data).decode()
-        except Exception:
-            pass
-    try:
-        import base64
-        return base64.b64decode(data).decode()
-    except Exception:
-        return data.decode("utf-8", errors="replace")
+        # Let InvalidToken propagate to the caller — it will treat the
+        # stored data as unreadable and prompt re-authentication.
+        return Fernet(_derive_fallback_key()).decrypt(data).decode()
+    # _CRYPTO_OK is False: the store was written without encryption (legacy
+    # path that no longer exists in _encrypt).  Attempt plain base64 decode
+    # so that old installations are handled gracefully on upgrade.
+    import base64
+    return base64.b64decode(data).decode()
 
 
 def _secure_delete(path: Path) -> None:
