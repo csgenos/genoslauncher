@@ -1,104 +1,65 @@
 """
-Premium animated buttons for GenosLauncher.
+Clean animated buttons for GenosLauncher — light / white theme.
 
-AnimatedButton  — base with hover scale + glow
-LaunchButton    — big gradient CTA with pulse animation
-GhostButton     — outline-only, fills on hover
+CleanButton   — base rounded button, hover scale + darker bg
+PrimaryButton — dark navy CTA, white text
+LaunchButton  — big 56px play button, authoritative and clean
+OutlineButton — ghost / transparent with 1px border
 """
 
 from __future__ import annotations
 
-import math
-
-from PySide6.QtCore import (
-    Property,
-    QEasingCurve,
-    QPropertyAnimation,
-    QSequentialAnimationGroup,
-    Qt,
-    QTimer,
-)
-from PySide6.QtGui import (
-    QColor,
-    QFont,
-    QLinearGradient,
-    QPainter,
-    QPainterPath,
-    QRadialGradient,
-)
-from PySide6.QtWidgets import QGraphicsDropShadowEffect, QPushButton, QSizePolicy
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PySide6.QtWidgets import QPushButton, QSizePolicy
 
 from ..styles import COLORS as C, FONT
 
 
 # ---------------------------------------------------------------------------
-# Animated Button (base)
+# CleanButton — base
 # ---------------------------------------------------------------------------
 
-class AnimatedButton(QPushButton):
+class CleanButton(QPushButton):
     """
-    Button with smooth hover glow and subtle scale animation.
-    Override gradient colors via constructor arguments.
+    Base button with subtle hover scale (1.01x) and bg darkening.
+    150ms QPropertyAnimation on hover_progress (0.0 to 1.0).
+    No glow, no shadow, no gradient.
     """
 
-    def __init__(
-        self,
-        text: str = "",
-        color_start: str = C["bg_card"],
-        color_end: str = C["bg_card_hover"],
-        accent: str = C["accent_cyan"],
-        text_color: str = C["text_primary"],
-        parent=None,
-    ) -> None:
+    _BG_NORMAL  = C['bg_secondary']
+    _BG_HOVER   = C['bg_hover']
+    _BG_PRESS   = C['bg_pressed']
+    _TEXT_COLOR = C['text_primary']
+    _BORDER     = C['border']
+
+    def __init__(self, text: str = "", icon_char: str = "", parent=None) -> None:
         super().__init__(text, parent)
-        self._color_start = QColor(color_start)
-        self._color_end = QColor(color_end)
-        self._accent = QColor(accent)
-        self._text_color = QColor(text_color)
-
+        self._icon_char = icon_char
         self._hover_progress: float = 0.0
-        self._press_progress: float = 0.0
+        self._pressed: bool = False
 
-        self.setMinimumHeight(40)
+        self.setMinimumHeight(36)
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet("QPushButton { background: transparent; border: none; }")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
-        self._shadow = QGraphicsDropShadowEffect(self)
-        self._shadow.setBlurRadius(0)
-        self._shadow.setOffset(0, 0)
-        self._shadow.setColor(QColor(self._accent))
-        self.setGraphicsEffect(self._shadow)
-
-        # Hover animation
         self._hover_anim = QPropertyAnimation(self, b"hover_progress", self)
-        self._hover_anim.setDuration(200)
+        self._hover_anim.setDuration(150)
         self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
 
-    # ------------------------------------------------------------------
-    # Qt property for animation
-    # ------------------------------------------------------------------
+    # --- Qt property -------------------------------------------------------
 
     def _get_hover(self) -> float:
         return self._hover_progress
 
     def _set_hover(self, val: float) -> None:
         self._hover_progress = val
-        blur = int(val * 20)
-        self._shadow.setBlurRadius(blur)
-        self._shadow.setColor(QColor(
-            self._accent.red(),
-            self._accent.green(),
-            self._accent.blue(),
-            int(val * 180),
-        ))
         self.update()
 
     hover_progress = Property(float, _get_hover, _set_hover)
 
-    # ------------------------------------------------------------------
-    # Events
-    # ------------------------------------------------------------------
+    # --- Events ------------------------------------------------------------
 
     def enterEvent(self, event) -> None:
         self._hover_anim.stop()
@@ -115,301 +76,295 @@ class AnimatedButton(QPushButton):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
-        self._press_progress = 1.0
+        self._pressed = True
         self.update()
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        self._press_progress = 0.0
+        self._pressed = False
         self.update()
         super().mouseReleaseEvent(event)
 
-    # ------------------------------------------------------------------
-    # Paint
-    # ------------------------------------------------------------------
+    # --- Paint helpers -----------------------------------------------------
 
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        w, h = self.width(), self.height()
-        r = min(h // 2, 10)
-
-        # Lerp background color
-        t = self._hover_progress
-        bg_r = int(self._color_start.red() + (self._color_end.red() - self._color_start.red()) * t)
-        bg_g = int(self._color_start.green() + (self._color_end.green() - self._color_start.green()) * t)
-        bg_b = int(self._color_start.blue() + (self._color_end.blue() - self._color_start.blue()) * t)
-        bg = QColor(bg_r, bg_g, bg_b)
-
-        # Press darken
-        if self._press_progress > 0:
-            factor = 1.0 - self._press_progress * 0.15
-            bg = QColor(int(bg.red() * factor), int(bg.green() * factor), int(bg.blue() * factor))
-
-        # Draw rounded rect background
-        path = QPainterPath()
-        path.addRoundedRect(0, 0, w, h, r, r)
-        painter.setClipPath(path)
-        painter.fillPath(path, bg)
-
-        # Accent border
-        border_alpha = int(80 + self._hover_progress * 120)
-        border_color = QColor(
-            self._accent.red(), self._accent.green(), self._accent.blue(), border_alpha
+    def _lerp_color(self, c1: QColor, c2: QColor, t: float) -> QColor:
+        return QColor(
+            int(c1.red()   + (c2.red()   - c1.red())   * t),
+            int(c1.green() + (c2.green() - c1.green()) * t),
+            int(c1.blue()  + (c2.blue()  - c1.blue())  * t),
         )
-        painter.setPen(border_color)
-        painter.drawRoundedRect(0, 0, w - 1, h - 1, r, r)
 
-        # Text
-        painter.setPen(self._text_color)
-        font = QFont("Segoe UI", 10, QFont.Weight.SemiBold)
-        painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignCenter, self.text())
+    def _resolve_bg(self) -> QColor:
+        if self._pressed:
+            return QColor(self._BG_PRESS)
+        return self._lerp_color(
+            QColor(self._BG_NORMAL), QColor(self._BG_HOVER), self._hover_progress
+        )
 
-        painter.end()
+    def _resolve_scale(self) -> float:
+        if self._pressed:
+            return 0.99
+        return 1.0 + self._hover_progress * 0.01
 
-
-# ---------------------------------------------------------------------------
-# Launch Button
-# ---------------------------------------------------------------------------
-
-class LaunchButton(QPushButton):
-    """
-    Large, animated LAUNCH button with:
-    - Gradient background (purple → cyan)
-    - Pulsing glow shadow when idle
-    - Scale + brightness on hover
-    - Press depression effect
-    """
-
-    def __init__(self, text: str = "LAUNCH", parent=None) -> None:
-        super().__init__(text, parent)
-        self.setFixedHeight(64)
-        self.setMinimumWidth(220)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
-
-        self._hover_progress: float = 0.0
-        self._press_progress: float = 0.0
-        self._pulse_phase: float = 0.0
-        self._is_launching: bool = False
-
-        # Drop shadow
-        self._shadow = QGraphicsDropShadowEffect(self)
-        self._shadow.setOffset(0, 4)
-        self._shadow.setBlurRadius(30)
-        self._shadow.setColor(QColor(C["accent_cyan"] + "aa"))
-        self.setGraphicsEffect(self._shadow)
-
-        # Hover animation
-        self._hover_anim = QPropertyAnimation(self, b"hover_prog", self)
-        self._hover_anim.setDuration(220)
-        self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
-
-        # Pulse timer (idle glow)
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.timeout.connect(self._tick_pulse)
-        self._pulse_timer.start(30)
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    def _get_hover_prog(self) -> float:
-        return self._hover_progress
-
-    def _set_hover_prog(self, val: float) -> None:
-        self._hover_progress = val
-        self.update()
-
-    hover_prog = Property(float, _get_hover_prog, _set_hover_prog)
-
-    def _tick_pulse(self) -> None:
-        self._pulse_phase = (self._pulse_phase + 0.04) % (2 * math.pi)
-        self._update_shadow()
-        if not self._is_launching:
-            self.update()
-
-    def _update_shadow(self) -> None:
-        pulse = (math.sin(self._pulse_phase) + 1) / 2  # 0..1
-        base_blur = 20 + self._hover_progress * 20
-        pulse_blur = base_blur + pulse * 15
-        alpha = int(120 + self._hover_progress * 80 + pulse * 40)
-        self._shadow.setBlurRadius(pulse_blur)
-        self._shadow.setColor(QColor(0, 229, 255, alpha))
-
-    def set_launching(self, launching: bool) -> None:
-        self._is_launching = launching
-        self.setEnabled(not launching)
-        self.update()
-
-    # ------------------------------------------------------------------
-    # Events
-    # ------------------------------------------------------------------
-
-    def enterEvent(self, event) -> None:
-        self._hover_anim.stop()
-        self._hover_anim.setStartValue(self._hover_progress)
-        self._hover_anim.setEndValue(1.0)
-        self._hover_anim.start()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self._hover_anim.stop()
-        self._hover_anim.setStartValue(self._hover_progress)
-        self._hover_anim.setEndValue(0.0)
-        self._hover_anim.start()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event) -> None:
-        self._press_progress = 1.0
-        self.update()
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        self._press_progress = 0.0
-        self.update()
-        super().mouseReleaseEvent(event)
-
-    # ------------------------------------------------------------------
-    # Paint
-    # ------------------------------------------------------------------
+    # --- Paint -------------------------------------------------------------
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
         w, h = self.width(), self.height()
-        r = h // 2  # fully rounded (pill shape)
+        scale = self._resolve_scale()
 
-        # Scale effect on hover
-        scale = 1.0 + self._hover_progress * 0.015 - self._press_progress * 0.02
         painter.translate(w / 2, h / 2)
         painter.scale(scale, scale)
         painter.translate(-w / 2, -h / 2)
 
-        # Gradient background
-        t = self._hover_progress
-        pulse = (math.sin(self._pulse_phase) + 1) / 2
-        brightness = 1.0 + t * 0.12 + pulse * 0.04
-
-        c1 = QColor(C["accent_purple"])
-        c2 = QColor(C["accent_cyan"])
-
-        def brighten(color: QColor, factor: float) -> QColor:
-            return QColor(
-                min(255, int(color.red() * factor)),
-                min(255, int(color.green() * factor)),
-                min(255, int(color.blue() * factor)),
-            )
-
-        grad = QLinearGradient(0, 0, w, 0)
-        grad.setColorAt(0.0, brighten(c1, brightness))
-        grad.setColorAt(0.5, brighten(QColor(C["accent_blue"]), brightness * 0.95))
-        grad.setColorAt(1.0, brighten(c2, brightness))
-
+        r = 8.0
+        bg = self._resolve_bg()
         path = QPainterPath()
         path.addRoundedRect(0, 0, w, h, r, r)
-        painter.fillPath(path, grad)
 
-        # Inner highlight (top gloss)
-        gloss = QLinearGradient(0, 0, 0, h * 0.5)
-        gloss.setColorAt(0.0, QColor(255, 255, 255, 40))
-        gloss.setColorAt(1.0, QColor(255, 255, 255, 0))
-        gloss_path = QPainterPath()
-        gloss_path.addRoundedRect(1, 1, w - 2, h * 0.5, r, r)
-        painter.fillPath(gloss_path, gloss)
+        painter.fillPath(path, bg)
 
-        # Press overlay
-        if self._press_progress > 0:
-            painter.fillPath(path, QColor(0, 0, 0, int(40 * self._press_progress)))
+        # Border
+        border_col = QColor(self._BORDER)
+        painter.setPen(border_col)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(0.5, 0.5, w - 1, h - 1, r, r)
 
-        # Text
-        text_color = QColor(C["bg_deep"]) if not self._is_launching else QColor(C["text_primary"])
-        painter.setPen(text_color)
-        font = QFont("Segoe UI", 14, QFont.Weight.Bold)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2.5)
+        # Text (with optional icon prefix)
+        painter.setPen(QColor(self._TEXT_COLOR))
+        font = QFont("Segoe UI", 10, QFont.Weight.Medium)
         painter.setFont(font)
-        label = "LAUNCHING..." if self._is_launching else self.text()
-        painter.drawText(self.rect(), Qt.AlignCenter, label)
+        label = f"{self._icon_char} {self.text()}" if self._icon_char else self.text()
+        painter.drawText(0, 0, w, h, Qt.AlignCenter, label)
 
         painter.end()
 
 
 # ---------------------------------------------------------------------------
-# Ghost Button (outline style)
+# PrimaryButton — dark navy CTA
 # ---------------------------------------------------------------------------
 
-class GhostButton(QPushButton):
-    """Outline button that fills with accent color on hover."""
+class PrimaryButton(CleanButton):
+    """
+    Dark navy (#111827) button with white text.
+    Hover lightens to #1F2937, press deepens to #0F172A.
+    """
 
-    def __init__(
-        self,
-        text: str = "",
-        accent: str = C["accent_cyan"],
-        parent=None,
-    ) -> None:
-        super().__init__(text, parent)
-        self._accent = QColor(accent)
-        self._hover_progress: float = 0.0
-
-        self.setMinimumHeight(38)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
-
-        self._anim = QPropertyAnimation(self, b"ghost_hover", self)
-        self._anim.setDuration(180)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-
-    def _get_ghost_hover(self) -> float:
-        return self._hover_progress
-
-    def _set_ghost_hover(self, val: float) -> None:
-        self._hover_progress = val
-        self.update()
-
-    ghost_hover = Property(float, _get_ghost_hover, _set_ghost_hover)
-
-    def enterEvent(self, event) -> None:
-        self._anim.stop()
-        self._anim.setStartValue(self._hover_progress)
-        self._anim.setEndValue(1.0)
-        self._anim.start()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self._anim.stop()
-        self._anim.setStartValue(self._hover_progress)
-        self._anim.setEndValue(0.0)
-        self._anim.start()
-        super().leaveEvent(event)
+    _BG_NORMAL  = '#111827'
+    _BG_HOVER   = '#1F2937'
+    _BG_PRESS   = '#0F172A'
+    _TEXT_COLOR = '#FFFFFF'
+    _BORDER     = '#111827'
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+
         w, h = self.width(), self.height()
-        r = 8
+        scale = self._resolve_scale()
 
-        t = self._hover_progress
+        painter.translate(w / 2, h / 2)
+        painter.scale(scale, scale)
+        painter.translate(-w / 2, -h / 2)
 
-        # Fill
-        fill_alpha = int(t * 35)
-        painter.setBrush(QColor(self._accent.red(), self._accent.green(), self._accent.blue(), fill_alpha))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(0, 0, w, h, r, r)
+        r = 8.0
+        bg = self._resolve_bg()
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, r, r)
+        painter.fillPath(path, bg)
 
-        # Border
-        border_alpha = int(120 + t * 135)
-        painter.setPen(QColor(self._accent.red(), self._accent.green(), self._accent.blue(), border_alpha))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(0, 0, w - 1, h - 1, r, r)
-
-        # Text
-        text_alpha = int(180 + t * 75)
-        painter.setPen(QColor(self._accent.red(), self._accent.green(), self._accent.blue(), text_alpha))
+        painter.setPen(QColor(self._TEXT_COLOR))
         font = QFont("Segoe UI", 10, QFont.Weight.SemiBold)
         painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignCenter, self.text())
+        label = f"{self._icon_char} {self.text()}" if self._icon_char else self.text()
+        painter.drawText(0, 0, w, h, Qt.AlignCenter, label)
+
+        painter.end()
+
+
+# ---------------------------------------------------------------------------
+# LaunchButton — big 56px play button
+# ---------------------------------------------------------------------------
+
+class LaunchButton(QPushButton):
+    """
+    The main launch CTA button. 56px tall, 200px min-width.
+    Clean dark navy fill, white text. No glow, no pulse.
+    Shows 'LAUNCHING...' text when in launching state.
+    """
+
+    def __init__(self, text: str = "PLAY", parent=None) -> None:
+        super().__init__(text, parent)
+        self._launch_text = text
+        self._is_launching: bool = False
+        self._hover_progress: float = 0.0
+        self._pressed: bool = False
+
+        self.setFixedHeight(56)
+        self.setMinimumWidth(200)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+        self._hover_anim = QPropertyAnimation(self, b"hover_progress", self)
+        self._hover_anim.setDuration(150)
+        self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _get_hover(self) -> float:
+        return self._hover_progress
+
+    def _set_hover(self, val: float) -> None:
+        self._hover_progress = val
+        self.update()
+
+    hover_progress = Property(float, _get_hover, _set_hover)
+
+    def set_launching(self, launching: bool) -> None:
+        """Toggle the launching state (disables button, changes label)."""
+        self._is_launching = launching
+        self.setEnabled(not launching)
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        if not self._is_launching:
+            self._hover_anim.stop()
+            self._hover_anim.setStartValue(self._hover_progress)
+            self._hover_anim.setEndValue(1.0)
+            self._hover_anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self._hover_progress)
+        self._hover_anim.setEndValue(0.0)
+        self._hover_anim.start()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        self._pressed = True
+        self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._pressed = False
+        self.update()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w, h = self.width(), self.height()
+        t = self._hover_progress
+
+        # Scale
+        if self._pressed:
+            scale = 0.98
+        else:
+            scale = 1.0 + t * 0.015
+        painter.translate(w / 2, h / 2)
+        painter.scale(scale, scale)
+        painter.translate(-w / 2, -h / 2)
+
+        # Background color
+        if self._is_launching or not self.isEnabled():
+            bg = QColor(C['text_disabled'])
+        elif self._pressed:
+            bg = QColor('#0F172A')
+        else:
+            # lerp between #111827 and #1F2937
+            c1 = QColor('#111827')
+            c2 = QColor('#1F2937')
+            bg = QColor(
+                int(c1.red()   + (c2.red()   - c1.red())   * t),
+                int(c1.green() + (c2.green() - c1.green()) * t),
+                int(c1.blue()  + (c2.blue()  - c1.blue())  * t),
+            )
+
+        r = 10.0
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, r, r)
+        painter.fillPath(path, bg)
+
+        # Subtle inset shadow at bottom edge
+        if not self._is_launching:
+            shadow_path = QPainterPath()
+            shadow_path.addRoundedRect(2, h - 4, w - 4, 4, r, r)
+            painter.fillPath(shadow_path, QColor(0, 0, 0, 25))
+
+        # Label
+        painter.setPen(QColor(C['text_inverse']))
+        font = QFont("Segoe UI", 12, QFont.Weight.Bold)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+        painter.setFont(font)
+        label = "LAUNCHING..." if self._is_launching else self._launch_text
+        painter.drawText(0, 0, w, h, Qt.AlignCenter, label)
+
+        painter.end()
+
+
+# ---------------------------------------------------------------------------
+# OutlineButton — ghost / transparent
+# ---------------------------------------------------------------------------
+
+class OutlineButton(CleanButton):
+    """
+    Transparent background with 1px border. On hover the bg fills
+    lightly to #F4F6F8 and the border darkens. 150ms animation.
+    """
+
+    _BG_NORMAL  = 'transparent'
+    _BG_HOVER   = C['bg_hover']
+    _BG_PRESS   = C['bg_pressed']
+    _TEXT_COLOR = C['text_primary']
+    _BORDER     = C['border_strong']
+
+    def _resolve_bg(self) -> QColor:
+        if self._pressed:
+            return QColor(self._BG_PRESS)
+        if self._hover_progress < 0.001:
+            return QColor(Qt.transparent)
+        return self._lerp_color(
+            QColor(0, 0, 0, 0), QColor(self._BG_HOVER), self._hover_progress
+        )
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w, h = self.width(), self.height()
+        scale = self._resolve_scale()
+
+        painter.translate(w / 2, h / 2)
+        painter.scale(scale, scale)
+        painter.translate(-w / 2, -h / 2)
+
+        r = 8.0
+        t = self._hover_progress
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, r, r)
+
+        bg = self._resolve_bg()
+        painter.fillPath(path, bg)
+
+        # Border darkens slightly on hover
+        border_c1 = QColor(C['border_strong'])
+        border_c2 = QColor(C['text_tertiary'])
+        border_col = QColor(
+            int(border_c1.red()   + (border_c2.red()   - border_c1.red())   * t),
+            int(border_c1.green() + (border_c2.green() - border_c1.green()) * t),
+            int(border_c1.blue()  + (border_c2.blue()  - border_c1.blue())  * t),
+        )
+        painter.setPen(border_col)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(0.5, 0.5, w - 1, h - 1, r, r)
+
+        painter.setPen(QColor(self._TEXT_COLOR))
+        font = QFont("Segoe UI", 10, QFont.Weight.Medium)
+        painter.setFont(font)
+        label = f"{self._icon_char} {self.text()}" if self._icon_char else self.text()
+        painter.drawText(0, 0, w, h, Qt.AlignCenter, label)
 
         painter.end()

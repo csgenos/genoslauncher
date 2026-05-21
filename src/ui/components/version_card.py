@@ -1,11 +1,11 @@
 """
-VersionCard — a premium card displaying a single Minecraft version.
+VersionCard — clean light-theme card for a single Minecraft version.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -15,190 +15,156 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
-from .animated_button import GhostButton, LaunchButton
+from .animated_button import OutlineButton
 
 
 class VersionCard(QWidget):
     """
-    Card that displays a Minecraft version with quick-launch action.
+    Light-theme card displaying a single Minecraft version.
+
+    Left side: version number (bold 16px), type badge pill, subtitle.
+    Right side: Launch or Install OutlineButton.
+    Installed versions show a green checkmark badge.
+    Shadow deepens on hover (no color change to the card itself).
 
     Signals:
-        launch_requested(str)  — emitted with the version ID when user clicks Launch
+        launch_requested(str)  — emitted with version_id on button click
     """
 
     launch_requested = Signal(str)
 
+    _TYPE_META: dict[str, tuple[str, str, str]] = {
+        # type: (label, text-color, bg-color)
+        'release':   ('Release',  C['accent_green'],  C['accent_green_soft']),
+        'snapshot':  ('Snapshot', C['accent_orange'], '#FFF7ED'),
+        'old_alpha': ('Alpha',    C['accent_blue'],   C['accent_blue_soft']),
+        'old_beta':  ('Beta',     C['accent_blue'],   C['accent_blue_soft']),
+    }
+
     def __init__(
         self,
         version_id: str,
-        version_type: str = "release",
+        version_type: str = 'release',
         is_installed: bool = False,
-        is_featured: bool = False,
-        parent=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._version_id = version_id
         self._version_type = version_type
         self._is_installed = is_installed
-        self._is_featured = is_featured
-
         self._hover_progress: float = 0.0
 
-        # Glow shadow
+        # Shadow that lifts on hover
         self._shadow = QGraphicsDropShadowEffect(self)
-        self._shadow.setBlurRadius(0)
-        self._shadow.setOffset(0, 6)
-        color = QColor(C["accent_cyan"] if is_featured else C["accent_purple"])
-        color.setAlpha(0)
-        self._shadow.setColor(color)
+        self._shadow.setBlurRadius(10)
+        self._shadow.setOffset(0, 2)
+        self._shadow.setColor(QColor(0, 0, 0, 14))
         self.setGraphicsEffect(self._shadow)
 
-        self._anim = QPropertyAnimation(self, b"card_hover", self)
-        self._anim.setDuration(250)
+        self._anim = QPropertyAnimation(self, b"hover_progress", self)
+        self._anim.setDuration(200)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._build_ui()
 
-    # ------------------------------------------------------------------
-    # Property
-    # ------------------------------------------------------------------
+    # --- Qt property -------------------------------------------------------
 
-    def _get_card_hover(self) -> float:
+    def _get_hover(self) -> float:
         return self._hover_progress
 
-    def _set_card_hover(self, val: float) -> None:
+    def _set_hover(self, val: float) -> None:
         self._hover_progress = val
-        blur = int(val * 24)
-        alpha = int(val * 140)
-        c = QColor(C["accent_cyan"] if self._is_featured else C["accent_purple"])
-        c.setAlpha(alpha)
+        blur   = int(10 + val * 10)
+        offset = int(2  + val * 2)
+        alpha  = int(14 + val * 14)
         self._shadow.setBlurRadius(blur)
-        self._shadow.setColor(c)
+        self._shadow.setOffset(0, offset)
+        self._shadow.setColor(QColor(0, 0, 0, alpha))
         self.update()
 
-    card_hover = Property(float, _get_card_hover, _set_card_hover)
+    hover_progress = Property(float, _get_hover, _set_hover)
 
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
+    # --- UI ----------------------------------------------------------------
+
+    def _badge(self, text: str, text_color: str, bg_color: str) -> QLabel:
+        lbl = QLabel(text, self)
+        lbl.setStyleSheet(
+            f"color: {text_color}; background-color: {bg_color}; "
+            f"border-radius: 10px; padding: 2px 10px; "
+            f"font-size: {FONT['xs']}; font-weight: 600;"
+        )
+        lbl.setFixedHeight(20)
+        return lbl
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(12)
 
-        # Top row: version badge + type tag
-        top_row = QHBoxLayout()
-        top_row.setSpacing(8)
+        # Left content
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(4)
 
-        tag_text = {
-            "release": "RELEASE",
-            "snapshot": "SNAPSHOT",
-            "old_alpha": "ALPHA",
-            "old_beta": "BETA",
-        }.get(self._version_type, "RELEASE")
+        # Version number
+        ver_label = QLabel(self._version_id, self)
+        ver_label.setStyleSheet(
+            f"font-size: 16px; font-weight: 700; color: {C['text_primary']}; "
+            f"letter-spacing: -0.2px;"
+        )
+        left.addWidget(ver_label)
 
-        tag_color = {
-            "release": C["accent_green"],
-            "snapshot": C["accent_orange"],
-            "old_alpha": C["accent_purple"],
-            "old_beta": C["accent_blue"],
-        }.get(self._version_type, C["accent_green"])
+        # Badge row
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(0, 0, 0, 0)
+        badge_row.setSpacing(6)
 
-        tag = QLabel(tag_text, self)
-        tag.setStyleSheet(f"""
-            background-color: {tag_color}22;
-            color: {tag_color};
-            border: 1px solid {tag_color}55;
-            border-radius: 4px;
-            padding: 2px 8px;
-            font-size: {FONT["xs"]};
-            font-weight: 700;
-            letter-spacing: 0.8px;
-        """)
-        top_row.addWidget(tag)
-
-        if self._is_featured:
-            featured_tag = QLabel("⭐ FEATURED", self)
-            featured_tag.setStyleSheet(f"""
-                background-color: {C["accent_cyan"]}22;
-                color: {C["accent_cyan"]};
-                border: 1px solid {C["accent_cyan"]}44;
-                border-radius: 4px;
-                padding: 2px 8px;
-                font-size: {FONT["xs"]};
-                font-weight: 700;
-                letter-spacing: 0.8px;
-            """)
-            top_row.addWidget(featured_tag)
+        label, text_color, bg_color = self._TYPE_META.get(
+            self._version_type,
+            ('Release', C['accent_green'], C['accent_green_soft']),
+        )
+        badge_row.addWidget(self._badge(label, text_color, bg_color))
 
         if self._is_installed:
-            inst_tag = QLabel("✓ INSTALLED", self)
-            inst_tag.setStyleSheet(f"""
-                background-color: {C["accent_green"]}22;
-                color: {C["accent_green"]};
-                border: 1px solid {C["accent_green"]}44;
-                border-radius: 4px;
-                padding: 2px 8px;
-                font-size: {FONT["xs"]};
-                font-weight: 700;
-            """)
-            top_row.addWidget(inst_tag)
+            badge_row.addWidget(
+                self._badge("  Installed", C['accent_green'], C['accent_green_soft'])
+            )
 
-        top_row.addStretch()
-        layout.addLayout(top_row)
-
-        # Version number — big and bold
-        version_label = QLabel(self._version_id, self)
-        version_label.setStyleSheet(f"""
-            font-size: {FONT["xl"]};
-            font-weight: 700;
-            color: {C["text_primary"]};
-            letter-spacing: -0.3px;
-        """)
-        layout.addWidget(version_label)
+        badge_row.addStretch()
+        left.addLayout(badge_row)
 
         # Subtitle
         subtitle_map = {
-            "release": "Vanilla Minecraft · Official Release",
-            "snapshot": "Development Snapshot · May contain bugs",
-            "old_alpha": "Classic Era · Minecraft Alpha",
-            "old_beta": "Classic Era · Minecraft Beta",
+            'release':   'Official stable release',
+            'snapshot':  'Development preview · may be unstable',
+            'old_alpha': 'Classic Alpha era',
+            'old_beta':  'Classic Beta era',
         }
-        subtitle = QLabel(subtitle_map.get(self._version_type, "Vanilla Minecraft"), self)
-        subtitle.setStyleSheet(f"color: {C['text_secondary']}; font-size: {FONT['sm']};")
-        layout.addWidget(subtitle)
+        subtitle = QLabel(subtitle_map.get(self._version_type, ''), self)
+        subtitle.setStyleSheet(
+            f"color: {C['text_tertiary']}; font-size: {FONT['sm']};"
+        )
+        left.addWidget(subtitle)
 
-        layout.addSpacing(4)
+        outer.addLayout(left, 1)
 
-        # Action buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
+        # Right: action button
+        right = QVBoxLayout()
+        right.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
 
-        if self._is_installed:
-            launch_btn = GhostButton("⚡ Quick Launch", accent=C["accent_cyan"], parent=self)
-            launch_btn.setFixedHeight(36)
-            launch_btn.clicked.connect(self._on_launch)
-            btn_row.addWidget(launch_btn)
+        action_label = "Launch" if self._is_installed else "Install"
+        btn = OutlineButton(action_label, parent=self)
+        btn.setFixedHeight(34)
+        btn.setMinimumWidth(80)
+        btn.clicked.connect(self._on_action)
+        right.addWidget(btn)
 
-            manage_btn = GhostButton("Manage", accent=C["text_muted"], parent=self)
-            manage_btn.setFixedHeight(36)
-            btn_row.addWidget(manage_btn)
-        else:
-            install_btn = GhostButton("↓ Install", accent=C["accent_purple"], parent=self)
-            install_btn.setFixedHeight(36)
-            install_btn.clicked.connect(self._on_launch)
-            btn_row.addWidget(install_btn)
+        outer.addLayout(right)
 
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-    def _on_launch(self) -> None:
+    def _on_action(self) -> None:
         self.launch_requested.emit(self._version_id)
 
-    # ------------------------------------------------------------------
-    # Events / Paint
-    # ------------------------------------------------------------------
+    # --- Events ------------------------------------------------------------
 
     def enterEvent(self, event) -> None:
         self._anim.stop()
@@ -214,46 +180,24 @@ class VersionCard(QWidget):
         self._anim.start()
         super().leaveEvent(event)
 
+    # --- Paint -------------------------------------------------------------
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        r = 14
-        t = self._hover_progress
 
-        # Background
-        base = QColor(C["bg_card"])
-        hover = QColor(C["bg_card_hover"])
-        bg = QColor(
-            int(base.red() + (hover.red() - base.red()) * t),
-            int(base.green() + (hover.green() - base.green()) * t),
-            int(base.blue() + (hover.blue() - base.blue()) * t),
-        )
+        w, h = self.width(), self.height()
+        r = 10.0
+
         path = QPainterPath()
         path.addRoundedRect(0, 0, w, h, r, r)
-        painter.fillPath(path, bg)
 
-        # Left accent stripe (visible on featured/hover)
-        if self._is_featured or t > 0.05:
-            accent_color = QColor(C["accent_cyan"] if self._is_featured else C["accent_purple"])
-            accent_color.setAlpha(int((0.3 + t * 0.7) * 255))
-            stripe_path = QPainterPath()
-            stripe_path.addRoundedRect(0, 10, 3, h - 20, 1.5, 1.5)
-            painter.fillPath(stripe_path, accent_color)
+        # White card fill
+        painter.fillPath(path, QColor(C['bg_card']))
 
-        # Top gradient
-        if self._is_featured:
-            top_grad = QLinearGradient(0, 0, w, 0)
-            top_grad.setColorAt(0.0, QColor(0, 229, 255, int(t * 18)))
-            top_grad.setColorAt(1.0, QColor(0, 229, 255, 0))
-            painter.fillPath(path, top_grad)
-
-        # Border
-        border_alpha = int(40 + t * 120)
-        border_color = QColor(C["accent_cyan"] if self._is_featured else C["border"])
-        border_color.setAlpha(border_alpha)
-        painter.setPen(border_color)
+        # 1px border
+        painter.setPen(QColor(C['border']))
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(0, 0, w - 1, h - 1, r, r)
+        painter.drawRoundedRect(0.5, 0.5, w - 1, h - 1, r, r)
 
         painter.end()

@@ -1,1 +1,1 @@
-"""Core launcher logic — config, launch, version management."""
+"""Core launcher logic — config, launch, version management, Modrinth, Java."""

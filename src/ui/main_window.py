@@ -1,22 +1,21 @@
 """
-GenosLauncher main window.
+GenosLauncher main window — light theme.
 
-Frameless, custom-titled, sidebar + stacked content area.
-Handles tab navigation, launch orchestration, and window resize/drag.
+Frameless window with custom title bar, 200px sidebar, and stacked content area.
+Routes sidebar navigation, orchestrates launch/install workers.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QRect
-from PySide6.QtGui import QColor, QLinearGradient, QPainter
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QSizeGrip,
-    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -27,22 +26,22 @@ from .titlebar import TitleBar
 from .components.sidebar import Sidebar
 from .tabs.home_tab import HomeTab
 from .tabs.instances_tab import InstancesTab
-from .tabs.mods_tab import ModsTab
-from .tabs.accounts_tab import AccountsTab
+from .tabs.modpacks_tab import ModpacksTab
+from .tabs.shaders_tab import ShadersTab
 from .tabs.settings_tab import SettingsTab
 from ..core.config import config
-from ..core.launcher import LaunchWorker, InstallWorker
+from ..core.launcher import LaunchWorker
 
-_RESIZE_MARGIN = 6  # px — drag-to-resize border thickness
+_RESIZE_MARGIN = 6
 
 
 class ContentArea(QWidget):
-    """The right-hand pane that holds all tabs in a QStackedWidget."""
+    """Right pane — stacked tabs on a light background."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ContentArea")
-        self.setStyleSheet(f"#ContentArea {{ background-color: {C['bg_primary']}; }}")
+        self.setStyleSheet(f"#ContentArea {{ background-color: {C['bg_secondary']}; }}")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -54,10 +53,7 @@ class ContentArea(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        grad = QLinearGradient(0, 0, 0, self.height())
-        grad.setColorAt(0.0, QColor(C["bg_primary"]))
-        grad.setColorAt(1.0, QColor(C["bg_deep"]))
-        painter.fillRect(self.rect(), grad)
+        painter.fillRect(self.rect(), QColor(C["bg_secondary"]))
         painter.end()
 
 
@@ -67,7 +63,6 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._launch_worker: LaunchWorker | None = None
-        self._install_worker: InstallWorker | None = None
         self._resize_edge: str = ""
         self._drag_start_pos = None
         self._drag_start_geom: QRect | None = None
@@ -86,22 +81,16 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 
         w = config.get("window_width", 1280)
-        h = config.get("window_height", 760)
+        h = config.get("window_height", 780)
         self.resize(w, h)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(960, 620)
 
-        # Center on screen
         screen = QApplication.primaryScreen().geometry()
-        self.move(
-            (screen.width() - w) // 2,
-            (screen.height() - h) // 2,
-        )
-
-        # Apply global stylesheet
+        self.move((screen.width() - w) // 2, (screen.height() - h) // 2)
         self.setStyleSheet(get_stylesheet())
 
     # ------------------------------------------------------------------
-    # UI construction
+    # UI
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
@@ -118,7 +107,7 @@ class MainWindow(QMainWindow):
         self._title_bar = TitleBar(root)
         root_layout.addWidget(self._title_bar)
 
-        # Main body: sidebar + content
+        # Body: sidebar | content
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
@@ -131,34 +120,33 @@ class MainWindow(QMainWindow):
 
         root_layout.addLayout(body, 1)
 
-        # Build all tabs
-        self._home_tab = HomeTab()
+        # Instantiate all tabs
+        self._home_tab      = HomeTab()
         self._instances_tab = InstancesTab()
-        self._mods_tab = ModsTab()
-        self._accounts_tab = AccountsTab()
-        self._settings_tab = SettingsTab()
+        self._modpacks_tab  = ModpacksTab()
+        self._shaders_tab   = ShadersTab()
+        self._settings_tab  = SettingsTab()
 
         self._tabs: dict[str, QWidget] = {
             "home":      self._home_tab,
             "instances": self._instances_tab,
-            "mods":      self._mods_tab,
-            "accounts":  self._accounts_tab,
+            "modpacks":  self._modpacks_tab,
+            "shaders":   self._shaders_tab,
             "settings":  self._settings_tab,
         }
 
         for tab in self._tabs.values():
             self._content.stack.addWidget(tab)
 
-        # Show home by default
         self._switch_tab("home")
 
-        # Resize grip (bottom-right corner)
+        # Resize grip
         grip = QSizeGrip(root)
         grip.setStyleSheet("background: transparent;")
         root_layout.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
 
     # ------------------------------------------------------------------
-    # Signal wiring
+    # Signals
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
@@ -167,24 +155,18 @@ class MainWindow(QMainWindow):
         self._instances_tab.launch_requested.connect(self._on_launch_requested)
 
     # ------------------------------------------------------------------
-    # Tab switching with fade
+    # Tab switching (200ms fade-in)
     # ------------------------------------------------------------------
 
     def _switch_tab(self, key: str) -> None:
         widget = self._tabs.get(key)
-        if widget is None:
-            return
-
-        current = self._content.stack.currentWidget()
-        if current is widget:
+        if widget is None or widget is self._content.stack.currentWidget():
             return
 
         self._content.stack.setCurrentWidget(widget)
 
-        # Fade-in via opacity effect
         effect = widget.graphicsEffect()
-        if effect is None:
-            from PySide6.QtWidgets import QGraphicsOpacityEffect
+        if not isinstance(effect, QGraphicsOpacityEffect):
             effect = QGraphicsOpacityEffect(widget)
             widget.setGraphicsEffect(effect)
 
@@ -196,7 +178,7 @@ class MainWindow(QMainWindow):
         anim.start(QPropertyAnimation.DeleteWhenStopped)
 
     # ------------------------------------------------------------------
-    # Launch orchestration
+    # Launch
     # ------------------------------------------------------------------
 
     def _on_launch_requested(self, version_id: str) -> None:
@@ -204,11 +186,9 @@ class MainWindow(QMainWindow):
             return
 
         self._home_tab.set_launch_state(True)
-        self._home_tab.update_progress(0, 100, f"Launching {version_id}...")
+        self._home_tab.update_progress(0, 100, f"Preparing {version_id}…")
 
-        # Use offline "Player" unless an account is configured
         username = config.get("last_account") or "Player"
-
         self._launch_worker = LaunchWorker(version_id, username, self)
         self._launch_worker.status_changed.connect(self._on_launch_status)
         self._launch_worker.process_started.connect(self._on_process_started)
@@ -224,7 +204,7 @@ class MainWindow(QMainWindow):
         if config.get("close_on_launch", False):
             self.hide()
 
-    def _on_process_ended(self, exit_code: int) -> None:
+    def _on_process_ended(self, _exit_code: int) -> None:
         self._launch_worker = None
         self._home_tab.set_launch_state(False)
         if self.isHidden():
@@ -234,51 +214,33 @@ class MainWindow(QMainWindow):
         self._launch_worker = None
         self._home_tab.set_launch_state(False)
         self._home_tab.update_progress(0, 100, "Launch failed.")
-        QMessageBox.critical(
-            self,
-            "Launch Error",
-            f"Failed to start Minecraft:\n\n{message}",
-        )
+        QMessageBox.critical(self, "Launch Error", f"Failed to start Minecraft:\n\n{message}")
 
     # ------------------------------------------------------------------
-    # Frameless resize via mouse events
+    # Frameless resize (edge detection + drag)
     # ------------------------------------------------------------------
 
     def _edge_at(self, pos) -> str:
         m = _RESIZE_MARGIN
         w, h = self.width(), self.height()
         x, y = pos.x(), pos.y()
-        on_left = x <= m
-        on_right = x >= w - m
-        on_top = y <= m
-        on_bottom = y >= h - m
-        if on_left and on_top:
-            return "tl"
-        if on_right and on_top:
-            return "tr"
-        if on_left and on_bottom:
-            return "bl"
-        if on_right and on_bottom:
-            return "br"
-        if on_left:
-            return "l"
-        if on_right:
-            return "r"
-        if on_bottom:
-            return "b"
-        if on_top:
-            return "t"
+        on_l, on_r = x <= m, x >= w - m
+        on_t, on_b = y <= m, y >= h - m
+        if on_l and on_t: return "tl"
+        if on_r and on_t: return "tr"
+        if on_l and on_b: return "bl"
+        if on_r and on_b: return "br"
+        if on_l: return "l"
+        if on_r: return "r"
+        if on_b: return "b"
+        if on_t: return "t"
         return ""
 
     _CURSORS = {
-        "l":  Qt.SizeHorCursor,
-        "r":  Qt.SizeHorCursor,
-        "t":  Qt.SizeVerCursor,
-        "b":  Qt.SizeVerCursor,
-        "tl": Qt.SizeFDiagCursor,
-        "br": Qt.SizeFDiagCursor,
-        "tr": Qt.SizeBDiagCursor,
-        "bl": Qt.SizeBDiagCursor,
+        "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor,
+        "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor,
+        "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
+        "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
     }
 
     def mousePressEvent(self, event) -> None:
@@ -297,26 +259,18 @@ class MainWindow(QMainWindow):
             dx, dy = delta.x(), delta.y()
             edge = self._resize_edge
             min_w, min_h = self.minimumWidth(), self.minimumHeight()
-
-            if "r" in edge:
-                geom.setRight(geom.right() + dx)
-            if "b" in edge:
-                geom.setBottom(geom.bottom() + dy)
+            if "r" in edge: geom.setRight(geom.right() + dx)
+            if "b" in edge: geom.setBottom(geom.bottom() + dy)
             if "l" in edge:
-                new_left = geom.left() + dx
-                if geom.right() - new_left >= min_w:
-                    geom.setLeft(new_left)
+                nl = geom.left() + dx
+                if geom.right() - nl >= min_w: geom.setLeft(nl)
             if "t" in edge:
-                new_top = geom.top() + dy
-                if geom.bottom() - new_top >= min_h:
-                    geom.setTop(new_top)
-
+                nt = geom.top() + dy
+                if geom.bottom() - nt >= min_h: geom.setTop(nt)
             if geom.width() >= min_w and geom.height() >= min_h:
                 self.setGeometry(geom)
         else:
-            edge = self._edge_at(event.pos())
-            cursor = self._CURSORS.get(edge, Qt.ArrowCursor)
-            self.setCursor(cursor)
+            self.setCursor(self._CURSORS.get(self._edge_at(event.pos()), Qt.ArrowCursor))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -326,14 +280,11 @@ class MainWindow(QMainWindow):
         super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------
-    # Close — persist window size
+    # Close — persist size
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        config.update({
-            "window_width": self.width(),
-            "window_height": self.height(),
-        })
+        config.update({"window_width": self.width(), "window_height": self.height()})
         if self._launch_worker:
             self._launch_worker.terminate()
         super().closeEvent(event)

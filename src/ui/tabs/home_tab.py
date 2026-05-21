@@ -1,13 +1,17 @@
 """
-Home tab — featured version card + quick launch + news section.
+Home tab — clean light-theme launcher home screen.
+
+Layout:
+  - Hero section: headline + version picker + Play button
+  - LaunchProgressPanel (hidden until launch)
+  - Quick-play cards (featured versions)
+  - Recent activity / news strip
 """
 
 from __future__ import annotations
 
-import math
-
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QPainter, QLinearGradient
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -21,104 +25,61 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
-from ..components.animated_button import LaunchButton, GhostButton
+from ..components.animated_button import LaunchButton, OutlineButton
 from ..components.version_card import VersionCard
-from ..components.glass_card import GlassCard
+from ..components.clean_card import CleanCard
 from ..components.progress_widget import LaunchProgressPanel
 
 
-class HeroBackground(QWidget):
-    """Animated gradient orb background for the hero section."""
+# ---------------------------------------------------------------------------
+# Hero section background — clean light gradient, no animation
+# ---------------------------------------------------------------------------
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._phase: float = 0.0
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(33)  # ~30fps
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-
-    def _tick(self) -> None:
-        self._phase = (self._phase + 0.008) % (2 * math.pi)
-        self.update()
+class HeroWidget(QWidget):
+    """
+    Pale gradient hero banner — top is white, bottom fades to bg_secondary.
+    Static; no animation needed in the clean theme.
+    """
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        p = self._phase
-
-        # Base gradient
-        base_grad = QLinearGradient(0, 0, 0, h)
-        base_grad.setColorAt(0.0, QColor(C["bg_deep"]))
-        base_grad.setColorAt(1.0, QColor(C["bg_primary"]))
-        painter.fillRect(self.rect(), base_grad)
-
-        # Orb 1 — cyan, top-right, slow float
-        cx1 = int(w * 0.75 + math.sin(p) * 30)
-        cy1 = int(h * 0.35 + math.cos(p * 0.7) * 20)
-        r1 = 220
-        orb1 = QColor(0, 200, 255, 25)
-        painter.setBrush(orb1)
-        painter.setPen(Qt.NoPen)
-        # Soft radial look via layered ellipses
-        for i in range(5):
-            alpha = 20 - i * 3
-            size = r1 + i * 40
-            c = QColor(0, 200, 255, max(0, alpha))
-            painter.setBrush(c)
-            painter.drawEllipse(cx1 - size // 2, cy1 - size // 2, size, size)
-
-        # Orb 2 — purple, bottom-left
-        cx2 = int(w * 0.2 + math.sin(p * 0.6 + 1.2) * 25)
-        cy2 = int(h * 0.65 + math.cos(p * 0.8) * 20)
-        r2 = 180
-        for i in range(5):
-            alpha = 18 - i * 3
-            size = r2 + i * 35
-            c = QColor(130, 80, 220, max(0, alpha))
-            painter.setBrush(c)
-            painter.drawEllipse(cx2 - size // 2, cy2 - size // 2, size, size)
-
-        # Orb 3 — blue, center
-        cx3 = int(w * 0.5 + math.sin(p * 0.4 + 2.5) * 40)
-        cy3 = int(h * 0.2 + math.cos(p * 0.5) * 15)
-        r3 = 140
-        for i in range(4):
-            alpha = 12 - i * 2
-            size = r3 + i * 30
-            c = QColor(60, 120, 255, max(0, alpha))
-            painter.setBrush(c)
-            painter.drawEllipse(cx3 - size // 2, cy3 - size // 2, size, size)
-
-        # Vignette overlay (darkens edges)
-        vignette = QLinearGradient(0, 0, 0, h)
-        vignette.setColorAt(0.0, QColor(0, 0, 0, 60))
-        vignette.setColorAt(0.4, QColor(0, 0, 0, 0))
-        vignette.setColorAt(1.0, QColor(0, 0, 0, 80))
-        painter.fillRect(self.rect(), vignette)
-
+        grad = QLinearGradient(0, 0, 0, self.height())
+        grad.setColorAt(0.0, QColor(C["bg_primary"]))
+        grad.setColorAt(1.0, QColor(C["bg_secondary"]))
+        painter.fillRect(self.rect(), grad)
         painter.end()
 
 
-class NewsCard(GlassCard):
-    """A simple news/update item card."""
+# ---------------------------------------------------------------------------
+# News / update card
+# ---------------------------------------------------------------------------
+
+class NewsItem(QFrame):
+    """A single clean news card."""
 
     def __init__(self, title: str, body: str, date: str, parent=None) -> None:
-        super().__init__(hover_glow=True, glow_color=C["accent_purple"], parent=parent)
-        layout = self.layout()
-        layout.setContentsMargins(18, 16, 18, 16)
+        super().__init__(parent)
+        self.setObjectName("NewsItem")
+        self.setStyleSheet(f"""
+            #NewsItem {{
+                background: {C["bg_primary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 10px;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(6)
 
-        header = QHBoxLayout()
+        header_row = QHBoxLayout()
         title_lbl = QLabel(title)
         title_lbl.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 700; color: {C['text_primary']};")
-        header.addWidget(title_lbl)
-        header.addStretch()
+        header_row.addWidget(title_lbl)
+        header_row.addStretch()
         date_lbl = QLabel(date)
-        date_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_muted']};")
-        header.addWidget(date_lbl)
-        layout.addLayout(header)
+        date_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        header_row.addWidget(date_lbl)
+        layout.addLayout(header_row)
 
         body_lbl = QLabel(body)
         body_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
@@ -126,12 +87,16 @@ class NewsCard(GlassCard):
         layout.addWidget(body_lbl)
 
 
+# ---------------------------------------------------------------------------
+# Home Tab
+# ---------------------------------------------------------------------------
+
 class HomeTab(QWidget):
     """
-    Home tab content.
+    Home screen of GenosLauncher.
 
     Signals:
-        launch_requested(str)  — version ID to launch
+        launch_requested(str)   — version ID to launch
     """
 
     launch_requested = Signal(str)
@@ -146,83 +111,63 @@ class HomeTab(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Scrollable content
-        scroll = QScrollArea(self)
+        scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         content = QWidget()
-        content.setStyleSheet(f"background-color: {C['bg_primary']};")
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 40)
-        content_layout.setSpacing(0)
+        content.setStyleSheet(f"background: {C['bg_secondary']};")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(0, 0, 0, 40)
+        cl.setSpacing(0)
 
-        # ---- HERO SECTION ----
-        hero = QWidget()
-        hero.setMinimumHeight(340)
-        hero.setStyleSheet("background: transparent;")
+        # ---- HERO ----
+        hero = HeroWidget()
+        hero.setMinimumHeight(300)
         hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(48, 0, 48, 40)
+        hero_layout.setContentsMargins(48, 40, 48, 40)
         hero_layout.setSpacing(0)
-
-        # Animated background
-        self._hero_bg = HeroBackground(hero)
-        self._hero_bg.setGeometry(0, 0, 9999, 9999)
 
         hero_layout.addStretch(1)
 
-        # Welcome tag
-        welcome_tag = QLabel("✨  Welcome back, Player")
-        welcome_tag.setStyleSheet(f"""
-            color: {C["accent_cyan"]};
-            background-color: {C["accent_cyan"]}18;
-            border: 1px solid {C["accent_cyan"]}33;
-            border-radius: 20px;
-            padding: 5px 14px;
-            font-size: {FONT["sm"]};
-            font-weight: 600;
-        """)
-        welcome_tag.setFixedWidth(220)
-        hero_layout.addWidget(welcome_tag)
-        hero_layout.addSpacing(16)
-
-        # Big headline
-        headline = QLabel("Ready to Play?")
+        # Headline
+        headline = QLabel("GenosLauncher")
         headline.setStyleSheet(f"""
             font-size: {FONT["4xl"]};
             font-weight: 800;
             color: {C["text_primary"]};
-            letter-spacing: -1px;
+            letter-spacing: -1.5px;
         """)
         hero_layout.addWidget(headline)
 
-        sub = QLabel("Launch Minecraft instantly or browse versions below.")
-        sub.setStyleSheet(f"font-size: {FONT['lg']}; color: {C['text_secondary']}; margin-top: 6px;")
-        hero_layout.addWidget(sub)
+        subhead = QLabel("Open-source · Fast · Elegant")
+        subhead.setStyleSheet(f"font-size: {FONT['lg']}; color: {C['text_secondary']}; margin-top: 4px;")
+        hero_layout.addWidget(subhead)
 
         hero_layout.addSpacing(32)
 
-        # Launch controls
+        # Launch row
         launch_row = QHBoxLayout()
-        launch_row.setSpacing(12)
+        launch_row.setSpacing(10)
 
         # Version picker
         self._version_combo = QComboBox()
-        self._version_combo.setFixedHeight(64)
-        self._version_combo.setMinimumWidth(160)
+        self._version_combo.setFixedHeight(52)
+        self._version_combo.setMinimumWidth(150)
         self._version_combo.setStyleSheet(f"""
             QComboBox {{
-                background-color: {C["bg_card"]};
-                color: {C["text_primary"]};
-                border: 1px solid {C["border_accent"]};
-                border-radius: 32px;
-                padding: 0 20px;
+                background: {C["bg_primary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 10px;
+                padding: 0 14px;
                 font-size: {FONT["md"]};
                 font-weight: 600;
+                color: {C["text_primary"]};
             }}
-            QComboBox:hover {{ border-color: {C["accent_cyan_dim"]}; }}
-            QComboBox::drop-down {{ border: none; width: 32px; }}
+            QComboBox:hover {{ border-color: {C["border_strong"]}; }}
+            QComboBox:focus {{ border-color: {C["border_focus"]}; }}
+            QComboBox::drop-down {{ border: none; width: 24px; }}
         """)
         versions = [
             "1.21.4", "1.21.3", "1.21.1", "1.20.6", "1.20.4",
@@ -233,105 +178,119 @@ class HomeTab(QWidget):
         self._version_combo.currentTextChanged.connect(self._on_version_changed)
         launch_row.addWidget(self._version_combo)
 
-        # Launch button
-        self._launch_btn = LaunchButton("⚡  LAUNCH")
-        self._launch_btn.setMinimumWidth(200)
-        self._launch_btn.clicked.connect(self._on_launch_clicked)
+        # Play button
+        self._play_btn = LaunchButton("Play")
+        self._play_btn.setMinimumWidth(160)
+
+        # Subtle shadow below the button
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(40)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(C["accent_cyan"] + "66"))
-        self._launch_btn.setGraphicsEffect(shadow)
-        launch_row.addWidget(self._launch_btn)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 35))
+        self._play_btn.setGraphicsEffect(shadow)
+
+        self._play_btn.clicked.connect(self._on_play_clicked)
+        launch_row.addWidget(self._play_btn)
 
         launch_row.addStretch()
         hero_layout.addLayout(launch_row)
 
-        # Launch progress
-        self._progress_panel = LaunchProgressPanel()
-        hero_layout.addWidget(self._progress_panel)
+        # Progress panel
+        self._progress = LaunchProgressPanel()
+        hero_layout.addWidget(self._progress)
 
         hero_layout.addStretch(1)
-        content_layout.addWidget(hero)
+        cl.addWidget(hero)
 
-        # ---- FEATURED VERSIONS ----
-        section_container = QWidget()
-        section_layout = QVBoxLayout(section_container)
-        section_layout.setContentsMargins(48, 32, 48, 0)
-        section_layout.setSpacing(20)
+        # ---- CONTENT BELOW HERO ----
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(48, 28, 48, 0)
+        inner_layout.setSpacing(24)
 
-        # Section header
-        sec_header = QHBoxLayout()
-        sec_title = QLabel("Quick Play")
-        sec_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']};")
-        sec_header.addWidget(sec_title)
-        sec_header.addStretch()
-        view_all = GhostButton("View All Versions →", accent=C["accent_cyan"])
-        view_all.setFixedHeight(34)
-        view_all.setFixedWidth(180)
-        sec_header.addWidget(view_all)
-        section_layout.addLayout(sec_header)
+        # Quick Play section
+        qp_header = QHBoxLayout()
+        qp_title = QLabel("Quick Play")
+        qp_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']};")
+        qp_header.addWidget(qp_title)
+        qp_header.addStretch()
+        view_all = OutlineButton("View all versions →")
+        view_all.setFixedHeight(32)
+        view_all.setMinimumWidth(160)
+        qp_header.addWidget(view_all)
+        inner_layout.addLayout(qp_header)
 
-        # Featured version cards
+        # Featured version cards — horizontal row
         cards_row = QHBoxLayout()
-        cards_row.setSpacing(16)
+        cards_row.setSpacing(12)
 
-        featured_versions = [
-            ("1.21.4", "release", True, True),
-            ("1.20.1", "release", False, False),
-            ("1.8.9",  "release", False, False),
-        ]
-        for vid, vtype, installed, featured in featured_versions:
-            card = VersionCard(vid, vtype, installed, featured, self)
-            card.setMinimumHeight(170)
+        for vid, vtype, installed in [
+            ("1.21.4", "release", True),
+            ("1.20.1", "release", False),
+            ("1.8.9",  "release", False),
+        ]:
+            card = VersionCard(vid, vtype, installed, self)
+            card.setMinimumHeight(115)
             card.launch_requested.connect(self.launch_requested)
             cards_row.addWidget(card)
 
-        section_layout.addLayout(cards_row)
+        inner_layout.addLayout(cards_row)
 
-        # ---- NEWS SECTION ----
+        # Divider
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background: {C['border']}; border: none;")
+        inner_layout.addWidget(divider)
+
+        # News section
         news_title = QLabel("What's New")
-        news_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']}; margin-top: 16px;")
-        section_layout.addWidget(news_title)
+        news_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']};")
+        inner_layout.addWidget(news_title)
 
-        news_items = [
-            ("GenosLauncher Alpha Released", "The first public alpha of GenosLauncher is now available. Download and share your feedback!", "Today"),
-            ("Minecraft 1.21.4 Support", "Full support for Minecraft 1.21.4 is live. Enjoy the latest features and bug fixes.", "2 days ago"),
-            ("Microsoft Account Integration", "OAuth-based Microsoft login is in active development. Stay tuned for the next update.", "1 week ago"),
-        ]
-        for title, body, date in news_items:
-            news = NewsCard(title, body, date, self)
-            news.setFixedHeight(110)
-            section_layout.addWidget(news)
+        for title, body, date in [
+            (
+                "GenosLauncher v0.2 Released",
+                "Modpack browser, shader management, and a complete premium light theme redesign are now live.",
+                "Today",
+            ),
+            (
+                "Modrinth Integration",
+                "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
+                "2 days ago",
+            ),
+            (
+                "Java Auto-Detection",
+                "The launcher now automatically detects installed Java versions and recommends the best one for your Minecraft version.",
+                "1 week ago",
+            ),
+        ]:
+            inner_layout.addWidget(NewsItem(title, body, date, self))
 
-        content_layout.addWidget(section_container)
+        cl.addWidget(inner)
         scroll.setWidget(content)
         root.addWidget(scroll)
 
     # ------------------------------------------------------------------
+    # Public API (called by main_window)
+    # ------------------------------------------------------------------
 
-    def resizeEvent(self, event) -> None:
-        self._hero_bg.setGeometry(0, 0, self._hero_bg.parent().width(), self._hero_bg.parent().height())
-        super().resizeEvent(event)
+    def set_launch_state(self, launching: bool) -> None:
+        self._play_btn.set_launching(launching)
+        if launching:
+            self._progress.show_panel()
+        else:
+            self._progress.hide_panel()
+
+    def update_progress(self, current: int, maximum: int, status: str) -> None:
+        if status:
+            self._progress.set_status(status)
+        if maximum > 0:
+            self._progress.set_progress(current, maximum)
 
     def _on_version_changed(self, version: str) -> None:
         self._selected_version = version
 
-    def _on_launch_clicked(self) -> None:
+    def _on_play_clicked(self) -> None:
         self.launch_requested.emit(self._selected_version)
-
-    def set_launch_state(self, launching: bool) -> None:
-        self._launch_btn.set_launching(launching)
-        if launching:
-            self._progress_panel.show_panel()
-        else:
-            self._progress_panel.hide_panel()
-
-    def update_progress(self, current: int, maximum: int, status: str) -> None:
-        if status:
-            self._progress_panel.set_status(status)
-        if maximum > 0:
-            self._progress_panel.set_progress(current, maximum)
-
-    def update_username(self, username: str) -> None:
-        pass  # wire up to welcome label if desired

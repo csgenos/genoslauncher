@@ -1,5 +1,5 @@
 """
-Accounts tab — Microsoft login + account management.
+Accounts tab — Microsoft login + offline account management.
 """
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -14,17 +15,19 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
-from ..components.animated_button import GhostButton, AnimatedButton
-from ..components.glass_card import GlassCard
+from ..components.animated_button import OutlineButton, PrimaryButton
 
+
+# ---------------------------------------------------------------------------
+# Account avatar (circular initials badge)
+# ---------------------------------------------------------------------------
 
 class AccountAvatar(QWidget):
-    """Circular avatar placeholder."""
+    """Circular avatar with user initials."""
 
-    def __init__(self, initials: str, color: str = C["accent_cyan"], size: int = 52, parent=None) -> None:
+    def __init__(self, initials: str, size: int = 44, parent=None) -> None:
         super().__init__(parent)
-        self._initials = initials
-        self._color = QColor(color)
+        self._initials = initials[:2].upper()
         self.setFixedSize(size, size)
 
     def paintEvent(self, _event) -> None:
@@ -32,38 +35,51 @@ class AccountAvatar(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
 
-        # Background circle
-        bg = QColor(self._color)
-        bg.setAlpha(40)
-        painter.setBrush(bg)
-        border = QColor(self._color)
-        border.setAlpha(120)
-        painter.setPen(border)
+        # Circle background
+        painter.setBrush(QColor(C["bg_tertiary"]))
+        painter.setPen(QColor(C["border_strong"]))
         painter.drawEllipse(1, 1, w - 2, h - 2)
 
         # Initials
-        painter.setPen(self._color)
-        font = QFont("Segoe UI", w // 3, QFont.Weight.Bold)
+        painter.setPen(QColor(C["text_secondary"]))
+        font = QFont("Segoe UI", w // 3, QFont.Weight.SemiBold)
         painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignCenter, self._initials)
+        painter.drawText(0, 0, w, h, Qt.AlignCenter, self._initials)
         painter.end()
 
 
-class AccountItem(GlassCard):
-    """A card representing a single account."""
+# ---------------------------------------------------------------------------
+# Account row card
+# ---------------------------------------------------------------------------
 
-    def __init__(self, username: str, account_type: str = "Offline", is_active: bool = False, parent=None) -> None:
-        color = C["accent_cyan"] if is_active else C["border"]
-        super().__init__(border=color, hover_glow=True, glow_color=C["accent_cyan"], parent=parent)
-        self.setFixedHeight(80)
+class AccountRow(QFrame):
+    """A single account entry card."""
 
-        layout = QHBoxLayout()
+    def __init__(
+        self,
+        username: str,
+        account_type: str = "Offline",
+        is_active: bool = False,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("AccountRow")
+        self.setFixedHeight(72)
+        border_color = C["accent_blue"] if is_active else C["border"]
+        self.setStyleSheet(f"""
+            #AccountRow {{
+                background: {C["bg_primary"]};
+                border: 1px solid {border_color};
+                border-radius: 10px;
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(14)
 
-        initials = "".join(w[0].upper() for w in username.split()[:2]) or "?"
-        avatar_color = C["accent_cyan"] if is_active else C["accent_purple"]
-        avatar = AccountAvatar(initials, avatar_color, 44, self)
+        initials = "".join(w[0] for w in username.split()[:2]) or "?"
+        avatar = AccountAvatar(initials, 40, self)
         layout.addWidget(avatar)
 
         info = QVBoxLayout()
@@ -78,31 +94,30 @@ class AccountItem(GlassCard):
         layout.addStretch()
 
         if is_active:
-            active_badge = QLabel("● Active")
-            active_badge.setStyleSheet(f"""
-                color: {C["accent_green"]};
-                background: {C["accent_green"]}22;
-                border: 1px solid {C["accent_green"]}44;
-                border-radius: 10px;
-                padding: 3px 10px;
+            badge = QLabel("● Active")
+            badge.setStyleSheet(f"""
+                color: {C["success"]};
+                background: {C["accent_green_soft"]};
+                border: 1px solid #6EE7B7;
+                border-radius: 8px;
+                padding: 2px 10px;
                 font-size: {FONT["xs"]};
                 font-weight: 700;
             """)
-            layout.addWidget(active_badge)
+            layout.addWidget(badge)
         else:
-            select_btn = GhostButton("Select", accent=C["accent_cyan"])
-            select_btn.setFixedSize(80, 30)
+            select_btn = OutlineButton("Select")
+            select_btn.setFixedSize(72, 30)
             layout.addWidget(select_btn)
 
-        remove_btn = GhostButton("✕", accent=C["danger"])
-        remove_btn.setFixedSize(34, 34)
+        remove_btn = OutlineButton("✕")
+        remove_btn.setFixedSize(32, 30)
         layout.addWidget(remove_btn)
 
-        inner = QWidget()
-        inner.setLayout(layout)
-        inner.setStyleSheet("background: transparent;")
-        self.layout().addWidget(inner)
 
+# ---------------------------------------------------------------------------
+# Accounts Tab
+# ---------------------------------------------------------------------------
 
 class AccountsTab(QWidget):
     """Accounts management tab."""
@@ -113,92 +128,99 @@ class AccountsTab(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(48, 32, 48, 32)
-        root.setSpacing(28)
+        root.setContentsMargins(40, 28, 40, 28)
+        root.setSpacing(20)
 
-        # Header
+        # Page header
         title = QLabel("Accounts")
         title.setStyleSheet(f"font-size: {FONT['2xl']}; font-weight: 800; color: {C['text_primary']};")
         root.addWidget(title)
-        subtitle = QLabel("Manage your Minecraft accounts. Sign in with Microsoft for online play.")
-        subtitle.setStyleSheet(f"font-size: {FONT['md']}; color: {C['text_secondary']}; margin-top: -16px;")
-        root.addWidget(subtitle)
+        sub = QLabel("Sign in with Microsoft for online play, or add an offline account for solo play.")
+        sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-top: -12px;")
+        root.addWidget(sub)
 
         # Microsoft login card
-        ms_card = GlassCard(hover_glow=True, glow_color=C["accent_blue"])
-        ms_layout = QHBoxLayout()
-        ms_layout.setContentsMargins(24, 20, 24, 20)
-        ms_layout.setSpacing(20)
-
-        ms_icon_container = QWidget()
-        ms_icon_container.setFixedSize(56, 56)
-        ms_icon_container.setStyleSheet(f"""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 #0078d4, stop:1 #00bcf2);
-            border-radius: 14px;
+        ms_card = QFrame()
+        ms_card.setObjectName("MsCard")
+        ms_card.setFixedHeight(96)
+        ms_card.setStyleSheet(f"""
+            #MsCard {{
+                background: {C["bg_primary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 12px;
+            }}
         """)
-        ms_icon_layout = QVBoxLayout(ms_icon_container)
-        ms_icon_label = QLabel("M")
-        ms_icon_label.setAlignment(Qt.AlignCenter)
-        ms_icon_label.setStyleSheet("color: white; font-size: 24px; font-weight: 900; background: transparent;")
-        ms_icon_layout.addWidget(ms_icon_label)
-        ms_layout.addWidget(ms_icon_container)
+        ms_h = QHBoxLayout(ms_card)
+        ms_h.setContentsMargins(20, 0, 20, 0)
+        ms_h.setSpacing(18)
 
-        ms_text = QVBoxLayout()
-        ms_text.setSpacing(3)
+        # M icon
+        m_icon = QLabel("M")
+        m_icon.setFixedSize(52, 52)
+        m_icon.setAlignment(Qt.AlignCenter)
+        m_icon.setStyleSheet("""
+            background: #0078D4;
+            color: white;
+            border-radius: 10px;
+            font-size: 22px;
+            font-weight: 900;
+        """)
+        ms_h.addWidget(m_icon)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(3)
         ms_title = QLabel("Sign in with Microsoft")
         ms_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
-        ms_text.addWidget(ms_title)
+        text_col.addWidget(ms_title)
         ms_sub = QLabel("Required for online multiplayer. Links your Xbox / Minecraft account.")
         ms_sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
-        ms_text.addWidget(ms_sub)
-        ms_layout.addLayout(ms_text)
-        ms_layout.addStretch()
+        text_col.addWidget(ms_sub)
+        ms_h.addLayout(text_col)
+        ms_h.addStretch()
 
-        ms_btn = AnimatedButton(
-            "Sign In",
-            color_start="#0078d4",
-            color_end="#005a9e",
-            accent="#4ec9f7",
-            text_color=C["text_primary"],
-        )
-        ms_btn.setFixedSize(110, 40)
-        ms_layout.addWidget(ms_btn)
+        sign_in_btn = PrimaryButton("Sign In")
+        sign_in_btn.setFixedSize(100, 38)
+        ms_h.addWidget(sign_in_btn)
 
-        ms_inner = QWidget()
-        ms_inner.setLayout(ms_layout)
-        ms_inner.setStyleSheet("background: transparent;")
-        ms_card.layout().addWidget(ms_inner)
         root.addWidget(ms_card)
 
-        # Add offline account
+        # Offline account row
         offline_row = QHBoxLayout()
-        offline_label = QLabel("Or add an offline account:")
-        offline_label.setStyleSheet(f"color: {C['text_secondary']}; font-size: {FONT['sm']};")
-        offline_row.addWidget(offline_label)
+        offline_lbl = QLabel("Or add an offline account:")
+        offline_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        offline_row.addWidget(offline_lbl)
         offline_row.addStretch()
-        add_offline_btn = GhostButton("+ Add Offline Account", accent=C["accent_purple"])
-        add_offline_btn.setFixedHeight(36)
-        offline_row.addWidget(add_offline_btn)
+        add_offline = OutlineButton("+ Add Offline Account")
+        add_offline.setFixedHeight(34)
+        offline_row.addWidget(add_offline)
         root.addLayout(offline_row)
 
-        # Accounts list
-        accounts_label = QLabel("Your Accounts")
-        accounts_label.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
-        root.addWidget(accounts_label)
+        # Divider
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        div.setFixedHeight(1)
+        div.setStyleSheet(f"background: {C['border']}; border: none;")
+        root.addWidget(div)
 
-        # Demo accounts
-        root.addWidget(AccountItem("Player", "Offline · Unverified", is_active=True))
-        root.addWidget(AccountItem("Steve", "Offline · Unverified", is_active=False))
+        # Accounts list
+        list_title = QLabel("Your Accounts")
+        list_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
+        root.addWidget(list_title)
+
+        root.addWidget(AccountRow("Player", "Offline · Unverified", is_active=True))
+        root.addWidget(AccountRow("Steve", "Offline · Unverified", is_active=False))
 
         root.addStretch()
 
-        # Info note
-        note = QLabel("ℹ  GenosLauncher stores account tokens locally and never shares them with third parties.")
+        # Privacy note
+        note = QLabel(
+            "GenosLauncher stores account tokens locally on your device "
+            "and never shares them with third parties."
+        )
         note.setStyleSheet(f"""
-            color: {C["text_muted"]};
+            color: {C["text_tertiary"]};
             font-size: {FONT["xs"]};
-            background: {C["bg_card"]};
+            background: {C["bg_secondary"]};
             border: 1px solid {C["border"]};
             border-radius: 8px;
             padding: 10px 14px;
