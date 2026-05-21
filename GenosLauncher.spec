@@ -27,6 +27,7 @@ HIDDEN_IMPORTS = [
     "minecraft_launcher_lib.runtime",
     "minecraft_launcher_lib.forge",
     "minecraft_launcher_lib.fabric",
+    "minecraft_launcher_lib.quilt",
 
     # keyring backends — include the ones most likely present on Windows
     "keyring.backends.Windows",

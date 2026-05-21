@@ -19,8 +19,8 @@ AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
 
-; Installation directory
-DefaultDirName={autopf}\{#AppName}
+; Installation directory — LocalAppData means no UAC prompt (like Discord, Slack, Cursor)
+DefaultDirName={localappdata}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
 
@@ -37,11 +37,10 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 LZMANumBlockThreads=4
 
-; Require admin for Program Files install
-PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+; No admin required — installs per-user into LocalAppData
+PrivilegesRequired=lowest
 
-; Windows version requirement (Windows 10+)
+; Windows 10 1809+ required for modern APIs
 MinVersion=10.0.17763
 
 ; Appearance
