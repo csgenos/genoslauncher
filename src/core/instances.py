@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from pathlib import Path
 
@@ -34,6 +35,27 @@ def upsert_instance(instance: dict) -> dict:
     return instance
 
 
+def selected_instance() -> dict | None:
+    instance_id = config.get("selected_instance_id", "")
+    if instance_id:
+        found = find_instance(instance_id)
+        if found:
+            return found
+    items = list_instances()
+    return items[0] if items else None
+
+
+def selected_instance_dir() -> Path:
+    instance = selected_instance()
+    if instance:
+        return Path(instance["directory"])
+    return Path(config.get("minecraft_dir"))
+
+
+def set_selected_instance(instance_id: str) -> None:
+    config.set("selected_instance_id", instance_id)
+
+
 def create_vanilla_instance(version_id: str, name: str | None = None) -> dict:
     display_name = safe_instance_name(name or f"Minecraft {version_id}")
     instance_id = f"vanilla-{version_id.replace('.', '_')}"
@@ -49,6 +71,68 @@ def create_vanilla_instance(version_id: str, name: str | None = None) -> dict:
         "source": "vanilla",
         "jvm_args": "",
     })
+
+
+def create_custom_instance(
+    name: str,
+    version_id: str,
+    directory: Path | None = None,
+    jvm_args: str = "",
+) -> dict:
+    display_name = safe_instance_name(name)
+    instance_id = f"custom-{uuid.uuid4().hex[:12]}"
+    instance_dir = directory or (INSTANCES_DIR / instance_id)
+    instance_dir.mkdir(parents=True, exist_ok=True)
+    return upsert_instance({
+        "id": instance_id,
+        "name": display_name,
+        "title": display_name,
+        "mc_version": version_id,
+        "directory": str(instance_dir),
+        "type": "custom",
+        "source": "custom",
+        "jvm_args": jvm_args,
+    })
+
+
+def update_instance(instance_id: str, **updates) -> dict | None:
+    instances = list_instances()
+    updated: dict | None = None
+    for instance in instances:
+        if instance.get("id") == instance_id:
+            instance.update({k: v for k, v in updates.items() if v is not None})
+            if "name" in updates:
+                instance["name"] = safe_instance_name(str(updates["name"]))
+                instance["title"] = instance["name"]
+            updated = instance
+            break
+    if updated is not None:
+        save_instances(instances)
+    return updated
+
+
+def clone_instance(instance_id: str) -> dict | None:
+    source = find_instance(instance_id)
+    if not source:
+        return None
+    clone_id = f"clone-{uuid.uuid4().hex[:12]}"
+    clone_dir = INSTANCES_DIR / clone_id
+    src_dir = Path(source["directory"])
+    if src_dir.exists():
+        ignore = shutil.ignore_patterns("logs", "crash-reports", "*.log")
+        shutil.copytree(src_dir, clone_dir, ignore=ignore)
+    else:
+        clone_dir.mkdir(parents=True, exist_ok=True)
+    name = safe_instance_name(f"{source.get('name', 'Instance')} Copy")
+    cloned = dict(source)
+    cloned.update({
+        "id": clone_id,
+        "name": name,
+        "title": name,
+        "directory": str(clone_dir),
+        "source": source.get("source", "clone"),
+    })
+    return upsert_instance(cloned)
 
 
 def create_modpack_instance(project: dict, mc_version: str, directory: Path) -> dict:

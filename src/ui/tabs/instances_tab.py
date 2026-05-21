@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QInputDialog,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -25,9 +26,16 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton
 from ..components.version_card import VersionCard
-from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions
+from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
 from ...core.config import config
-from ...core.instances import list_instances, remove_instance
+from ...core.instances import (
+    clone_instance,
+    create_custom_instance,
+    list_instances,
+    remove_instance,
+    set_selected_instance,
+    update_instance,
+)
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +62,26 @@ class _VersionLoader(QObject):
         self.done.emit(versions, installed)
 
 
+class _RepairWorker(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(bool, str)
+
+    def __init__(self, instance: dict) -> None:
+        super().__init__()
+        self._instance = instance
+
+    def run(self) -> None:
+        try:
+            version = self._instance.get("mc_version", "")
+            directory = self._instance.get("directory", "")
+            if not version or not directory:
+                raise RuntimeError("Instance is missing version or directory.")
+            install_minecraft_base(version, directory, self.progress.emit)
+            self.finished.emit(True, f"Repaired {self._instance.get('name', 'instance')}.")
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
+
+
 class InstancesTab(QWidget):
     """Browse all available Minecraft versions with filtering."""
 
@@ -71,6 +99,8 @@ class InstancesTab(QWidget):
         self._search_text     = ""
         self._load_threads:   list[QThread] = []
         self._install_workers: dict[str, InstallWorker] = {}
+        self._repair_threads: list[QThread] = []
+        self._repair_workers: list[_RepairWorker] = []
         self._build_ui()
         QTimer.singleShot(100, self._load_versions)
 
@@ -94,6 +124,11 @@ class InstancesTab(QWidget):
         refresh_btn.setFixedWidth(110)
         refresh_btn.clicked.connect(self._load_versions)
         header_row.addWidget(refresh_btn)
+        new_btn = OutlineButton("New Instance")
+        new_btn.setFixedHeight(34)
+        new_btn.setFixedWidth(132)
+        new_btn.clicked.connect(self._create_instance)
+        header_row.addWidget(new_btn)
         root.addLayout(header_row)
 
         self._instances_title = QLabel("Installed Instances")
@@ -183,6 +218,7 @@ class InstancesTab(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         instances = list_instances()
+        active_id = config.get("selected_instance_id", "")
         if not instances:
             empty = QLabel("No instances installed yet. Install a version below to create one.")
             empty.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['sm']};")
@@ -193,9 +229,14 @@ class InstancesTab(QWidget):
             row.setStyleSheet(f"background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px;")
             layout = QHBoxLayout(row)
             layout.setContentsMargins(14, 10, 14, 10)
-            name = QLabel(f"{instance.get('name', 'Instance')}  -  {instance.get('mc_version', '?')}")
+            active = "Active  -  " if instance.get("id") == active_id else ""
+            name = QLabel(f"{active}{instance.get('name', 'Instance')}  -  {instance.get('mc_version', '?')}")
             name.setStyleSheet(f"color: {C['text_primary']}; font-size: {FONT['md']}; font-weight: 600;")
             layout.addWidget(name, 1)
+            select = QPushButton("Use")
+            select.setFixedWidth(58)
+            select.clicked.connect(lambda _=False, i=instance: self._select_instance(i))
+            layout.addWidget(select)
             launch = QPushButton("Launch")
             launch.setFixedWidth(80)
             launch.clicked.connect(
@@ -204,11 +245,87 @@ class InstancesTab(QWidget):
                 )
             )
             layout.addWidget(launch)
+            edit = OutlineButton("Edit")
+            edit.setFixedWidth(64)
+            edit.clicked.connect(lambda _=False, i=instance: self._edit_instance(i))
+            layout.addWidget(edit)
+            clone = OutlineButton("Clone")
+            clone.setFixedWidth(68)
+            clone.clicked.connect(lambda _=False, i=instance: self._clone_instance(i))
+            layout.addWidget(clone)
+            repair = OutlineButton("Repair")
+            repair.setFixedWidth(72)
+            repair.clicked.connect(lambda _=False, i=instance: self._repair_instance(i))
+            layout.addWidget(repair)
             remove = OutlineButton("Remove")
             remove.setFixedWidth(84)
             remove.clicked.connect(lambda _=False, i=instance: self._remove_instance(i))
             layout.addWidget(remove)
             self._instances_layout.addWidget(row)
+
+    def _create_instance(self) -> None:
+        default_version = config.get("selected_version", "1.21.4") or "1.21.4"
+        version, ok = QInputDialog.getText(self, "New Instance", "Minecraft version:", text=default_version)
+        if not ok or not version.strip():
+            return
+        name, ok = QInputDialog.getText(self, "New Instance", "Instance name:", text=f"Minecraft {version.strip()}")
+        if not ok or not name.strip():
+            return
+        instance = create_custom_instance(name.strip(), version.strip())
+        set_selected_instance(instance["id"])
+        self._render_instances()
+        self._count_label.setText(f"Created {instance['name']}. Use Repair to download game files.")
+
+    def _select_instance(self, instance: dict) -> None:
+        set_selected_instance(instance.get("id", ""))
+        self._render_instances()
+        self._count_label.setText(f"Active instance: {instance.get('name', 'Instance')}")
+
+    def _edit_instance(self, instance: dict) -> None:
+        name, ok = QInputDialog.getText(
+            self,
+            "Edit Instance",
+            "Instance name:",
+            text=instance.get("name", "Instance"),
+        )
+        if not ok or not name.strip():
+            return
+        jvm_args, ok = QInputDialog.getText(
+            self,
+            "Edit Instance",
+            "Instance JVM args:",
+            text=instance.get("jvm_args", ""),
+        )
+        if ok:
+            update_instance(instance.get("id", ""), name=name.strip(), jvm_args=jvm_args.strip())
+            self._render_instances()
+
+    def _clone_instance(self, instance: dict) -> None:
+        cloned = clone_instance(instance.get("id", ""))
+        if cloned:
+            set_selected_instance(cloned["id"])
+            self._render_instances()
+            self._count_label.setText(f"Cloned {instance.get('name', 'instance')}.")
+
+    def _repair_instance(self, instance: dict) -> None:
+        thread = QThread(self)
+        worker = _RepairWorker(instance)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda _c, _t, status: self._count_label.setText(status or "Repairing instance..."))
+        worker.finished.connect(lambda ok, msg: self._on_repair_finished(thread, worker, ok, msg))
+        worker.finished.connect(thread.quit)
+        self._repair_threads.append(thread)
+        self._repair_workers.append(worker)
+        thread.start()
+
+    def _on_repair_finished(self, thread: QThread, worker: _RepairWorker, ok: bool, message: str) -> None:
+        if thread in self._repair_threads:
+            self._repair_threads.remove(thread)
+        if worker in self._repair_workers:
+            self._repair_workers.remove(worker)
+        self._count_label.setText(message if ok else f"Repair failed: {message}")
+        self._load_versions()
 
     def _remove_instance(self, instance: dict) -> None:
         reply = QMessageBox.question(
@@ -219,6 +336,8 @@ class InstancesTab(QWidget):
         )
         if reply == QMessageBox.Yes:
             remove_instance(instance.get("id", ""))
+            if config.get("selected_instance_id", "") == instance.get("id", ""):
+                config.set("selected_instance_id", "")
             self._render_instances()
 
     def _on_search(self, text: str) -> None:

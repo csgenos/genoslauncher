@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
+from ...core.instances import list_instances, selected_instance_dir, set_selected_instance
 from ...core import modrinth as mr
 
 
@@ -364,7 +366,7 @@ class ShadersTab(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._mc_dir = Path(config.get("minecraft_dir", str(APP_DIR / "minecraft")))
+        self._mc_dir = selected_instance_dir()
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._execute_shader_search)
@@ -410,6 +412,10 @@ class ShadersTab(QWidget):
         title_col.addWidget(sub)
         page_header.addLayout(title_col)
         page_header.addStretch()
+        self._instance_combo = QComboBox()
+        self._instance_combo.setFixedSize(240, 36)
+        self._instance_combo.currentIndexChanged.connect(self._on_instance_changed)
+        page_header.addWidget(self._instance_combo)
         cl.addLayout(page_header)
 
         # ---- Iris + Sodium quick install ----
@@ -494,6 +500,29 @@ class ShadersTab(QWidget):
         cl.addStretch()
         scroll.setWidget(content)
         root.addWidget(scroll)
+        self._reload_instances()
+
+    def _reload_instances(self) -> None:
+        self._instance_combo.blockSignals(True)
+        self._instance_combo.clear()
+        active_id = config.get("selected_instance_id", "")
+        instances = list_instances()
+        if not instances:
+            self._instance_combo.addItem("Default Minecraft folder", "")
+            self._mc_dir = Path(config.get("minecraft_dir", str(APP_DIR / "minecraft")))
+        else:
+            for instance in instances:
+                self._instance_combo.addItem(instance.get("name", "Instance"), instance.get("id", ""))
+            index = max(0, self._instance_combo.findData(active_id))
+            self._instance_combo.setCurrentIndex(index)
+            self._mc_dir = Path(instances[index].get("directory", self._mc_dir))
+        self._instance_combo.blockSignals(False)
+
+    def _on_instance_changed(self, index: int) -> None:
+        instance_id = self._instance_combo.itemData(index) or ""
+        set_selected_instance(instance_id)
+        self._mc_dir = selected_instance_dir()
+        self._refresh_installed()
 
     def _build_iris_card(self) -> QFrame:
         card = QFrame()
@@ -650,6 +679,12 @@ class ShadersTab(QWidget):
         for path in paths:
             src = Path(path)
             if src.suffix.lower() == ".zip":
+                try:
+                    with zipfile.ZipFile(src) as zf:
+                        mr._validate_zip_limits(zf)
+                except Exception as exc:
+                    self._shader_status.setText(f"Rejected {src.name}: {exc}")
+                    continue
                 import shutil
                 shutil.copy2(src, dest_dir / src.name)
         self._refresh_installed()

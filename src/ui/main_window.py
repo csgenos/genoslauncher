@@ -25,6 +25,7 @@ from .titlebar import TitleBar
 from .components.sidebar import Sidebar
 from .tabs.home_tab import HomeTab
 from .tabs.instances_tab import InstancesTab
+from .tabs.mods_tab import ModsTab
 from .tabs.modpacks_tab import ModpacksTab
 from .tabs.shaders_tab import ShadersTab
 from .tabs.settings_tab import SettingsTab
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         # Instantiate all tabs
         self._home_tab      = HomeTab()
         self._instances_tab = InstancesTab()
+        self._mods_tab      = ModsTab()
         self._modpacks_tab  = ModpacksTab()
         self._shaders_tab   = ShadersTab()
         self._accounts_tab  = AccountsTab()
@@ -136,6 +138,7 @@ class MainWindow(QMainWindow):
         self._tabs: dict[str, QWidget] = {
             "home":      self._home_tab,
             "instances": self._instances_tab,
+            "mods":      self._mods_tab,
             "modpacks":  self._modpacks_tab,
             "shaders":   self._shaders_tab,
             "accounts":  self._accounts_tab,
@@ -215,6 +218,10 @@ class MainWindow(QMainWindow):
 
         widget.setVisible(True)
         widget.setGraphicsEffect(None)
+        if key == "mods":
+            self._mods_tab.refresh_instances()
+        elif key == "shaders":
+            self._shaders_tab._reload_instances()
         widget.update()
 
     # ------------------------------------------------------------------

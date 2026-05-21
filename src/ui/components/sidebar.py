@@ -195,6 +195,7 @@ class Sidebar(QWidget):
     NAV_ITEMS: list[tuple[str, str, str]] = [
         ("home",      "⌂", "Home"),
         ("instances", "⊞", "Instances"),
+        ("mods",      "◆", "Mods"),
         ("modpacks",  "⬡", "Modpacks"),
         ("shaders",   "◈", "Shaders"),
         ("accounts",  "◉", "Accounts"),
