@@ -10,17 +10,13 @@ Features:
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer, QSize
-from PySide6.QtGui import QColor, QFont, QPixmap, QPainter, QImage
+from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,7 +29,12 @@ from PySide6.QtWidgets import (
 
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
+from ...core.instances import create_modpack_instance, safe_instance_name
 from ...core import modrinth as mr
+
+
+def _safe_instance_name(title: str, project_id: str) -> str:
+    return f"{safe_instance_name(title)}-{project_id[:8]}"
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ class InstallWorker(QObject):
         file_url = primary["url"]
         filename = primary["filename"]
         mrpack_path = self.dest_dir / filename
+        hashes = primary.get("hashes", {})
 
         # 2. Download .mrpack
         total_size = primary.get("size", 0)
@@ -100,16 +102,25 @@ class InstallWorker(QObject):
         def on_dl(done: int, total: int) -> None:
             self.progress.emit(done, max(total, 1), f"Downloading {filename}...")
 
-        mr.download_file(file_url, mrpack_path, on_progress=on_dl)
+        mr.download_file(
+            file_url,
+            mrpack_path,
+            on_progress=on_dl,
+            expected_sha1=hashes.get("sha1", ""),
+            expected_sha512=hashes.get("sha512", ""),
+        )
 
         # 3. Parse
         self.progress.emit(0, 1, "Parsing modpack...")
         index = mr.parse_mrpack(mrpack_path)
 
         mc_version = index.get("dependencies", {}).get("minecraft", "")
-        instance_name = self.project["title"]
+        instance_name = _safe_instance_name(self.project["title"], self.project.get("id", ""))
         instance_dir = APP_DIR / "instances" / instance_name
         mods_dir = instance_dir / "mods"
+
+        self.progress.emit(0, 1, "Installing Minecraft and loader...")
+        self._install_loader(index, mc_version, instance_dir)
 
         # 4. Download mods
         mod_files = index.get("files", [])
@@ -125,16 +136,29 @@ class InstallWorker(QObject):
         mr.extract_mrpack_overrides(mrpack_path, instance_dir)
 
         # 6. Register instance in config
-        instances: list[dict] = config.get("instances", [])
-        instances = [i for i in instances if i.get("name") != instance_name]
-        instances.append({
-            "name": instance_name,
-            "mc_version": mc_version,
-            "directory": str(instance_dir),
-            "type": "modpack",
-            "source": self.project.get("id", ""),
-        })
-        config.set("instances", instances)
+        create_modpack_instance(self.project, mc_version, instance_dir)
+
+    def _install_loader(self, index: dict, mc_version: str, instance_dir: Path) -> None:
+        if not mc_version:
+            raise RuntimeError("Modpack does not declare a Minecraft version.")
+        import minecraft_launcher_lib as mll
+
+        instance_dir.mkdir(parents=True, exist_ok=True)
+        deps = index.get("dependencies", {})
+        mll.install.install_minecraft_version(mc_version, str(instance_dir))
+        if deps.get("fabric-loader"):
+            try:
+                mll.fabric.install_fabric(
+                    mc_version,
+                    str(instance_dir),
+                    loader_version=deps.get("fabric-loader"),
+                )
+            except TypeError:
+                mll.fabric.install_fabric(mc_version, str(instance_dir))
+        elif deps.get("forge"):
+            raise RuntimeError("Forge modpack installation is not implemented safely yet.")
+        elif deps.get("quilt-loader"):
+            raise RuntimeError("Quilt modpack installation is not implemented safely yet.")
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +166,7 @@ class InstallWorker(QObject):
 # ---------------------------------------------------------------------------
 
 class IconLoader(QObject):
-    loaded = Signal(str, QPixmap)   # project_id, pixmap
+    loaded = Signal(str, QImage)   # project_id, image
 
     def __init__(self, project_id: str, icon_url: str, cache_dir: Path) -> None:
         super().__init__()
@@ -153,10 +177,8 @@ class IconLoader(QObject):
     def run(self) -> None:
         path = mr.download_icon(self.icon_url, self.cache_dir)
         if path:
-            px = QPixmap(str(path)).scaled(
-                56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self.loaded.emit(self.project_id, px)
+            img = QImage(str(path)).scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.loaded.emit(self.project_id, img)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +201,6 @@ class ModpackCard(QFrame):
     def __init__(self, project: dict, parent=None) -> None:
         super().__init__(parent)
         self._project = project
-        self._install_thread: Optional[QThread] = None
 
         self.setObjectName("ModpackCard")
         self.setStyleSheet(f"""
@@ -318,6 +339,7 @@ class ModpacksTab(QWidget):
         self._icon_cache = APP_DIR / "cache" / "icons"
         self._icon_cache.mkdir(parents=True, exist_ok=True)
         self._search_threads: list[QThread] = []
+        self._workers: list[QObject] = []
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
@@ -437,7 +459,11 @@ class ModpacksTab(QWidget):
         worker.results_ready.connect(thread.quit)
         worker.error.connect(thread.quit)
         thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
         thread.start()
 
     def _on_results(self, hits: list[dict], total: int) -> None:
@@ -479,11 +505,17 @@ class ModpacksTab(QWidget):
         thread.started.connect(loader.run)
         loader.loaded.connect(self._on_icon_loaded)
         loader.loaded.connect(lambda: thread.quit())
+        thread.finished.connect(loader.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._search_threads.append(thread)
+        self._workers.append(loader)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(loader) if loader in self._workers else None)
         thread.start()
 
-    def _on_icon_loaded(self, project_id: str, pixmap: QPixmap) -> None:
+    def _on_icon_loaded(self, project_id: str, image: QImage) -> None:
         if project_id in self._current_cards:
-            self._current_cards[project_id].set_icon(pixmap)
+            self._current_cards[project_id].set_icon(QPixmap.fromImage(image))
 
     # ------------------------------------------------------------------
     # Install
@@ -508,6 +540,12 @@ class ModpacksTab(QWidget):
         fetcher.err.connect(lambda e: self._status_label.setText(f"Error: {e}"))
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
+        thread.finished.connect(fetcher.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._search_threads.append(thread)
+        self._workers.append(fetcher)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(fetcher) if fetcher in self._workers else None)
         thread.start()
 
         card = self._current_cards.get(project["id"])
@@ -544,4 +582,10 @@ class ModpacksTab(QWidget):
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finish)
         worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
         thread.start()

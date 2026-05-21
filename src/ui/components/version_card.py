@@ -29,9 +29,11 @@ class VersionCard(QWidget):
 
     Signals:
         launch_requested(str)  — emitted with version_id on button click
+        install_requested(str) — emitted with version_id when not installed
     """
 
     launch_requested = Signal(str)
+    install_requested = Signal(str)
 
     _TYPE_META: dict[str, tuple[str, str, str]] = {
         # type: (label, text-color, bg-color)
@@ -162,7 +164,10 @@ class VersionCard(QWidget):
         outer.addLayout(right)
 
     def _on_action(self) -> None:
-        self.launch_requested.emit(self._version_id)
+        if self._is_installed:
+            self.launch_requested.emit(self._version_id)
+        else:
+            self.install_requested.emit(self._version_id)
 
     # --- Events ------------------------------------------------------------
 

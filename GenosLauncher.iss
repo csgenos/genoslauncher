@@ -27,7 +27,9 @@ AllowNoIcons=yes
 ; Output
 OutputDir=installer_output
 OutputBaseFilename=GenosLauncher-{#AppVersion}-Setup
+#ifexist "assets\icon.ico"
 SetupIconFile=assets\icon.ico
+#endif
 UninstallDisplayIcon={app}\{#AppExeName}
 
 ; Compression
@@ -46,7 +48,9 @@ MinVersion=10.0.17763
 WizardStyle=modern
 WizardSizePercent=120
 DisableWelcomePage=no
+#ifexist "LICENSE"
 LicenseFile=LICENSE
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

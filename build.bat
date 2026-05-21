@@ -25,7 +25,8 @@ if exist "venv\Scripts\activate.bat" (
     call venv\Scripts\activate.bat
     echo  [OK] Virtual environment activated
 ) else (
-    echo  [WARN] No venv found, using global Python
+    echo  ERROR: No venv found. Create one with: python -m venv venv
+    exit /b 1
 )
 
 REM ── 1. Install / upgrade dependencies ──────────────────────────────────
@@ -76,6 +77,19 @@ if %ISCC%=="" (
 REM ── Optional: Code signing (S-Y-012) ────────────────────────────────────
 REM  Signing is strongly recommended for distribution. Unsigned executables
 REM  will trigger Windows SmartScreen warnings on first run.
+if /I "%GENOS_RELEASE%"=="1" (
+    where signtool >nul 2>nul
+    if errorlevel 1 (
+        echo  ERROR: GENOS_RELEASE=1 requires signtool on PATH for code signing.
+        exit /b 1
+    )
+    signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a "dist\%APP_NAME%\%APP_NAME%.exe"
+    if errorlevel 1 exit /b 1
+    if exist "installer_output\%APP_NAME%-%VERSION%-Setup.exe" (
+        signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a "installer_output\%APP_NAME%-%VERSION%-Setup.exe"
+        if errorlevel 1 exit /b 1
+    )
+)
 REM
 REM  To sign: obtain an EV or OV code-signing certificate (e.g. DigiCert,
 REM  Sectigo) and run after build:

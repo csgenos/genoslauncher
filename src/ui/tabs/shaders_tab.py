@@ -12,24 +12,19 @@ Features:
 
 from __future__ import annotations
 
-import os
-import subprocess
-import threading
+import zipfile
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer, QUrl
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -62,6 +57,36 @@ class ShaderSearchWorker(QObject):
             self.results_ready.emit(hits, total)
         except mr.ModrinthError as exc:
             self.error.emit(str(exc))
+
+
+class ShaderInstallWorker(QObject):
+    finished = Signal(bool, str)
+
+    def __init__(self, project_id: str, dest_dir: Path) -> None:
+        super().__init__()
+        self.project_id = project_id
+        self.dest_dir = dest_dir
+
+    def run(self) -> None:
+        try:
+            versions = mr.get_project_versions(self.project_id)
+            if not versions:
+                raise mr.ModrinthError("No versions available for this shader.")
+            files = versions[0].get("files", [])
+            primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+            if not primary:
+                raise mr.ModrinthError("No downloadable shader file found.")
+            hashes = primary.get("hashes", {})
+            dest = self.dest_dir / primary["filename"]
+            mr.download_file(
+                primary["url"],
+                dest,
+                expected_sha1=hashes.get("sha1", ""),
+                expected_sha512=hashes.get("sha512", ""),
+            )
+            self.finished.emit(True, f"Installed {primary['filename']}")
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +319,7 @@ class ShadersTab(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._execute_shader_search)
         self._search_threads: list[QThread] = []
+        self._workers: list[QObject] = []
         self.setAcceptDrops(True)
         self._build_ui()
         QTimer.singleShot(300, self._refresh_installed)
@@ -533,24 +559,31 @@ class ShadersTab(QWidget):
         for path in paths:
             src = Path(path)
             if src.suffix.lower() == ".zip":
+                try:
+                    with zipfile.ZipFile(src) as zf:
+                        mr._validate_zip_limits(zf)
+                except Exception as exc:
+                    self._shader_status.setText(f"Rejected {src.name}: {exc}")
+                    continue
                 import shutil
-                shutil.copy2(src, dest_dir / src.name)
+                dest = dest_dir / src.name
+                if dest.exists():
+                    dest = dest_dir / f"{src.stem}-{int(src.stat().st_mtime)}{src.suffix}"
+                shutil.copy2(src, dest)
         self._refresh_installed()
 
     # ------------------------------------------------------------------
-    # Iris + Sodium install (placeholder)
+    # Iris + Sodium install status
     # ------------------------------------------------------------------
 
     def _install_iris(self) -> None:
-        self._iris_btn.setText("Installing…")
+        self._iris_btn.setText("Unavailable")
         self._iris_btn.setEnabled(False)
-
-        def do_install():
-            import time
-            time.sleep(1.5)  # placeholder — real impl downloads from Modrinth
-            self._iris_btn.setText("Installed ✓")
-
-        threading.Thread(target=do_install, daemon=True).start()
+        self._shader_status.setText("Iris + Sodium installer is not available yet.")
+        QTimer.singleShot(
+            2500,
+            lambda: (self._iris_btn.setText("Install for 1.21.4"), self._iris_btn.setEnabled(True)),
+        )
 
     # ------------------------------------------------------------------
     # Modrinth shader search
@@ -578,6 +611,10 @@ class ShadersTab(QWidget):
         worker.error.connect(thread.quit)
         self._search_threads.append(thread)
         thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _on_shader_results(self, hits: list[dict], total: int) -> None:
@@ -588,9 +625,21 @@ class ShadersTab(QWidget):
             self._shader_results_layout.addWidget(card)
 
     def _on_shader_install(self, project: dict) -> None:
-        # Placeholder: show status
-        self._shader_status.setText(f"Downloading '{project['title']}'…")
-        # Full impl: fetch latest version, download file to shaderpacks dir
+        self._shader_status.setText(f"Downloading '{project['title']}'...")
+        thread = QThread(self)
+        worker = ShaderInstallWorker(project["id"], self._shaderpacks_dir())
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda _ok, msg: self._shader_status.setText(msg))
+        worker.finished.connect(lambda _ok, _msg: self._refresh_installed())
+        worker.finished.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
     # ------------------------------------------------------------------
     # Open folder

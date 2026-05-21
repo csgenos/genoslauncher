@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import threading
+import urllib.parse
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -31,9 +33,14 @@ USER_AGENT = "GenosLauncher/0.2.0 (github.com/csgenos/genoslauncher)"
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT})
+log = logging.getLogger(__name__)
 
 _cache: dict[str, tuple[str, Any]] = {}
 _cache_lock = threading.Lock()
+_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_MAX_ZIP_FILES = 5000
+_MAX_ZIP_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+_MAX_ZIP_COMPRESSION_RATIO = 100
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +180,7 @@ def download_file(
     chunk_size: int = 65536,
     expected_sha1: str = "",
     expected_sha512: str = "",
+    allow_unverified: bool = False,
 ) -> None:
     """
     Stream-download url → dest_path.
@@ -182,6 +190,12 @@ def download_file(
 
     Raises ModrinthError on network failure or hash mismatch.
     """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https":
+        raise ModrinthError(f"Refusing non-HTTPS download URL: {url}")
+    if not allow_unverified and not (expected_sha1 or expected_sha512):
+        raise ModrinthError(f"Refusing unverified download with no hash: {url}")
+
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".download_tmp")
 
@@ -192,6 +206,8 @@ def download_file(
         with _session.get(url, stream=True, timeout=30) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("Content-Length", 0))
+            if total > _MAX_DOWNLOAD_BYTES:
+                raise ModrinthError(f"Download too large: {total} bytes")
             done  = 0
             with open(tmp_path, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -199,6 +215,8 @@ def download_file(
                         continue
                     fh.write(chunk)
                     done += len(chunk)
+                    if done > _MAX_DOWNLOAD_BYTES:
+                        raise ModrinthError("Download exceeded maximum allowed size")
                     if sha1_h:   sha1_h.update(chunk)
                     if sha512_h: sha512_h.update(chunk)
                     if on_progress:
@@ -223,6 +241,7 @@ def download_file(
         tmp_path.unlink(missing_ok=True)
         raise ModrinthError(f"Download failed: {exc}") from exc
     except ModrinthError:
+        tmp_path.unlink(missing_ok=True)
         raise
     except Exception as exc:
         tmp_path.unlink(missing_ok=True)
@@ -238,7 +257,7 @@ def download_icon(icon_url: str, cache_dir: Path) -> Optional[Path]:
     if dest.exists():
         return dest
     try:
-        download_file(icon_url, dest)
+        download_file(icon_url, dest, allow_unverified=True)
         return dest
     except ModrinthError:
         return None
@@ -256,9 +275,23 @@ def parse_mrpack(mrpack_path: Path) -> dict:
     if not zipfile.is_zipfile(mrpack_path):
         raise ModrinthError(f"Not a valid .mrpack file: {mrpack_path}")
     with zipfile.ZipFile(mrpack_path) as zf:
+        _validate_zip_limits(zf)
         if MRPACK_MAGIC not in zf.namelist():
             raise ModrinthError("Missing modrinth.index.json inside .mrpack")
         return json.loads(zf.read(MRPACK_MAGIC))
+
+
+def _validate_zip_limits(zf: zipfile.ZipFile) -> None:
+    infos = zf.infolist()
+    if len(infos) > _MAX_ZIP_FILES:
+        raise ModrinthError("Archive contains too many files")
+    total = 0
+    for info in infos:
+        total += info.file_size
+        if total > _MAX_ZIP_UNCOMPRESSED_BYTES:
+            raise ModrinthError("Archive uncompressed size is too large")
+        if info.compress_size and info.file_size / max(info.compress_size, 1) > _MAX_ZIP_COMPRESSION_RATIO:
+            raise ModrinthError(f"Suspicious compression ratio for {info.filename}")
 
 
 def _safe_path(base_dir: Path, relative: str) -> Optional[Path]:
@@ -268,10 +301,10 @@ def _safe_path(base_dir: Path, relative: str) -> Optional[Path]:
     """
     try:
         target = (base_dir / relative).resolve()
-        if str(target).startswith(str(base_dir.resolve())):
-            return target
-    except Exception:
-        pass
+        target.relative_to(base_dir.resolve())
+        return target
+    except (OSError, ValueError) as exc:
+        log.warning("Rejected unsafe archive path %r: %s", relative, exc.__class__.__name__)
     return None
 
 
@@ -279,13 +312,14 @@ def extract_mrpack_overrides(mrpack_path: Path, dest_dir: Path) -> None:
     """Extract the overrides/ folder from a .mrpack into dest_dir."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(mrpack_path) as zf:
+        _validate_zip_limits(zf)
         for member in zf.namelist():
             if not member.startswith("overrides/") or member.endswith("/"):
                 continue
             relative = member[len("overrides/"):]
             target = _safe_path(dest_dir, relative)
             if target is None:
-                print(f"[Modrinth] Skipping unsafe path in overrides: {member}")
+                log.warning("Skipping unsafe path in overrides: %s", member)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, "wb") as dst:
@@ -317,7 +351,7 @@ def install_mrpack_mods(
         filename = Path(*parts).name
         dest = _safe_path(mods_dir, filename)
         if dest is None:
-            print(f"[Modrinth] Skipping unsafe mod path: {raw_path}")
+            log.warning("Skipping unsafe mod path: %s", raw_path)
             continue
 
         if on_progress:
@@ -341,4 +375,4 @@ def install_mrpack_mods(
                 continue
 
         if not downloaded:
-            print(f"[Modrinth] Warning: could not download {filename}")
+            log.warning("Could not download %s", filename)

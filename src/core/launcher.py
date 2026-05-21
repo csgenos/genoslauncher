@@ -11,6 +11,8 @@ Fixes applied:
 from __future__ import annotations
 
 import os
+import json
+import logging
 import subprocess
 import threading
 import uuid as _uuid
@@ -20,14 +22,19 @@ from typing import Optional
 from PySide6.QtCore import QObject, Signal
 
 from .config import config
+from .config import APP_DIR, LOGS_DIR
 from .auth import auth_manager
+from .instances import create_vanilla_instance, find_instance, find_instance_for_version, list_instances
+from .java_manager import find_best_java, get_preset_args, required_java_for_mc
+
+log = logging.getLogger(__name__)
 
 try:
     import minecraft_launcher_lib as mll
     MLL_AVAILABLE = True
 except ImportError:
     MLL_AVAILABLE = False
-    print("[Launcher] minecraft-launcher-lib not installed — launch disabled.")
+    log.warning("minecraft-launcher-lib is not installed; launch features are disabled.")
 
 
 # ---------------------------------------------------------------------------
@@ -39,12 +46,18 @@ def get_available_versions(
     include_old: bool = False,
 ) -> list[dict]:
     if not MLL_AVAILABLE:
-        return _demo_versions()
+        return _load_cached_versions(include_snapshots, include_old)
     try:
         all_versions = mll.utils.get_version_list()
-    except Exception:
-        return _demo_versions()
+        _save_versions_cache(all_versions)
+    except Exception as exc:
+        log.warning("Version list fetch failed: %s", exc)
+        return _load_cached_versions(include_snapshots, include_old)
 
+    return _filter_versions(all_versions, include_snapshots, include_old)
+
+
+def _filter_versions(all_versions: list[dict], include_snapshots: bool, include_old: bool) -> list[dict]:
     keep = []
     for v in all_versions:
         vtype = v.get("type", "")
@@ -57,6 +70,34 @@ def get_available_versions(
     return keep
 
 
+def _versions_cache_path() -> Path:
+    return APP_DIR / "cache" / "versions.json"
+
+
+def _save_versions_cache(versions: list[dict]) -> None:
+    try:
+        path = _versions_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(versions), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("Version cache save failed: %s", exc.__class__.__name__)
+
+
+def _load_cached_versions(include_snapshots: bool, include_old: bool) -> list[dict]:
+    try:
+        path = _versions_cache_path()
+        if path.exists():
+            versions = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(versions, list):
+                return _filter_versions(versions, include_snapshots, include_old)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Version cache read failed: %s", exc.__class__.__name__)
+
+    return _demo_versions()
+
+
 def _demo_versions() -> list[dict]:
     releases = [
         "1.21.4", "1.21.3", "1.21.1", "1.20.6", "1.20.4",
@@ -67,13 +108,15 @@ def _demo_versions() -> list[dict]:
 
 
 def get_installed_versions() -> list[str]:
+    installed = {i.get("mc_version", "") for i in list_instances()}
     mc_dir = config.get("minecraft_dir")
     if not MLL_AVAILABLE or not mc_dir:
-        return []
+        return sorted(v for v in installed if v)
     try:
-        return [v["id"] for v in mll.utils.get_installed_versions(mc_dir)]
-    except Exception:
-        return []
+        installed.update(v["id"] for v in mll.utils.get_installed_versions(mc_dir))
+    except Exception as exc:
+        log.warning("Installed version scan failed: %s", exc)
+    return sorted(v for v in installed if v)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +188,8 @@ class InstallWorker(QObject):
         if not MLL_AVAILABLE:
             self.finished.emit(False, "minecraft-launcher-lib is not installed.")
             return
-        mc_dir = config.get("minecraft_dir")
+        instance = create_vanilla_instance(self.version_id)
+        mc_dir = instance["directory"]
         Path(mc_dir).mkdir(parents=True, exist_ok=True)
         callbacks = {
             "setStatus":   lambda text: self.progress_changed.emit(0, 100, text),
@@ -160,6 +204,7 @@ class InstallWorker(QObject):
             )
             self.finished.emit(True, f"Version {self.version_id} installed successfully.")
         except Exception as exc:
+            log.exception("Minecraft version install failed for %s", self.version_id)
             self.finished.emit(False, str(exc))
 
 
@@ -180,10 +225,12 @@ class LaunchWorker(QObject):
         version_id: str,
         username:   str = "Player",
         parent:     Optional[QObject] = None,
+        instance_id: str = "",
     ) -> None:
         super().__init__(parent)
         self.version_id = version_id
         self.username   = username
+        self.instance_id = instance_id
         self._thread:  Optional[threading.Thread]  = None
         self._process: Optional[subprocess.Popen]  = None
 
@@ -200,11 +247,31 @@ class LaunchWorker(QObject):
             self.error.emit("minecraft-launcher-lib is not installed.")
             return
 
-        mc_dir = config.get("minecraft_dir")
-        java   = config.get("java_path") or "java"
+        instance = find_instance(self.instance_id) if self.instance_id else find_instance_for_version(self.version_id)
+        mc_dir = instance.get("directory") if instance else config.get("minecraft_dir")
+        if not Path(mc_dir).exists():
+            self.error.emit(f"Version {self.version_id} is not installed. Install it from Instances first.")
+            return
+        try:
+            installed = {v.get("id") for v in mll.utils.get_installed_versions(mc_dir)}
+        except Exception as exc:
+            log.warning("Installed-version scan failed for %s: %s", mc_dir, exc)
+            self.error.emit(f"Could not verify installed versions in {mc_dir}.")
+            return
+        if self.version_id not in installed:
+            self.error.emit(
+                f"Version {self.version_id} is not installed in this instance. "
+                "Install or repair the instance first."
+            )
+            return
+        java = config.get("java_path") or find_best_java(required_java_for_mc(self.version_id))
+        if not java:
+            self.error.emit("No compatible Java installation was found. Set Java in Settings.")
+            return
         ram    = config.get("ram_mb", 4096)
         width  = config.get("resolution_width", 1280)
         height = config.get("resolution_height", 720)
+        fullscreen = config.get("fullscreen", False)
 
         # Real credentials when logged in with a matching Microsoft account (B-Z-004)
         if auth_manager.is_logged_in and auth_manager.username == self.username:
@@ -215,10 +282,9 @@ class LaunchWorker(QObject):
             uid   = _offline_uuid(self.username)
 
         # JVM args with deduplication (B-Y-007)
-        from .java_manager import get_preset_args
         preset_key  = config.get("jvm_preset", "performance")
         preset_args = get_preset_args(preset_key)
-        custom_args = config.get("jvm_args", "")
+        custom_args = (instance or {}).get("jvm_args", "") or config.get("jvm_args", "")
         jvm_args    = _build_jvm_args(ram, preset_args, custom_args)
 
         options = {
@@ -231,9 +297,11 @@ class LaunchWorker(QObject):
             "customResolution": True,
             "resolutionWidth":  str(width),
             "resolutionHeight": str(height),
+            "fullscreen":       fullscreen,
         }
 
         try:
+            log_fh = None
             self.status_changed.emit("Building launch command...")
             command = mll.command.get_minecraft_command(
                 version=self.version_id,
@@ -241,9 +309,11 @@ class LaunchWorker(QObject):
                 options=options,
             )
             self.status_changed.emit("Starting Minecraft...")
+            log_path = LOGS_DIR / f"minecraft-{self.version_id}.log"
+            log_fh = open(log_path, "a", encoding="utf-8", errors="replace")
             self._process = subprocess.Popen(
                 command,
-                stdout=subprocess.PIPE,
+                stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
@@ -258,3 +328,6 @@ class LaunchWorker(QObject):
             )
         except Exception as exc:
             self.error.emit(str(exc))
+        finally:
+            if log_fh is not None:
+                log_fh.close()

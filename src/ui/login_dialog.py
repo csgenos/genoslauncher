@@ -235,6 +235,7 @@ class LoginDialog(QDialog):
 
     def _on_cancel(self) -> None:
         self._dot_timer.stop()
+        auth_manager.cancel_login()
         self.reject()
 
     def _start_login(self) -> None:

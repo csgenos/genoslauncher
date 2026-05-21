@@ -29,7 +29,7 @@ class GlassCard(QWidget):
         border: str = C["border"],
         radius: int = 14,
         hover_glow: bool = False,
-        glow_color: str = C["accent_cyan"],
+        glow_color: str = C["accent_blue"],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -138,7 +138,7 @@ class GlassCard(QWidget):
         )
         # Accent bleed on hover
         if t > 0.01:
-            gc = self._glow_color if self._hover_glow else QColor(C["accent_cyan"])
+            gc = self._glow_color if self._hover_glow else QColor(C["accent_blue"])
             final_r = int(border_color.red() + (gc.red() - border_color.red()) * t * 0.5)
             final_g = int(border_color.green() + (gc.green() - border_color.green()) * t * 0.5)
             final_b = int(border_color.blue() + (gc.blue() - border_color.blue()) * t * 0.5)
