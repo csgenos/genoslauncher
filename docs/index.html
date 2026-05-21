@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GenosLauncher — Minecraft Launcher</title>
+  <meta name="description" content="A clean, fast Minecraft launcher with Microsoft account support, modpack management, and shader installation. Free download for Windows." />
+  <meta property="og:title" content="GenosLauncher" />
+  <meta property="og:description" content="A clean, fast Minecraft launcher. Free download for Windows." />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0c10;
+      --surface:   #111318;
+      --border:    #1e2128;
+      --accent:    #4f8ef7;
+      --accent-h:  #3a7be0;
+      --text:      #f0f2f5;
+      --muted:     #8b939f;
+      --green:     #22c55e;
+      --radius:    14px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 40px;
+      height: 60px;
+      background: rgba(10, 12, 16, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    .nav-icon {
+      width: 30px; height: 30px;
+      background: #111827;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.5px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color .15s;
+    }
+
+    .nav-links a:hover { color: var(--text); }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 120px 24px 80px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -200px; left: 50%;
+      transform: translateX(-50%);
+      width: 900px; height: 600px;
+      background: radial-gradient(ellipse at center, rgba(79,142,247,.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(79,142,247,.1);
+      border: 1px solid rgba(79,142,247,.25);
+      border-radius: 999px;
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: .03em;
+      margin-bottom: 28px;
+    }
+
+    .hero-badge span { color: var(--green); }
+
+    .hero-icon {
+      width: 80px; height: 80px;
+      background: linear-gradient(145deg, #1a1f2e, #111827);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 40px;
+      font-weight: 800;
+      color: #fff;
+      margin: 0 auto 28px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.04);
+    }
+
+    h1 {
+      font-size: clamp(42px, 6vw, 72px);
+      font-weight: 800;
+      letter-spacing: -2px;
+      line-height: 1.05;
+      margin-bottom: 20px;
+      background: linear-gradient(160deg, #fff 40%, #8b939f);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-sub {
+      font-size: clamp(16px, 2vw, 19px);
+      color: var(--muted);
+      max-width: 520px;
+      margin: 0 auto 44px;
+      font-weight: 400;
+    }
+
+    .btn-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-family: inherit;
+      font-size: 16px;
+      font-weight: 700;
+      padding: 14px 32px;
+      border-radius: var(--radius);
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: background .15s, transform .1s, box-shadow .15s;
+      box-shadow: 0 4px 20px rgba(79,142,247,.35);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-h);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 28px rgba(79,142,247,.45);
+    }
+
+    .btn-primary:active { transform: translateY(0); }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: transparent;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 500;
+      padding: 14px 24px;
+      border-radius: var(--radius);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      transition: color .15s, border-color .15s;
+    }
+
+    .btn-secondary:hover { color: var(--text); border-color: #3a4050; }
+
+    .dl-note {
+      margin-top: 16px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* ── FEATURES ── */
+    .features {
+      padding: 100px 24px;
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      text-align: center;
+      font-size: clamp(28px, 4vw, 40px);
+      font-weight: 800;
+      letter-spacing: -1px;
+      margin-bottom: 56px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      transition: border-color .2s;
+    }
+
+    .card:hover { border-color: #2e3340; }
+
+    .card-icon {
+      width: 44px; height: 44px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      margin-bottom: 16px;
+    }
+
+    .card h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      letter-spacing: -.2px;
+    }
+
+    .card p {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    /* ── STEPS ── */
+    .steps {
+      padding: 80px 24px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .steps-inner {
+      max-width: 680px;
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    .steps-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin-top: 48px;
+      text-align: left;
+    }
+
+    .step {
+      display: flex;
+      gap: 20px;
+      padding: 24px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .step:last-child { border-bottom: none; }
+
+    .step-num {
+      width: 36px; height: 36px;
+      min-width: 36px;
+      border-radius: 50%;
+      background: rgba(79,142,247,.12);
+      border: 1px solid rgba(79,142,247,.25);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+
+    .step-body h4 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .step-body p {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    /* ── CTA ── */
+    .cta {
+      padding: 120px 24px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .cta::before {
+      content: '';
+      position: absolute;
+      bottom: -100px; left: 50%;
+      transform: translateX(-50%);
+      width: 700px; height: 400px;
+      background: radial-gradient(ellipse at center, rgba(79,142,247,.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .cta h2 {
+      font-size: clamp(28px, 4vw, 44px);
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      margin-bottom: 16px;
+    }
+
+    .cta p {
+      color: var(--muted);
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    footer p { font-size: 13px; color: var(--muted); }
+
+    .footer-links {
+      display: flex;
+      gap: 20px;
+      list-style: none;
+    }
+
+    .footer-links a {
+      font-size: 13px;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color .15s;
+    }
+
+    .footer-links a:hover { color: var(--text); }
+
+    /* ── ICONS (inline SVG as CSS bg or emoji fallback) ── */
+    .ico-win::before { content: '⊞'; margin-right: 6px; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 640px) {
+      nav { padding: 0 20px; }
+      .nav-links { display: none; }
+      footer { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── NAV ─────────────────────────────────────────────────────────────── -->
+<nav>
+  <a class="nav-logo" href="#">
+    <div class="nav-icon">G</div>
+    GenosLauncher
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#how-it-works">Install</a></li>
+    <li><a href="https://github.com/csgenos/genoslauncher" target="_blank" rel="noopener">GitHub</a></li>
+  </ul>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="hero-badge"><span>●</span> Free &amp; Open Source</div>
+  <div class="hero-icon">G</div>
+  <h1>GenosLauncher</h1>
+  <p class="hero-sub">
+    A fast, clean Minecraft launcher built for players who want more —
+    modpack support, shader management, and seamless Microsoft sign-in.
+  </p>
+  <div class="btn-group">
+    <a class="btn-primary"
+       href="https://github.com/csgenos/genoslauncher/releases/latest/download/GenosLauncher-Setup.exe">
+      &#11015; &nbsp;Download for Windows
+    </a>
+    <a class="btn-secondary"
+       href="https://github.com/csgenos/genoslauncher"
+       target="_blank" rel="noopener">
+      View on GitHub
+    </a>
+  </div>
+  <p class="dl-note">Windows 10 / 11 &nbsp;·&nbsp; No admin required &nbsp;·&nbsp; Free forever</p>
+</section>
+
+<!-- ── FEATURES ─────────────────────────────────────────────────────────── -->
+<section class="features" id="features">
+  <p class="section-label">Features</p>
+  <h2 class="section-title">Everything you need, nothing you don't</h2>
+  <div class="grid">
+
+    <div class="card">
+      <div class="card-icon" style="background:rgba(79,142,247,.1);">🔐</div>
+      <h3>Microsoft Sign-In</h3>
+      <p>Log in with your real Microsoft account — no Azure registration, no browser redirects, no setup. Just enter a code and you're in.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-icon" style="background:rgba(34,197,94,.1);">📦</div>
+      <h3>Modpack Support</h3>
+      <p>Import any <code style="font-size:12px;background:#1a1f2e;padding:1px 5px;border-radius:4px;">.mrpack</code> file. GenosLauncher automatically installs the right Fabric or Quilt version and all mods — no manual steps.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-icon" style="background:rgba(168,85,247,.1);">✨</div>
+      <h3>Iris &amp; Sodium</h3>
+      <p>Install Iris Shaders and Sodium with a single click, verified against official Modrinth hashes. Then drop in any shader pack you want.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-icon" style="background:rgba(251,146,60,.1);">⚡</div>
+      <h3>Smart JVM Tuning</h3>
+      <p>Choose from Performance, Balanced, or Custom JVM presets. GenosLauncher detects your system RAM and recommends the right allocation.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-icon" style="background:rgba(20,184,166,.1);">🗂️</div>
+      <h3>Instance Management</h3>
+      <p>Run multiple separate Minecraft instances — different versions, different mod sets — each with its own isolated directory and settings.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-icon" style="background:rgba(244,63,94,.1);">🎨</div>
+      <h3>Clean Design</h3>
+      <p>A polished dark UI with a first-run setup wizard. Feels like Lunar Client — not a hobby project thrown together on a weekend.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ──────────────────────────────────────────────────────── -->
+<section class="steps" id="how-it-works">
+  <div class="steps-inner">
+    <p class="section-label">Getting started</p>
+    <h2 class="section-title">Up and running in three steps</h2>
+    <div class="steps-list">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>Download the installer</h4>
+          <p>Click the button above to download the Windows installer. No admin rights required — it installs to your user folder, just like Discord or Cursor.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>Run the setup wizard</h4>
+          <p>On first launch a quick wizard walks you through signing in with Microsoft (or adding an offline account) and setting your RAM. Takes under a minute.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4>Play</h4>
+          <p>Pick a version, hit Play. Java is detected automatically. Install modpacks and shaders from the built-in tabs whenever you want.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────────── -->
+<section class="cta">
+  <h2>Ready to play?</h2>
+  <p>Free download. No account needed to try it.</p>
+  <div class="btn-group">
+    <a class="btn-primary"
+       href="https://github.com/csgenos/genoslauncher/releases/latest/download/GenosLauncher-Setup.exe">
+      &#11015; &nbsp;Download for Windows
+    </a>
+  </div>
+  <p class="dl-note" style="margin-top:14px;">Windows 10 1809 or later &nbsp;·&nbsp; ~30 MB</p>
+</section>
+
+<!-- ── FOOTER ─────────────────────────────────────────────────────────────── -->
+<footer>
+  <p>© 2026 GenosLauncher Contributors. Not affiliated with Mojang or Microsoft.</p>
+  <ul class="footer-links">
+    <li><a href="https://github.com/csgenos/genoslauncher" target="_blank" rel="noopener">GitHub</a></li>
+    <li><a href="https://github.com/csgenos/genoslauncher/issues" target="_blank" rel="noopener">Report a bug</a></li>
+    <li><a href="https://github.com/csgenos/genoslauncher/releases" target="_blank" rel="noopener">All releases</a></li>
+  </ul>
+</footer>
+
+</body>
+</html>
