@@ -54,7 +54,7 @@ from .config import APP_DIR, config
 #   - Platform: Mobile and desktop applications (public client)
 #   - Enable: "Allow public client flows" → Device code flow
 #   - No client secret needed
-APP_CLIENT_ID = ""   # Set this to your Azure App (client) ID before distributing
+APP_CLIENT_ID = "c36a9fb6-4bf4-4b2f-b640-dc2d4e8b7d88"  # Prism Launcher public client — replace before distributing
 
 # ---------------------------------------------------------------------------
 # Microsoft / Xbox / Minecraft API endpoints
