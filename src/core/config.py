@@ -56,8 +56,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "show_old_versions": False,
     "jvm_args": "",
     "jvm_preset": "performance",
-    "azure_client_id": "",
-    "auth_redirect_port": 8090,
     "window_width": 1280,
     "window_height": 760,
 }
@@ -76,7 +74,6 @@ _SCHEMA: dict[str, type | tuple] = {
     "window_height":      int,
     "jvm_args":           str,
     "jvm_preset":         str,
-    "azure_client_id":    str,
     "java_path":          str,
     "last_account":       str,
     "offline_accounts":   list,

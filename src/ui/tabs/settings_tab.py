@@ -7,8 +7,6 @@ All settings auto-save to config.json via the config singleton.
 
 from __future__ import annotations
 
-import re
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
@@ -33,10 +31,6 @@ from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton, PrimaryButton
 from ...core.config import config
 from ...core.java_manager import JVM_PRESETS, find_java_installations
-
-_GUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +328,7 @@ class SettingsTab(QWidget):
         self._custom_jvm.setPlaceholderText("-XX:+UseStringDeduplication -Dfml.ignorePatchDiscrepancies=true …")
         self._custom_jvm.setText(config.get("jvm_args", ""))
         self._custom_jvm.setFixedHeight(40)
-        self._custom_jvm.editingFinished.connect(lambda: config.set("jvm_args", self._custom_jvm.text()))
+        self._custom_jvm.textChanged.connect(lambda t: config.set("jvm_args", t))
         cl.addWidget(self._custom_jvm)
 
         cl.addSpacing(28)
@@ -358,7 +352,7 @@ class SettingsTab(QWidget):
         self._java_input.setPlaceholderText("Auto-detect (leave blank)")
         self._java_input.setText(config.get("java_path", ""))
         self._java_input.setFixedHeight(38)
-        self._java_input.editingFinished.connect(lambda: config.set("java_path", self._java_input.text()))
+        self._java_input.textChanged.connect(lambda t: config.set("java_path", t))
         java_h.addWidget(self._java_input)
         browse_btn = OutlineButton("Browse")
         browse_btn.setFixedSize(80, 38)
@@ -463,53 +457,6 @@ class SettingsTab(QWidget):
         cl.addWidget(behav_card)
         cl.addSpacing(24)
 
-        # ── Microsoft Authentication ──────────────────────────────────────
-        cl.addWidget(SectionTitle("Microsoft Authentication"))
-        cl.addSpacing(6)
-        auth_sub = QLabel(
-            "Enter your Azure App (client) ID to enable Microsoft account sign-in. "
-            "See README for step-by-step Azure setup instructions."
-        )
-        auth_sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-bottom: 10px;")
-        auth_sub.setWordWrap(True)
-        cl.addWidget(auth_sub)
-        cl.addSpacing(6)
-
-        auth_card = self._section_card()
-        auth_layout = QVBoxLayout(auth_card)
-        auth_layout.setContentsMargins(20, 16, 20, 16)
-        auth_layout.setSpacing(10)
-
-        self._client_id_input = QLineEdit()
-        self._client_id_input.setPlaceholderText("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
-        self._client_id_input.setText(config.get("azure_client_id", ""))
-        self._client_id_input.setFixedHeight(38)
-        self._client_id_input.editingFinished.connect(self._save_client_id)
-        auth_layout.addWidget(SettingRow(
-            "Azure Client ID",
-            self._client_id_input,
-            hint="Your Azure App registration (client) ID",
-        ))
-
-        port_spin = QSpinBox()
-        port_spin.setRange(1024, 65535)
-        port_spin.setValue(config.get("auth_redirect_port", 8090))
-        port_spin.setFixedHeight(36)
-        port_spin.valueChanged.connect(lambda v: config.set("auth_redirect_port", v))
-        auth_layout.addWidget(SettingRow(
-            "OAuth Redirect Port",
-            port_spin,
-            hint="Must match the redirect URI in your Azure App (default: 8090)",
-        ))
-        self._redirect_uri = QLabel()
-        self._redirect_uri.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
-        auth_layout.addWidget(self._redirect_uri)
-        port_spin.valueChanged.connect(lambda _v: self._update_redirect_uri())
-        self._update_redirect_uri()
-
-        cl.addWidget(auth_card)
-        cl.addSpacing(24)
-
         # ── About ─────────────────────────────────────────────────────────
         cl.addWidget(SectionTitle("About"))
         cl.addSpacing(12)
@@ -567,18 +514,6 @@ class SettingsTab(QWidget):
         path = self._java_combo.itemData(index)
         if path:
             self._java_input.setText(path)
-
-    def _save_client_id(self) -> None:
-        value = self._client_id_input.text().strip()
-        if value and not _GUID_RE.match(value):
-            self._client_id_input.setStyleSheet("border: 1.5px solid #DC2626;")
-            return
-        self._client_id_input.setStyleSheet("")
-        config.set("azure_client_id", value)
-
-    def _update_redirect_uri(self) -> None:
-        port = config.get("auth_redirect_port", 8090)
-        self._redirect_uri.setText(f"Redirect URI to paste in Azure: http://localhost:{port}")
 
     def _apply_res_preset(self, index: int) -> None:
         presets = [None, (1280,720), (1920,1080), (2560,1440), (3840,2160)]
