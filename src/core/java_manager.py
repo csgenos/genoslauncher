@@ -1,9 +1,10 @@
 """
-Java auto-detection and download manager for GenosLauncher.
+Java auto-detection and JVM preset definitions for GenosLauncher.
 
 Detects installed JRE/JDK installations on Windows, macOS, and Linux.
-Can download the correct Adoptium (Eclipse Temurin) JRE for a given
-Minecraft version automatically.
+
+Fix O-Y-005: Results are cached for _JAVA_CACHE_TTL seconds to avoid
+repeated subprocess calls on every Settings tab open or launch.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import os
 import platform
 import subprocess
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -32,8 +34,12 @@ MC_JAVA_REQUIREMENTS: dict[str, int] = {
     "1.8":  8,
 }
 
-# Where GenosLauncher installs its own JREs
 JAVA_INSTALLS_DIR = APP_DIR / "java"
+
+# Detection cache (O-Y-005)
+_java_cache: Optional[list[dict]] = None
+_java_cache_time: float = 0.0
+_JAVA_CACHE_TTL: float = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +47,7 @@ JAVA_INSTALLS_DIR = APP_DIR / "java"
 # ---------------------------------------------------------------------------
 
 def get_java_version(java_executable: str) -> Optional[str]:
-    """
-    Run `java -version` and return the version string (e.g. '21.0.3') or None.
-    """
+    """Run `java -version` and return the version string or None."""
     try:
         result = subprocess.run(
             [java_executable, "-version"],
@@ -52,7 +56,6 @@ def get_java_version(java_executable: str) -> Optional[str]:
             timeout=10,
         )
         output = result.stderr or result.stdout
-        # Typical: `openjdk version "21.0.3" 2024-04-16`
         for line in output.splitlines():
             if "version" in line.lower():
                 parts = line.split('"')
@@ -67,7 +70,6 @@ def get_java_major(version_str: str) -> int:
     """Parse major version number from a Java version string."""
     try:
         first = version_str.split(".")[0]
-        # Old 1.8-style versioning
         if first == "1":
             return int(version_str.split(".")[1])
         return int(first)
@@ -77,11 +79,10 @@ def get_java_major(version_str: str) -> int:
 
 def required_java_for_mc(mc_version: str) -> int:
     """Return the minimum Java major version needed for a Minecraft version."""
-    # Match on major.minor prefix
     for prefix in sorted(MC_JAVA_REQUIREMENTS.keys(), reverse=True):
         if mc_version.startswith(prefix):
             return MC_JAVA_REQUIREMENTS[prefix]
-    return 8  # safe default
+    return 8
 
 
 # ---------------------------------------------------------------------------
@@ -89,16 +90,14 @@ def required_java_for_mc(mc_version: str) -> int:
 # ---------------------------------------------------------------------------
 
 def _candidate_paths() -> list[Path]:
-    """Return a list of candidate Java executable paths for the current OS."""
+    """Return candidate Java executable paths for the current OS."""
     system = platform.system()
     candidates: list[Path] = []
 
-    # 1. Value from config
     configured = config.get("java_path", "")
     if configured:
         candidates.append(Path(configured))
 
-    # 2. GenosLauncher-managed installs
     if JAVA_INSTALLS_DIR.exists():
         for entry in JAVA_INSTALLS_DIR.iterdir():
             if entry.is_dir():
@@ -108,12 +107,10 @@ def _candidate_paths() -> list[Path]:
                 else:
                     candidates.append(entry / "bin" / "java")
 
-    # 3. System PATH
     java_in_path = shutil.which("java") or shutil.which("javaw")
     if java_in_path:
         candidates.append(Path(java_in_path))
 
-    # 4. Well-known installation directories
     if system == "Windows":
         search_roots = [
             Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")),
@@ -133,7 +130,7 @@ def _candidate_paths() -> list[Path]:
             for jdk in sorted(java_home_base.iterdir(), reverse=True):
                 candidates.append(jdk / "Contents" / "Home" / "bin" / "java")
 
-    else:  # Linux
+    else:
         for prefix in ["/usr/lib/jvm", "/usr/local/lib/jvm", "/opt/java", "/opt/jdk"]:
             p = Path(prefix)
             if p.exists():
@@ -143,11 +140,21 @@ def _candidate_paths() -> list[Path]:
     return candidates
 
 
-def find_java_installations() -> list[dict]:
+def find_java_installations(force_refresh: bool = False) -> list[dict]:
     """
-    Return a list of detected Java installations as dicts:
-    {"path": str, "version": str, "major": int}
+    Return detected Java installations as dicts: {path, version, major}.
+    Results are cached for _JAVA_CACHE_TTL seconds (O-Y-005).
+    Pass force_refresh=True to bypass the cache.
     """
+    global _java_cache, _java_cache_time
+    now = time.monotonic()
+    if (
+        not force_refresh
+        and _java_cache is not None
+        and (now - _java_cache_time) < _JAVA_CACHE_TTL
+    ):
+        return _java_cache
+
     seen: set[str] = set()
     results: list[dict] = []
 
@@ -156,7 +163,6 @@ def find_java_installations() -> list[dict]:
         if exe in seen or not candidate.exists():
             continue
         seen.add(exe)
-
         version = get_java_version(exe)
         if version:
             results.append({
@@ -165,21 +171,17 @@ def find_java_installations() -> list[dict]:
                 "major":   get_java_major(version),
             })
 
+    _java_cache = results
+    _java_cache_time = now
     return results
 
 
 def find_best_java(required_major: int = 21) -> Optional[str]:
-    """
-    Return the path to the best available Java executable for the given
-    minimum major version, or None if none is found.
-
-    Prefers exact required version over higher versions.
-    """
+    """Return the path to the best available Java for the given minimum major version."""
     installs = find_java_installations()
     valid = [j for j in installs if j["major"] >= required_major]
     if not valid:
         return None
-    # Prefer closest to required (not excessively new)
     valid.sort(key=lambda j: j["major"])
     return valid[0]["path"]
 
@@ -266,5 +268,4 @@ JVM_PRESETS: dict[str, dict] = {
 
 
 def get_preset_args(preset_key: str) -> str:
-    """Return the JVM args string for a named preset, or '' if not found."""
     return JVM_PRESETS.get(preset_key, {}).get("args", "")

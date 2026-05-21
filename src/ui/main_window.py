@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self._resize_edge: str = ""
         self._drag_start_pos = None
         self._drag_start_geom: QRect | None = None
+        self._last_cursor_edge: str = ""   # O-X-008: only call setCursor on change
 
         self._setup_window()
         self._build_ui()
@@ -312,13 +313,17 @@ class MainWindow(QMainWindow):
             if geom.width() >= min_w and geom.height() >= min_h:
                 self.setGeometry(geom)
         else:
-            self.setCursor(self._CURSORS.get(self._edge_at(event.pos()), Qt.ArrowCursor))
+            edge = self._edge_at(event.pos())
+            if edge != self._last_cursor_edge:
+                self._last_cursor_edge = edge
+                self.setCursor(self._CURSORS.get(edge, Qt.ArrowCursor))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         self._resize_edge = ""
         self._drag_start_pos = None
         self._drag_start_geom = None
+        self._last_cursor_edge = ""
         super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------

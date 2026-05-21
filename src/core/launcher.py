@@ -1,6 +1,11 @@
 """
 Minecraft launch logic — wraps minecraft-launcher-lib.
 Emits progress via Qt signals so the UI can animate the launch bar.
+
+Fixes applied:
+  B-Z-004: Proper offline UUID using UUID3 (mirrors Minecraft's own algorithm)
+  B-Y-007: JVM arg deduplication — preset can't override -Xmx/-Xms set from RAM slider;
+           user custom args are sanitized (each token must start with '-')
 """
 
 from __future__ import annotations
@@ -8,8 +13,9 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import uuid as _uuid
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
@@ -32,10 +38,8 @@ def get_available_versions(
     include_snapshots: bool = False,
     include_old: bool = False,
 ) -> list[dict]:
-    """Return a filtered list of available Minecraft versions."""
     if not MLL_AVAILABLE:
         return _demo_versions()
-
     try:
         all_versions = mll.utils.get_version_list()
     except Exception:
@@ -54,7 +58,6 @@ def get_available_versions(
 
 
 def _demo_versions() -> list[dict]:
-    """Fallback version list when offline or lib missing."""
     releases = [
         "1.21.4", "1.21.3", "1.21.1", "1.20.6", "1.20.4",
         "1.20.2", "1.20.1", "1.19.4", "1.19.2", "1.18.2",
@@ -64,7 +67,6 @@ def _demo_versions() -> list[dict]:
 
 
 def get_installed_versions() -> list[str]:
-    """Return Minecraft version IDs that are already installed locally."""
     mc_dir = config.get("minecraft_dir")
     if not MLL_AVAILABLE or not mc_dir:
         return []
@@ -75,14 +77,60 @@ def get_installed_versions() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Offline UUID (B-Z-004)
+# ---------------------------------------------------------------------------
+
+def _offline_uuid(username: str) -> str:
+    """
+    Generate a consistent offline UUID for a username.
+    Mirrors Minecraft's own offline-mode algorithm:
+    UUID3(DNS_NAMESPACE, "OfflinePlayer:<username>").
+    """
+    return str(_uuid.uuid3(_uuid.NAMESPACE_DNS, f"OfflinePlayer:{username}"))
+
+
+# ---------------------------------------------------------------------------
+# JVM argument builder (B-Y-007)
+# ---------------------------------------------------------------------------
+
+_XMX_PREFIXES = ("-Xmx", "-Xms", "-Xss")
+
+
+def _build_jvm_args(ram_mb: int, preset_args: str, custom_args: str) -> list[str]:
+    """
+    Build the final JVM argument list.
+
+    - -Xmx and -Xms are set from ram_mb; any duplicates in preset/custom are dropped.
+    - Each token from custom_args must start with '-' (basic sanitization).
+    """
+    # Memory flags always come first and are authoritative
+    args = [f"-Xmx{ram_mb}M", f"-Xms{min(ram_mb, 512)}M"]
+
+    for raw in (preset_args, custom_args):
+        for token in raw.split():
+            token = token.strip()
+            if not token:
+                continue
+            # Skip any memory override from presets/custom — already set above
+            if any(token.startswith(p) for p in _XMX_PREFIXES):
+                continue
+            # Only allow flags (must start with '-') to prevent argument injection
+            if not token.startswith("-"):
+                continue
+            args.append(token)
+
+    return args
+
+
+# ---------------------------------------------------------------------------
 # Install worker
 # ---------------------------------------------------------------------------
 
 class InstallWorker(QObject):
     """Downloads and installs a Minecraft version on a background thread."""
 
-    progress_changed = Signal(int, int, str)   # current, maximum, status text
-    finished = Signal(bool, str)               # success, message
+    progress_changed = Signal(int, int, str)
+    finished = Signal(bool, str)
 
     def __init__(self, version_id: str, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -97,16 +145,13 @@ class InstallWorker(QObject):
         if not MLL_AVAILABLE:
             self.finished.emit(False, "minecraft-launcher-lib is not installed.")
             return
-
         mc_dir = config.get("minecraft_dir")
         Path(mc_dir).mkdir(parents=True, exist_ok=True)
-
         callbacks = {
-            "setStatus": lambda text: self.progress_changed.emit(0, 100, text),
-            "setProgress": lambda val: self.progress_changed.emit(val, 100, ""),
-            "setMax": lambda val: self.progress_changed.emit(0, val, ""),
+            "setStatus":   lambda text: self.progress_changed.emit(0, 100, text),
+            "setProgress": lambda val:  self.progress_changed.emit(val, 100, ""),
+            "setMax":      lambda val:  self.progress_changed.emit(0, val, ""),
         }
-
         try:
             mll.install.install_minecraft_version(
                 versionid=self.version_id,
@@ -125,22 +170,22 @@ class InstallWorker(QObject):
 class LaunchWorker(QObject):
     """Launches Minecraft on a background thread and reports status."""
 
-    status_changed = Signal(str)   # status text
+    status_changed  = Signal(str)
     process_started = Signal()
-    process_ended = Signal(int)    # exit code
-    error = Signal(str)
+    process_ended   = Signal(int)
+    error           = Signal(str)
 
     def __init__(
         self,
         version_id: str,
-        username: str = "Player",
-        parent: Optional[QObject] = None,
+        username:   str = "Player",
+        parent:     Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self.version_id = version_id
-        self.username = username
-        self._thread: Optional[threading.Thread] = None
-        self._process: Optional[subprocess.Popen] = None
+        self.username   = username
+        self._thread:  Optional[threading.Thread]  = None
+        self._process: Optional[subprocess.Popen]  = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -156,36 +201,37 @@ class LaunchWorker(QObject):
             return
 
         mc_dir = config.get("minecraft_dir")
-        java = config.get("java_path") or "java"
-        ram = config.get("ram_mb", 4096)
-        width = config.get("resolution_width", 1280)
+        java   = config.get("java_path") or "java"
+        ram    = config.get("ram_mb", 4096)
+        width  = config.get("resolution_width", 1280)
         height = config.get("resolution_height", 720)
-        jvm_extra = config.get("jvm_args", "")
 
-        # Use real Microsoft credentials when available
+        # Real credentials when logged in with a matching Microsoft account (B-Z-004)
         if auth_manager.is_logged_in and auth_manager.username == self.username:
             token = auth_manager.access_token
-            uuid  = auth_manager.uuid or "00000000-0000-0000-0000-000000000000"
+            uid   = auth_manager.uuid or _offline_uuid(self.username)
         else:
             token = "offline"
-            uuid  = "00000000-0000-0000-0000-000000000000"
+            uid   = _offline_uuid(self.username)
+
+        # JVM args with deduplication (B-Y-007)
+        from .java_manager import get_preset_args
+        preset_key  = config.get("jvm_preset", "performance")
+        preset_args = get_preset_args(preset_key)
+        custom_args = config.get("jvm_args", "")
+        jvm_args    = _build_jvm_args(ram, preset_args, custom_args)
 
         options = {
-            "username": self.username,
-            "uuid": uuid,
-            "token": token,
-            "jvmArguments": [
-                f"-Xmx{ram}M",
-                f"-Xms{min(ram, 512)}M",
-            ],
-            "gameDirectory": mc_dir,
-            "executablePath": java,
+            "username":         self.username,
+            "uuid":             uid,
+            "token":            token,
+            "jvmArguments":     jvm_args,
+            "gameDirectory":    mc_dir,
+            "executablePath":   java,
             "customResolution": True,
-            "resolutionWidth": str(width),
+            "resolutionWidth":  str(width),
             "resolutionHeight": str(height),
         }
-        if jvm_extra:
-            options["jvmArguments"] += jvm_extra.split()
 
         try:
             self.status_changed.emit("Building launch command...")

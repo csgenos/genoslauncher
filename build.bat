@@ -73,6 +73,16 @@ if %ISCC%=="" (
     )
 )
 
+REM ── Optional: Code signing (S-Y-012) ────────────────────────────────────
+REM  Signing is strongly recommended for distribution. Unsigned executables
+REM  will trigger Windows SmartScreen warnings on first run.
+REM
+REM  To sign: obtain an EV or OV code-signing certificate (e.g. DigiCert,
+REM  Sectigo) and run after build:
+REM    signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 ^
+REM                  /a dist\GenosLauncher\GenosLauncher.exe
+REM  Then re-sign the installer output as well.
+
 REM ── Summary ──────────────────────────────────────────────────────────────
 echo.
 echo  ===============================================

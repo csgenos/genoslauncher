@@ -5,10 +5,16 @@ Covers: search (modpacks, shaders, resource packs), version listing,
 file download with progress callbacks, and .mrpack parsing.
 
 All network calls are synchronous; callers should run them in worker threads.
+
+Security fixes applied:
+  S-Y-006: SHA1/SHA512 hash verification after every mod download;
+           atomic temp-file-then-rename pattern
+  B-Y-010: Zip-slip protection in extract_mrpack_overrides and install_mrpack_mods
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -20,15 +26,22 @@ from typing import Any, Callable, Optional
 
 import requests
 
-BASE_URL = "https://api.modrinth.com/v2"
+BASE_URL   = "https://api.modrinth.com/v2"
 USER_AGENT = "GenosLauncher/0.2.0 (github.com/csgenos/genoslauncher)"
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT})
 
-# Simple in-memory cache (key → (etag, data))
 _cache: dict[str, tuple[str, Any]] = {}
 _cache_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class ModrinthError(Exception):
+    """Raised on any Modrinth API or network failure."""
 
 
 # ---------------------------------------------------------------------------
@@ -36,10 +49,8 @@ _cache_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
-    """GET request with ETag caching. Returns parsed JSON."""
     url = f"{BASE_URL}{endpoint}"
     cache_key = url + str(sorted((params or {}).items()))
-
     headers: dict[str, str] = {}
     with _cache_lock:
         if cache_key in _cache:
@@ -67,19 +78,10 @@ def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-class ModrinthError(Exception):
-    """Raised on any Modrinth API or network failure."""
-
-
-# ---------------------------------------------------------------------------
-# Data classes (simple dicts — no dataclass to keep deps minimal)
+# Data helpers
 # ---------------------------------------------------------------------------
 
 def _project_from_hit(hit: dict) -> dict:
-    """Normalise a search hit into a standard project dict."""
     return {
         "id":           hit.get("project_id", ""),
         "slug":         hit.get("slug", ""),
@@ -109,13 +111,6 @@ def search_projects(
     offset: int = 0,
     categories: list[str] | None = None,
 ) -> tuple[list[dict], int]:
-    """
-    Search Modrinth projects.
-
-    project_type: "modpack" | "shader" | "resourcepack" | "mod"
-
-    Returns (hits, total_hits).
-    """
     facets: list[list[str]] = [[f"project_type:{project_type}"]]
     if game_version:
         facets.append([f"versions:{game_version}"])
@@ -123,25 +118,24 @@ def search_projects(
         facets.append([f"categories:{c}" for c in categories])
 
     params: dict[str, Any] = {
-        "query":   query,
-        "facets":  json.dumps(facets),
-        "limit":   limit,
-        "offset":  offset,
-        "index":   "downloads",
+        "query":  query,
+        "facets": json.dumps(facets),
+        "limit":  limit,
+        "offset": offset,
+        "index":  "downloads",
     }
-
     data = _get("/search", params)
     hits = [_project_from_hit(h) for h in data.get("hits", [])]
     return hits, data.get("total_hits", len(hits))
 
 
-def search_modpacks(query: str = "", game_version: str = "", limit: int = 20, offset: int = 0):
+def search_modpacks(query="", game_version="", limit=20, offset=0):
     return search_projects(query, "modpack", game_version, limit, offset)
 
-def search_shaders(query: str = "", game_version: str = "", limit: int = 20, offset: int = 0):
+def search_shaders(query="", game_version="", limit=20, offset=0):
     return search_projects(query, "shader", game_version, limit, offset)
 
-def search_resource_packs(query: str = "", game_version: str = "", limit: int = 20, offset: int = 0):
+def search_resource_packs(query="", game_version="", limit=20, offset=0):
     return search_projects(query, "resourcepack", game_version, limit, offset)
 
 
@@ -151,7 +145,6 @@ def search_resource_packs(query: str = "", game_version: str = "", limit: int = 
 
 def get_project(project_id_or_slug: str) -> dict:
     return _get(f"/project/{project_id_or_slug}")
-
 
 def get_project_versions(
     project_id_or_slug: str,
@@ -165,13 +158,12 @@ def get_project_versions(
         params["loaders"] = json.dumps(loaders)
     return _get(f"/project/{project_id_or_slug}/version", params)
 
-
 def get_version(version_id: str) -> dict:
     return _get(f"/version/{version_id}")
 
 
 # ---------------------------------------------------------------------------
-# File download
+# File download — atomic + hash verification (S-Y-006)
 # ---------------------------------------------------------------------------
 
 def download_file(
@@ -179,35 +171,68 @@ def download_file(
     dest_path: Path,
     on_progress: Callable[[int, int], None] | None = None,
     chunk_size: int = 65536,
+    expected_sha1: str = "",
+    expected_sha512: str = "",
 ) -> None:
     """
     Stream-download url → dest_path.
 
-    on_progress(bytes_downloaded, total_bytes) called periodically.
-    Raises ModrinthError on failure.
+    Writes to a .tmp file, verifies SHA1/SHA512 if provided, then atomically
+    renames to dest_path.  Cleans up on any error.
+
+    Raises ModrinthError on network failure or hash mismatch.
     """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".download_tmp")
+
+    sha1_h   = hashlib.sha1()   if expected_sha1   else None
+    sha512_h = hashlib.sha512() if expected_sha512 else None
+
     try:
         with _session.get(url, stream=True, timeout=30) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("Content-Length", 0))
-            done = 0
-            with open(dest_path, "wb") as fh:
+            done  = 0
+            with open(tmp_path, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        fh.write(chunk)
-                        done += len(chunk)
-                        if on_progress:
-                            on_progress(done, total)
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if sha1_h:   sha1_h.update(chunk)
+                    if sha512_h: sha512_h.update(chunk)
+                    if on_progress:
+                        on_progress(done, total)
+
+        if expected_sha1 and sha1_h and sha1_h.hexdigest() != expected_sha1:
+            tmp_path.unlink(missing_ok=True)
+            raise ModrinthError(
+                f"SHA1 mismatch for {dest_path.name}: "
+                f"got {sha1_h.hexdigest()}, expected {expected_sha1}"
+            )
+        if expected_sha512 and sha512_h and sha512_h.hexdigest() != expected_sha512:
+            tmp_path.unlink(missing_ok=True)
+            raise ModrinthError(
+                f"SHA512 mismatch for {dest_path.name}: "
+                f"got {sha512_h.hexdigest()}, expected {expected_sha512}"
+            )
+
+        tmp_path.replace(dest_path)
+
     except requests.RequestException as exc:
+        tmp_path.unlink(missing_ok=True)
         raise ModrinthError(f"Download failed: {exc}") from exc
+    except ModrinthError:
+        raise
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise ModrinthError(f"Unexpected error downloading {url}: {exc}") from exc
 
 
 def download_icon(icon_url: str, cache_dir: Path) -> Optional[Path]:
     """Download a project icon to disk; return cached path or None on error."""
     if not icon_url:
         return None
-    # Derive a safe filename from the URL
     safe = re.sub(r"[^a-zA-Z0-9._-]", "_", icon_url.split("/")[-1])
     dest = cache_dir / safe
     if dest.exists():
@@ -227,11 +252,7 @@ MRPACK_MAGIC = "modrinth.index.json"
 
 
 def parse_mrpack(mrpack_path: Path) -> dict:
-    """
-    Open a .mrpack file (ZIP) and return the parsed modrinth.index.json dict.
-
-    Raises ModrinthError if the file is invalid.
-    """
+    """Open a .mrpack ZIP and return the parsed modrinth.index.json dict."""
     if not zipfile.is_zipfile(mrpack_path):
         raise ModrinthError(f"Not a valid .mrpack file: {mrpack_path}")
     with zipfile.ZipFile(mrpack_path) as zf:
@@ -240,19 +261,35 @@ def parse_mrpack(mrpack_path: Path) -> dict:
         return json.loads(zf.read(MRPACK_MAGIC))
 
 
+def _safe_path(base_dir: Path, relative: str) -> Optional[Path]:
+    """
+    Resolve relative inside base_dir and return the result only if it stays
+    within base_dir (zip-slip protection — B-Y-010).
+    """
+    try:
+        target = (base_dir / relative).resolve()
+        if str(target).startswith(str(base_dir.resolve())):
+            return target
+    except Exception:
+        pass
+    return None
+
+
 def extract_mrpack_overrides(mrpack_path: Path, dest_dir: Path) -> None:
-    """
-    Extract the overrides/ folder from a .mrpack into dest_dir.
-    These are config files, options.txt, etc. bundled with the pack.
-    """
+    """Extract the overrides/ folder from a .mrpack into dest_dir."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(mrpack_path) as zf:
         for member in zf.namelist():
-            if member.startswith("overrides/") and not member.endswith("/"):
-                relative = member[len("overrides/"):]
-                target = dest_dir / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, open(target, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
+            if not member.startswith("overrides/") or member.endswith("/"):
+                continue
+            relative = member[len("overrides/"):]
+            target = _safe_path(dest_dir, relative)
+            if target is None:
+                print(f"[Modrinth] Skipping unsafe path in overrides: {member}")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def install_mrpack_mods(
@@ -262,6 +299,8 @@ def install_mrpack_mods(
 ) -> None:
     """
     Download all mod files listed in the mrpack index into mods_dir.
+    Verifies SHA1/SHA512 hashes from the index (S-Y-006).
+    Skips paths that would escape mods_dir (B-Y-010).
 
     on_progress(current_file, total_files, filename)
     """
@@ -269,9 +308,17 @@ def install_mrpack_mods(
     mods_dir.mkdir(parents=True, exist_ok=True)
 
     for i, file_entry in enumerate(files):
-        path_parts = file_entry.get("path", "").lstrip("/")
-        filename = Path(path_parts).name
-        dest = mods_dir / filename
+        raw_path = file_entry.get("path", "").lstrip("/")
+
+        # Strip any traversal components before taking just the filename
+        parts = [p for p in Path(raw_path).parts if p not in (".", "..")]
+        if not parts:
+            continue
+        filename = Path(*parts).name
+        dest = _safe_path(mods_dir, filename)
+        if dest is None:
+            print(f"[Modrinth] Skipping unsafe mod path: {raw_path}")
+            continue
 
         if on_progress:
             on_progress(i + 1, len(files), filename)
@@ -279,12 +326,15 @@ def install_mrpack_mods(
         if dest.exists():
             continue
 
-        # Try each download URL in order
+        hashes = file_entry.get("hashes", {})
+        sha1   = hashes.get("sha1", "")
+        sha512 = hashes.get("sha512", "")
+
         urls: list[str] = file_entry.get("downloads", [])
         downloaded = False
         for url in urls:
             try:
-                download_file(url, dest)
+                download_file(url, dest, expected_sha1=sha1, expected_sha512=sha512)
                 downloaded = True
                 break
             except ModrinthError:
