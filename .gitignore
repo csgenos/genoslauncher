@@ -37,3 +37,4 @@ crash-reports/
 # Windows
 *.exe
 *.msi
+.claude/
