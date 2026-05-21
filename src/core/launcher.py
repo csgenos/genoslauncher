@@ -123,6 +123,86 @@ def _build_jvm_args(ram_mb: int, preset_args: str, custom_args: str) -> list[str
 
 
 # ---------------------------------------------------------------------------
+# Loader install helpers (used by modpacks pipeline and shaders tab)
+# ---------------------------------------------------------------------------
+
+def install_minecraft_base(
+    version_id: str,
+    mc_dir: str,
+    on_progress=None,
+) -> None:
+    """Install a base Minecraft version into mc_dir (no-op if already present)."""
+    if not MLL_AVAILABLE:
+        return
+
+    def _cb(cur, tot, s):
+        if on_progress:
+            on_progress(cur, tot, s)
+
+    callbacks = {
+        "setStatus":   lambda t: _cb(0, 100, t),
+        "setProgress": lambda v: _cb(v, 100, ""),
+        "setMax":      lambda v: _cb(0, v, ""),
+    }
+    mll.install.install_minecraft_version(
+        versionid=version_id,
+        minecraft_directory=mc_dir,
+        callback=callbacks,
+    )
+
+
+def install_loader(
+    deps: dict,
+    mc_dir: str,
+    on_progress=None,
+) -> str:
+    """
+    Install the Fabric or Quilt loader declared in mrpack dependencies.
+
+    Returns the full version ID to pass to the launcher (e.g.
+    "fabric-loader-0.14.21-1.20.1").  Falls back to the plain minecraft
+    version string when no supported loader is declared.
+    """
+    mc_version = deps.get("minecraft", "")
+    if not MLL_AVAILABLE or not mc_version:
+        return mc_version
+
+    def _cb(cur, tot, s):
+        if on_progress:
+            on_progress(cur, tot, s)
+
+    callbacks = {
+        "setStatus":   lambda t: _cb(0, 100, t),
+        "setProgress": lambda v: _cb(v, 100, ""),
+        "setMax":      lambda v: _cb(0, v, ""),
+    }
+
+    fabric_ver = deps.get("fabric-loader")
+    if fabric_ver:
+        _cb(0, 1, f"Installing Fabric {fabric_ver} for {mc_version}…")
+        mll.fabric.install_fabric(
+            minecraft_version=mc_version,
+            minecraft_directory=mc_dir,
+            loader_version=fabric_ver,
+            callback=callbacks,
+        )
+        return f"fabric-loader-{fabric_ver}-{mc_version}"
+
+    quilt_ver = deps.get("quilt-loader")
+    if quilt_ver:
+        _cb(0, 1, f"Installing Quilt {quilt_ver} for {mc_version}…")
+        mll.quilt.install_quilt(
+            minecraft_version=mc_version,
+            minecraft_directory=mc_dir,
+            loader_version=quilt_ver,
+            callback=callbacks,
+        )
+        return f"quilt-loader-{quilt_ver}-{mc_version}"
+
+    return mc_version
+
+
+# ---------------------------------------------------------------------------
 # Install worker
 # ---------------------------------------------------------------------------
 

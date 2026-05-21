@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
 from ...core import modrinth as mr
+from ...core.launcher import install_minecraft_base, install_loader
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +112,22 @@ class InstallWorker(QObject):
         instance_dir = APP_DIR / "instances" / instance_name
         mods_dir = instance_dir / "mods"
 
+        # 3b. Install base Minecraft version
+        mc_dir = config.get("minecraft_dir", str(APP_DIR / "minecraft"))
+        self.progress.emit(0, 1, f"Installing Minecraft {mc_version}…")
+        install_minecraft_base(
+            mc_version, mc_dir,
+            lambda c, t, s: self.progress.emit(c, t, s),
+        )
+
+        # 3c. Install mod loader (Fabric / Quilt)
+        deps = index.get("dependencies", {})
+        self.progress.emit(0, 1, "Detecting mod loader…")
+        loader_version_id = install_loader(
+            deps, mc_dir,
+            lambda c, t, s: self.progress.emit(c, t, s),
+        )
+
         # 4. Download mods
         mod_files = index.get("files", [])
         n = len(mod_files)
@@ -128,11 +145,12 @@ class InstallWorker(QObject):
         instances: list[dict] = config.get("instances", [])
         instances = [i for i in instances if i.get("name") != instance_name]
         instances.append({
-            "name": instance_name,
-            "mc_version": mc_version,
-            "directory": str(instance_dir),
-            "type": "modpack",
-            "source": self.project.get("id", ""),
+            "name":              instance_name,
+            "mc_version":        mc_version,
+            "loader_version_id": loader_version_id,
+            "directory":         str(instance_dir),
+            "type":              "modpack",
+            "source":            self.project.get("id", ""),
         })
         config.set("instances", instances)
 

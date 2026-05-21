@@ -65,6 +65,80 @@ class ShaderSearchWorker(QObject):
 
 
 # ---------------------------------------------------------------------------
+# Iris + Sodium install worker
+# ---------------------------------------------------------------------------
+
+_IRIS_VERSIONS = ["1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.4", "1.18.2"]
+
+
+class IrisInstallWorker(QObject):
+    """Installs Fabric loader then downloads Iris and Sodium JARs from Modrinth."""
+
+    progress = Signal(str)
+    finished = Signal(bool, str)
+
+    IRIS_SLUG   = "iris"
+    SODIUM_SLUG = "sodium"
+
+    def __init__(self, mc_version: str, mc_dir: Path) -> None:
+        super().__init__()
+        self._mc_version = mc_version
+        self._mc_dir     = mc_dir
+
+    def run(self) -> None:
+        try:
+            self._do_install()
+            self.finished.emit(True, "Iris + Sodium installed successfully.")
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
+
+    def _do_install(self) -> None:
+        from ...core.launcher import MLL_AVAILABLE
+
+        # 1. Install Fabric loader
+        if MLL_AVAILABLE:
+            import minecraft_launcher_lib as mll
+            self.progress.emit(f"Installing Fabric for {self._mc_version}…")
+            mll.fabric.install_fabric(
+                minecraft_version=self._mc_version,
+                minecraft_directory=str(self._mc_dir),
+                callback={"setStatus": lambda t: self.progress.emit(t)},
+            )
+        else:
+            self.progress.emit("minecraft-launcher-lib not installed — skipping Fabric step.")
+
+        # 2. Download Iris and Sodium JARs into <mc_dir>/mods/
+        mods_dir = self._mc_dir / "mods"
+        mods_dir.mkdir(parents=True, exist_ok=True)
+
+        for slug, name in [(self.IRIS_SLUG, "Iris"), (self.SODIUM_SLUG, "Sodium")]:
+            self.progress.emit(f"Fetching {name} for {self._mc_version}…")
+            versions = mr.get_project_versions(
+                slug,
+                game_versions=[self._mc_version],
+                loaders=["fabric"],
+            )
+            if not versions:
+                raise RuntimeError(
+                    f"No {name} release found for Minecraft {self._mc_version} + Fabric.\n"
+                    "Try selecting a different version."
+                )
+            files = versions[0].get("files", [])
+            primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+            if not primary:
+                raise RuntimeError(f"No downloadable file found for {name}.")
+            dest = mods_dir / primary["filename"]
+            if not dest.exists():
+                self.progress.emit(f"Downloading {primary['filename']}…")
+                hashes = primary.get("hashes", {})
+                mr.download_file(
+                    primary["url"], dest,
+                    expected_sha1=hashes.get("sha1", ""),
+                    expected_sha512=hashes.get("sha512", ""),
+                )
+
+
+# ---------------------------------------------------------------------------
 # Installed shader row
 # ---------------------------------------------------------------------------
 
@@ -295,6 +369,7 @@ class ShadersTab(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._execute_shader_search)
         self._search_threads: list[QThread] = []
+        self._install_threads: list[QThread] = []
         self.setAcceptDrops(True)
         self._build_ui()
         QTimer.singleShot(300, self._refresh_installed)
@@ -458,8 +533,33 @@ class ShadersTab(QWidget):
         text_col.addWidget(sub)
         layout.addLayout(text_col, 1)
 
-        self._iris_btn = QPushButton("Install for 1.21.4")
-        self._iris_btn.setFixedSize(160, 38)
+        right_col = QVBoxLayout()
+        right_col.setSpacing(6)
+        right_col.setContentsMargins(0, 0, 0, 0)
+
+        self._iris_version_combo = QComboBox()
+        self._iris_version_combo.setFixedSize(130, 30)
+        self._iris_version_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {C["bg_secondary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 6px;
+                padding: 0 8px;
+                font-size: {FONT["xs"]};
+                color: {C["text_primary"]};
+            }}
+            QComboBox::drop-down {{ border: none; width: 18px; }}
+        """)
+        for v in _IRIS_VERSIONS:
+            self._iris_version_combo.addItem(v)
+        current_ver = config.get("selected_version", "1.21.4") or "1.21.4"
+        idx = self._iris_version_combo.findText(current_ver)
+        if idx >= 0:
+            self._iris_version_combo.setCurrentIndex(idx)
+        right_col.addWidget(self._iris_version_combo)
+
+        self._iris_btn = QPushButton("Install")
+        self._iris_btn.setFixedSize(130, 34)
         self._iris_btn.setCursor(Qt.PointingHandCursor)
         self._iris_btn.setStyleSheet(f"""
             QPushButton {{
@@ -472,9 +572,15 @@ class ShadersTab(QWidget):
             }}
             QPushButton:hover {{ background: #1F2937; }}
             QPushButton:pressed {{ background: #0F172A; }}
+            QPushButton:disabled {{
+                background: {C["bg_tertiary"]};
+                color: {C["text_disabled"]};
+            }}
         """)
         self._iris_btn.clicked.connect(self._install_iris)
-        layout.addWidget(self._iris_btn)
+        right_col.addWidget(self._iris_btn)
+
+        layout.addLayout(right_col)
 
         return card
 
@@ -549,19 +655,43 @@ class ShadersTab(QWidget):
         self._refresh_installed()
 
     # ------------------------------------------------------------------
-    # Iris + Sodium install (placeholder)
+    # Iris + Sodium install
     # ------------------------------------------------------------------
 
     def _install_iris(self) -> None:
+        mc_version = self._iris_version_combo.currentText()
         self._iris_btn.setText("Installing…")
         self._iris_btn.setEnabled(False)
+        self._iris_version_combo.setEnabled(False)
 
-        def do_install():
-            import time
-            time.sleep(1.5)  # placeholder — real impl downloads from Modrinth
-            self._iris_btn.setText("Installed ✓")
+        thread = QThread(self)
+        worker = IrisInstallWorker(mc_version, self._mc_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
 
-        threading.Thread(target=do_install, daemon=True).start()
+        def on_progress(status: str) -> None:
+            self._iris_btn.setText(status[:14] if status else "Installing…")
+
+        def on_finished(success: bool, message: str) -> None:
+            self._iris_version_combo.setEnabled(True)
+            if success:
+                self._iris_btn.setText("Installed ✓")
+                self._iris_btn.setEnabled(False)
+            else:
+                self._iris_btn.setText("Install")
+                self._iris_btn.setEnabled(True)
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "Install Failed", message)
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.finished.connect(thread.quit)
+        self._install_threads.append(thread)
+        thread.finished.connect(
+            lambda: self._install_threads.remove(thread)
+            if thread in self._install_threads else None
+        )
+        thread.start()
 
     # ------------------------------------------------------------------
     # Modrinth shader search
