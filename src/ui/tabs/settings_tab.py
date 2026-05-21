@@ -457,6 +457,48 @@ class SettingsTab(QWidget):
         cl.addWidget(behav_card)
         cl.addSpacing(24)
 
+        # ── Microsoft Authentication ──────────────────────────────────────
+        cl.addWidget(SectionTitle("Microsoft Authentication"))
+        cl.addSpacing(6)
+        auth_sub = QLabel(
+            "Enter your Azure App (client) ID to enable Microsoft account sign-in. "
+            "See README for step-by-step Azure setup instructions."
+        )
+        auth_sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-bottom: 10px;")
+        auth_sub.setWordWrap(True)
+        cl.addWidget(auth_sub)
+        cl.addSpacing(6)
+
+        auth_card = self._section_card()
+        auth_layout = QVBoxLayout(auth_card)
+        auth_layout.setContentsMargins(20, 16, 20, 16)
+        auth_layout.setSpacing(10)
+
+        self._client_id_input = QLineEdit()
+        self._client_id_input.setPlaceholderText("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+        self._client_id_input.setText(config.get("azure_client_id", ""))
+        self._client_id_input.setFixedHeight(38)
+        self._client_id_input.textChanged.connect(lambda t: config.set("azure_client_id", t.strip()))
+        auth_layout.addWidget(SettingRow(
+            "Azure Client ID",
+            self._client_id_input,
+            hint="Your Azure App registration (client) ID",
+        ))
+
+        port_spin = QSpinBox()
+        port_spin.setRange(1024, 65535)
+        port_spin.setValue(config.get("auth_redirect_port", 8090))
+        port_spin.setFixedHeight(36)
+        port_spin.valueChanged.connect(lambda v: config.set("auth_redirect_port", v))
+        auth_layout.addWidget(SettingRow(
+            "OAuth Redirect Port",
+            port_spin,
+            hint="Must match the redirect URI in your Azure App (default: 8090)",
+        ))
+
+        cl.addWidget(auth_card)
+        cl.addSpacing(24)
+
         # ── About ─────────────────────────────────────────────────────────
         cl.addWidget(SectionTitle("About"))
         cl.addSpacing(12)

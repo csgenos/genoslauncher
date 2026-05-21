@@ -1,21 +1,27 @@
 """
 Accounts tab — Microsoft login + offline account management.
+Integrated with auth_manager for real PKCE login flow.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
 
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton, PrimaryButton
+from ..login_dialog import LoginDialog
+from ...core.auth import auth_manager
+from ...core.config import config
 
 
 # ---------------------------------------------------------------------------
@@ -34,13 +40,9 @@ class AccountAvatar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-
-        # Circle background
         painter.setBrush(QColor(C["bg_tertiary"]))
         painter.setPen(QColor(C["border_strong"]))
         painter.drawEllipse(1, 1, w - 2, h - 2)
-
-        # Initials
         painter.setPen(QColor(C["text_secondary"]))
         font = QFont("Segoe UI", w // 3, QFont.Weight.SemiBold)
         painter.setFont(font)
@@ -60,6 +62,8 @@ class AccountRow(QFrame):
         username: str,
         account_type: str = "Offline",
         is_active: bool = False,
+        on_select=None,
+        on_remove=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -108,10 +112,14 @@ class AccountRow(QFrame):
         else:
             select_btn = OutlineButton("Select")
             select_btn.setFixedSize(72, 30)
+            if on_select:
+                select_btn.clicked.connect(on_select)
             layout.addWidget(select_btn)
 
         remove_btn = OutlineButton("✕")
         remove_btn.setFixedSize(32, 30)
+        if on_remove:
+            remove_btn.clicked.connect(on_remove)
         layout.addWidget(remove_btn)
 
 
@@ -120,69 +128,30 @@ class AccountRow(QFrame):
 # ---------------------------------------------------------------------------
 
 class AccountsTab(QWidget):
-    """Accounts management tab."""
+    """Accounts management tab with live auth state."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._offline_accounts: list[str] = list(config.get("offline_accounts", []))
         self._build_ui()
+        self._refresh_state()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(40, 28, 40, 28)
-        root.setSpacing(20)
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(40, 28, 40, 28)
+        self._root.setSpacing(20)
 
         # Page header
         title = QLabel("Accounts")
         title.setStyleSheet(f"font-size: {FONT['2xl']}; font-weight: 800; color: {C['text_primary']};")
-        root.addWidget(title)
+        self._root.addWidget(title)
         sub = QLabel("Sign in with Microsoft for online play, or add an offline account for solo play.")
         sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-top: -12px;")
-        root.addWidget(sub)
+        self._root.addWidget(sub)
 
         # Microsoft login card
-        ms_card = QFrame()
-        ms_card.setObjectName("MsCard")
-        ms_card.setFixedHeight(96)
-        ms_card.setStyleSheet(f"""
-            #MsCard {{
-                background: {C["bg_primary"]};
-                border: 1px solid {C["border"]};
-                border-radius: 12px;
-            }}
-        """)
-        ms_h = QHBoxLayout(ms_card)
-        ms_h.setContentsMargins(20, 0, 20, 0)
-        ms_h.setSpacing(18)
-
-        # M icon
-        m_icon = QLabel("M")
-        m_icon.setFixedSize(52, 52)
-        m_icon.setAlignment(Qt.AlignCenter)
-        m_icon.setStyleSheet("""
-            background: #0078D4;
-            color: white;
-            border-radius: 10px;
-            font-size: 22px;
-            font-weight: 900;
-        """)
-        ms_h.addWidget(m_icon)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(3)
-        ms_title = QLabel("Sign in with Microsoft")
-        ms_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
-        text_col.addWidget(ms_title)
-        ms_sub = QLabel("Required for online multiplayer. Links your Xbox / Minecraft account.")
-        ms_sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
-        text_col.addWidget(ms_sub)
-        ms_h.addLayout(text_col)
-        ms_h.addStretch()
-
-        sign_in_btn = PrimaryButton("Sign In")
-        sign_in_btn.setFixedSize(100, 38)
-        ms_h.addWidget(sign_in_btn)
-
-        root.addWidget(ms_card)
+        self._ms_card = self._build_ms_card()
+        self._root.addWidget(self._ms_card)
 
         # Offline account row
         offline_row = QHBoxLayout()
@@ -192,25 +161,28 @@ class AccountsTab(QWidget):
         offline_row.addStretch()
         add_offline = OutlineButton("+ Add Offline Account")
         add_offline.setFixedHeight(34)
+        add_offline.clicked.connect(self._add_offline)
         offline_row.addWidget(add_offline)
-        root.addLayout(offline_row)
+        self._root.addLayout(offline_row)
 
         # Divider
         div = QFrame()
         div.setFrameShape(QFrame.HLine)
         div.setFixedHeight(1)
         div.setStyleSheet(f"background: {C['border']}; border: none;")
-        root.addWidget(div)
+        self._root.addWidget(div)
 
-        # Accounts list
-        list_title = QLabel("Your Accounts")
-        list_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
-        root.addWidget(list_title)
+        # Accounts list title
+        self._root.addWidget(_lbl("Your Accounts", FONT["lg"], C["text_primary"], bold=True))
 
-        root.addWidget(AccountRow("Player", "Offline · Unverified", is_active=True))
-        root.addWidget(AccountRow("Steve", "Offline · Unverified", is_active=False))
+        # Dynamic accounts area
+        self._accounts_container = QWidget()
+        self._accounts_layout = QVBoxLayout(self._accounts_container)
+        self._accounts_layout.setContentsMargins(0, 0, 0, 0)
+        self._accounts_layout.setSpacing(10)
+        self._root.addWidget(self._accounts_container)
 
-        root.addStretch()
+        self._root.addStretch()
 
         # Privacy note
         note = QLabel(
@@ -226,4 +198,155 @@ class AccountsTab(QWidget):
             padding: 10px 14px;
         """)
         note.setWordWrap(True)
-        root.addWidget(note)
+        self._root.addWidget(note)
+
+    def _build_ms_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("MsCard")
+        card.setFixedHeight(96)
+        card.setStyleSheet(f"""
+            #MsCard {{
+                background: {C["bg_primary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 12px;
+            }}
+        """)
+        ms_h = QHBoxLayout(card)
+        ms_h.setContentsMargins(20, 0, 20, 0)
+        ms_h.setSpacing(18)
+
+        m_icon = QLabel("M")
+        m_icon.setFixedSize(52, 52)
+        m_icon.setAlignment(Qt.AlignCenter)
+        m_icon.setStyleSheet("""
+            background: #0078D4;
+            color: white;
+            border-radius: 10px;
+            font-size: 22px;
+            font-weight: 900;
+        """)
+        ms_h.addWidget(m_icon)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(3)
+        self._ms_title = QLabel("Sign in with Microsoft")
+        self._ms_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
+        text_col.addWidget(self._ms_title)
+        self._ms_sub = QLabel("Required for online multiplayer. Links your Xbox / Minecraft account.")
+        self._ms_sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        text_col.addWidget(self._ms_sub)
+        ms_h.addLayout(text_col)
+        ms_h.addStretch()
+
+        self._ms_btn = PrimaryButton("Sign In")
+        self._ms_btn.setFixedSize(110, 38)
+        self._ms_btn.clicked.connect(self._on_ms_action)
+        ms_h.addWidget(self._ms_btn)
+
+        return card
+
+    # ------------------------------------------------------------------
+    # State refresh
+    # ------------------------------------------------------------------
+
+    def _refresh_state(self) -> None:
+        # Update Microsoft card
+        if auth_manager.is_logged_in:
+            self._ms_title.setText(f"Signed in as {auth_manager.username}")
+            self._ms_sub.setText("Microsoft account linked · Minecraft online play enabled")
+            self._ms_btn.setText("Sign Out")
+        else:
+            self._ms_title.setText("Sign in with Microsoft")
+            self._ms_sub.setText("Required for online multiplayer. Links your Xbox / Minecraft account.")
+            self._ms_btn.setText("Sign In")
+
+        # Rebuild accounts list
+        while self._accounts_layout.count():
+            item = self._accounts_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        active = config.get("last_account", "")
+
+        if auth_manager.is_logged_in:
+            row = AccountRow(
+                auth_manager.username,
+                "Microsoft · Online",
+                is_active=(active == auth_manager.username or not active),
+                on_select=lambda: self._select_account(auth_manager.username),
+                on_remove=self._logout_ms,
+            )
+            self._accounts_layout.addWidget(row)
+
+        for name in self._offline_accounts:
+            row = AccountRow(
+                name,
+                "Offline · Unverified",
+                is_active=(name == active and not auth_manager.is_logged_in),
+                on_select=lambda n=name: self._select_account(n),
+                on_remove=lambda n=name: self._remove_offline(n),
+            )
+            self._accounts_layout.addWidget(row)
+
+        if not auth_manager.is_logged_in and not self._offline_accounts:
+            empty = _lbl("No accounts added yet.", FONT["sm"], C["text_tertiary"])
+            empty.setAlignment(Qt.AlignCenter)
+            self._accounts_layout.addWidget(empty)
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def _on_ms_action(self) -> None:
+        if auth_manager.is_logged_in:
+            self._logout_ms()
+        else:
+            self._open_login_dialog()
+
+    def _open_login_dialog(self) -> None:
+        dlg = LoginDialog(self)
+        dlg.login_succeeded.connect(self._on_login_success)
+        dlg.exec()
+
+    def _on_login_success(self, account: dict) -> None:
+        config.update({"last_account": account.get("name", "")})
+        self._refresh_state()
+
+    def _logout_ms(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Sign Out",
+            f"Sign out of {auth_manager.username}?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            auth_manager.logout()
+            config.update({"last_account": ""})
+            self._refresh_state()
+
+    def _add_offline(self) -> None:
+        name, ok = QInputDialog.getText(self, "Add Offline Account", "Username:")
+        name = name.strip()
+        if ok and name and name not in self._offline_accounts:
+            self._offline_accounts.append(name)
+            config.update({"offline_accounts": self._offline_accounts})
+            self._refresh_state()
+
+    def _select_account(self, name: str) -> None:
+        config.update({"last_account": name})
+        self._refresh_state()
+
+    def _remove_offline(self, name: str) -> None:
+        if name in self._offline_accounts:
+            self._offline_accounts.remove(name)
+            config.update({"offline_accounts": self._offline_accounts})
+            if config.get("last_account") == name:
+                config.update({"last_account": ""})
+            self._refresh_state()
+
+
+def _lbl(text: str, size: str, color: str, bold: bool = False) -> QLabel:
+    w = QLabel(text)
+    weight = "700" if bold else "400"
+    w.setStyleSheet(f"font-size: {size}; font-weight: {weight}; color: {color};")
+    return w

@@ -29,6 +29,9 @@ from .tabs.instances_tab import InstancesTab
 from .tabs.modpacks_tab import ModpacksTab
 from .tabs.shaders_tab import ShadersTab
 from .tabs.settings_tab import SettingsTab
+from .tabs.accounts_tab import AccountsTab
+from .login_dialog import LoginDialog
+from ..core.auth import auth_manager
 from ..core.config import config
 from ..core.launcher import LaunchWorker
 
@@ -70,6 +73,7 @@ class MainWindow(QMainWindow):
         self._setup_window()
         self._build_ui()
         self._connect_signals()
+        self._load_auth()
 
     # ------------------------------------------------------------------
     # Window setup
@@ -125,6 +129,7 @@ class MainWindow(QMainWindow):
         self._instances_tab = InstancesTab()
         self._modpacks_tab  = ModpacksTab()
         self._shaders_tab   = ShadersTab()
+        self._accounts_tab  = AccountsTab()
         self._settings_tab  = SettingsTab()
 
         self._tabs: dict[str, QWidget] = {
@@ -132,6 +137,7 @@ class MainWindow(QMainWindow):
             "instances": self._instances_tab,
             "modpacks":  self._modpacks_tab,
             "shaders":   self._shaders_tab,
+            "accounts":  self._accounts_tab,
             "settings":  self._settings_tab,
         }
 
@@ -151,8 +157,44 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._sidebar.tab_changed.connect(self._switch_tab)
+        self._sidebar.login_requested.connect(self._open_login_dialog)
+        self._sidebar.logout_requested.connect(self._logout)
         self._home_tab.launch_requested.connect(self._on_launch_requested)
         self._instances_tab.launch_requested.connect(self._on_launch_requested)
+
+    # ------------------------------------------------------------------
+    # Auth helpers
+    # ------------------------------------------------------------------
+
+    def _load_auth(self) -> None:
+        """Restore saved session and refresh token silently."""
+        if auth_manager.load_stored():
+            self._update_sidebar_account()
+            auth_manager.refresh_async()
+
+    def _open_login_dialog(self) -> None:
+        dlg = LoginDialog(self)
+        dlg.login_succeeded.connect(self._on_login_success)
+        dlg.exec()
+
+    def _on_login_success(self, account: dict) -> None:
+        config.update({"last_account": account.get("name", "")})
+        self._update_sidebar_account()
+        self._accounts_tab._refresh_state()
+
+    def _logout(self) -> None:
+        auth_manager.logout()
+        config.update({"last_account": ""})
+        self._update_sidebar_account()
+        self._accounts_tab._refresh_state()
+
+    def _update_sidebar_account(self) -> None:
+        if auth_manager.is_logged_in:
+            self._sidebar.account_widget.set_logged_in(
+                auth_manager.username, "Microsoft · Online"
+            )
+        else:
+            self._sidebar.account_widget.set_logged_out()
 
     # ------------------------------------------------------------------
     # Tab switching (200ms fade-in)

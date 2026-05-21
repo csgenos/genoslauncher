@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
+from .account_widget import AccountWidget
 
 SIDEBAR_WIDTH = 200
 ITEM_HEIGHT   = 40
@@ -188,12 +189,15 @@ class Sidebar(QWidget):
     """
 
     tab_changed = Signal(str)
+    login_requested  = Signal()
+    logout_requested = Signal()
 
     NAV_ITEMS: list[tuple[str, str, str]] = [
         ("home",      "⌂", "Home"),
         ("instances", "⊞", "Instances"),
         ("modpacks",  "⬡", "Modpacks"),
         ("shaders",   "◈", "Shaders"),
+        ("accounts",  "◉", "Accounts"),
         ("settings",  "⚙", "Settings"),
     ]
 
@@ -238,20 +242,11 @@ class Sidebar(QWidget):
         scroll.setWidget(nav_widget)
         outer.addWidget(scroll)
 
-        # Version footer
-        footer = QWidget(self)
-        footer.setFixedHeight(48)
-        footer.setStyleSheet(
-            f"border-top: 1px solid {C['border']}; background: transparent;"
-        )
-        fl = QVBoxLayout(footer)
-        fl.setContentsMargins(16, 0, 16, 0)
-        ver = QLabel("GenosLauncher v0.1.0", footer)
-        ver.setStyleSheet(
-            f"color: {C['text_tertiary']}; font-size: {FONT['xs']}; border: none;"
-        )
-        fl.addWidget(ver)
-        outer.addWidget(footer)
+        # Account widget at bottom
+        self.account_widget = AccountWidget(self)
+        self.account_widget.login_requested.connect(self.login_requested)
+        self.account_widget.logout_requested.connect(self.logout_requested)
+        outer.addWidget(self.account_widget)
 
     def _on_item_clicked(self, key: str) -> None:
         if key == self._active_key:

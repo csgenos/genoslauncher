@@ -14,6 +14,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QObject, Signal
 
 from .config import config
+from .auth import auth_manager
 
 try:
     import minecraft_launcher_lib as mll
@@ -161,10 +162,18 @@ class LaunchWorker(QObject):
         height = config.get("resolution_height", 720)
         jvm_extra = config.get("jvm_args", "")
 
+        # Use real Microsoft credentials when available
+        if auth_manager.is_logged_in and auth_manager.username == self.username:
+            token = auth_manager.access_token
+            uuid  = auth_manager.uuid or "00000000-0000-0000-0000-000000000000"
+        else:
+            token = "offline"
+            uuid  = "00000000-0000-0000-0000-000000000000"
+
         options = {
             "username": self.username,
-            "uuid": "00000000-0000-0000-0000-000000000000",
-            "token": "offline",
+            "uuid": uuid,
+            "token": token,
             "jvmArguments": [
                 f"-Xmx{ram}M",
                 f"-Xms{min(ram, 512)}M",
