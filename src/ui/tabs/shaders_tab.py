@@ -71,6 +71,8 @@ class ShaderSearchWorker(QObject):
 class InstalledShaderRow(QFrame):
     """Single row for an installed shader/resource pack file."""
 
+    remove_requested = Signal(str)   # emits filename
+
     def __init__(self, filename: str, parent=None) -> None:
         super().__init__(parent)
         self._filename = filename
@@ -88,7 +90,6 @@ class InstalledShaderRow(QFrame):
         layout.setContentsMargins(14, 0, 14, 0)
         layout.setSpacing(12)
 
-        # File icon
         ext_icon = "🗂" if filename.endswith(".zip") else "📄"
         icon_lbl = QLabel(ext_icon)
         icon_lbl.setFixedWidth(24)
@@ -97,7 +98,6 @@ class InstalledShaderRow(QFrame):
 
         name_lbl = QLabel(filename)
         name_lbl.setStyleSheet(f"font-size: {FONT['md']}; color: {C['text_primary']}; font-weight: 500;")
-        name_lbl.setElideMode = Qt.ElideRight
         layout.addWidget(name_lbl, 1)
 
         remove_btn = QPushButton("Remove")
@@ -117,6 +117,7 @@ class InstalledShaderRow(QFrame):
                 color: {C["danger"]};
             }}
         """)
+        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self._filename))
         layout.addWidget(remove_btn)
 
 
@@ -525,7 +526,17 @@ class ShadersTab(QWidget):
             container.addWidget(empty)
         for f in files[:10]:
             row = InstalledShaderRow(f.name)
+            row.remove_requested.connect(
+                lambda name, folder=folder: self._remove_file(folder / name)
+            )
             container.addWidget(row)
+
+    def _remove_file(self, file_path: Path) -> None:
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._refresh_installed()
 
     def _install_dropped(self, paths: list[str], subdir: str) -> None:
         dest_dir = self._mc_dir / subdir
@@ -588,9 +599,61 @@ class ShadersTab(QWidget):
             self._shader_results_layout.addWidget(card)
 
     def _on_shader_install(self, project: dict) -> None:
-        # Placeholder: show status
-        self._shader_status.setText(f"Downloading '{project['title']}'…")
-        # Full impl: fetch latest version, download file to shaderpacks dir
+        self._shader_status.setText(f"Fetching versions for '{project['title']}'…")
+
+        thread = QThread(self)
+
+        class VersionFetcher(QObject):
+            done = Signal(list)
+            err  = Signal(str)
+            def __init__(self, pid): super().__init__(); self.pid = pid
+            def run(self):
+                try: self.done.emit(mr.get_project_versions(self.pid))
+                except mr.ModrinthError as e: self.err.emit(str(e))
+
+        fetcher = VersionFetcher(project["id"])
+        fetcher.moveToThread(thread)
+        thread.started.connect(fetcher.run)
+        fetcher.done.connect(lambda versions: self._start_shader_download(project, versions))
+        fetcher.err.connect(lambda e: self._shader_status.setText(f"Error: {e}"))
+        fetcher.done.connect(thread.quit)
+        fetcher.err.connect(thread.quit)
+        self._search_threads.append(thread)
+        thread.finished.connect(
+            lambda: self._search_threads.remove(thread) if thread in self._search_threads else None
+        )
+        thread.start()
+
+    def _start_shader_download(self, project: dict, versions: list[dict]) -> None:
+        if not versions:
+            self._shader_status.setText("No versions available.")
+            return
+        version = versions[0]
+        files = version.get("files", [])
+        primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+        if not primary:
+            self._shader_status.setText("No file found for this shader.")
+            return
+
+        dest = self._shaderpacks_dir() / primary["filename"]
+        self._shader_status.setText(f"Downloading {primary['filename']}…")
+
+        def do_download():
+            try:
+                hashes = primary.get("hashes", {})
+                mr.download_file(
+                    primary["url"], dest,
+                    expected_sha1=hashes.get("sha1", ""),
+                    expected_sha512=hashes.get("sha512", ""),
+                )
+                QTimer.singleShot(0, lambda: (
+                    self._shader_status.setText(f"Installed '{project['title']}'"),
+                    self._refresh_installed(),
+                ))
+            except mr.ModrinthError as exc:
+                QTimer.singleShot(0, lambda: self._shader_status.setText(f"Download failed: {exc}"))
+
+        threading.Thread(target=do_download, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Open folder
