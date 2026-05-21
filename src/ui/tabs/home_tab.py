@@ -11,7 +11,8 @@ Fixes applied:
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QObject, QThread, Signal, QTimer
-from PySide6.QtGui import QColor, QPainter, QLinearGradient
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QLinearGradient
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -30,6 +31,9 @@ from ..components.version_card import VersionCard
 from ..components.progress_widget import LaunchProgressPanel
 from ...core.launcher import get_available_versions, get_installed_versions
 from ...core.config import config
+import urllib.request
+import json as _json
+import re as _re
 
 _FALLBACK_VERSIONS = ["1.21.4", "1.20.1", "1.8.9"]
 
@@ -42,8 +46,10 @@ class _VersionLoader(QObject):
     done = Signal(list, list)   # available_versions, installed_ids
 
     def run(self) -> None:
+        snapshots = config.get("show_snapshots", False)
+        old = config.get("show_old_versions", False)
         try:
-            available = get_available_versions(include_snapshots=False, include_old=False)
+            available = get_available_versions(include_snapshots=snapshots, include_old=old)
         except Exception:
             available = [{"id": v, "type": "release"} for v in _FALLBACK_VERSIONS]
         try:
@@ -51,6 +57,44 @@ class _VersionLoader(QObject):
         except Exception:
             installed = []
         self.done.emit(available, installed)
+
+
+class _NewsLoader(QObject):
+    done = Signal(list)   # list of (title, body, date) tuples
+
+    def run(self) -> None:
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/csgenos/genoslauncher/releases?per_page=3",
+                headers={"User-Agent": "GenosLauncher/0.2.0", "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                releases = _json.loads(resp.read().decode())
+            items = []
+            for r in releases[:3]:
+                title = r.get("name") or r.get("tag_name", "Release")
+                body = (r.get("body") or "").strip()
+                body = _re.sub(r"#{1,6}\s*", "", body)
+                body = _re.sub(r"\*\*(.+?)\*\*", r"\1", body)
+                body = body.split("\n")[0][:160]
+                published = (r.get("published_at") or "")[:10]
+                items.append((title, body or "New release available.", published))
+            self.done.emit(items if items else _FALLBACK_NEWS)
+        except Exception:
+            self.done.emit(_FALLBACK_NEWS)
+
+
+_FALLBACK_NEWS = [
+    ("GenosLauncher v0.2 Released",
+     "Modpack browser, shader management, and a complete premium UI redesign are now live.",
+     "2025-05-01"),
+    ("Modrinth Integration",
+     "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
+     "2025-04-20"),
+    ("Java Auto-Detection",
+     "The launcher now automatically detects installed Java versions and picks the best one.",
+     "2025-04-10"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +161,7 @@ class HomeTab(QWidget):
 
     launch_requested = Signal(str)
     install_requested = Signal(str)
+    view_all_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -125,8 +170,10 @@ class HomeTab(QWidget):
         self._available: list[dict] = []
         self._load_thread: QThread | None = None
         self._quick_play_layout: QHBoxLayout | None = None
+        self._news_layout: QVBoxLayout | None = None
         self._build_ui()
         QTimer.singleShot(0, self._load_versions)
+        QTimer.singleShot(0, self._load_news)
 
     # ------------------------------------------------------------------
     # UI
@@ -235,6 +282,7 @@ class HomeTab(QWidget):
         view_all = OutlineButton("View all versions →")
         view_all.setFixedHeight(32)
         view_all.setMinimumWidth(160)
+        view_all.clicked.connect(self.view_all_requested)
         qp_header.addWidget(view_all)
         inner_layout.addLayout(qp_header)
 
@@ -255,28 +303,25 @@ class HomeTab(QWidget):
         inner_layout.addWidget(divider)
 
         # News
+        news_header = QHBoxLayout()
         news_title = QLabel("What's New")
         news_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']};")
-        inner_layout.addWidget(news_title)
+        news_header.addWidget(news_title)
+        news_header.addStretch()
+        all_releases = OutlineButton("All releases →")
+        all_releases.setFixedHeight(32)
+        all_releases.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://github.com/csgenos/genoslauncher/releases")
+        ))
+        news_header.addWidget(all_releases)
+        inner_layout.addLayout(news_header)
 
-        for title, body, date in [
-            (
-                "GenosLauncher v0.2 Released",
-                "Modpack browser, shader management, and a complete premium light theme redesign are now live.",
-                "Today",
-            ),
-            (
-                "Modrinth Integration",
-                "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
-                "2 days ago",
-            ),
-            (
-                "Java Auto-Detection",
-                "The launcher now automatically detects installed Java versions and picks the best one.",
-                "1 week ago",
-            ),
-        ]:
-            inner_layout.addWidget(NewsItem(title, body, date, self))
+        self._news_layout = QVBoxLayout()
+        self._news_layout.setSpacing(10)
+        _loading = QLabel("Loading news…")
+        _loading.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
+        self._news_layout.addWidget(_loading)
+        inner_layout.addLayout(self._news_layout)
 
         cl.addWidget(inner)
         scroll.setWidget(content)
@@ -285,6 +330,23 @@ class HomeTab(QWidget):
     # ------------------------------------------------------------------
     # Version loading (#1)
     # ------------------------------------------------------------------
+
+    def _load_news(self) -> None:
+        thread = QThread(self)
+        worker = _NewsLoader()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_news_loaded)
+        worker.done.connect(thread.quit)
+        thread.start()
+
+    def _on_news_loaded(self, items: list) -> None:
+        while self._news_layout.count():
+            item = self._news_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for title, body, date in items:
+            self._news_layout.addWidget(NewsItem(title, body, date, self))
 
     def _load_versions(self) -> None:
         thread = QThread(self)

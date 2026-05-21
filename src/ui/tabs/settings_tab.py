@@ -7,8 +7,8 @@ All settings auto-save to config.json via the config singleton.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -471,9 +471,15 @@ class SettingsTab(QWidget):
         about_layout.addWidget(ver_lbl)
 
         links_row = QHBoxLayout()
-        for txt in ["GitHub", "Report a Bug", "Changelog"]:
+        _links = [
+            ("GitHub",       "https://github.com/csgenos/genoslauncher"),
+            ("Report a Bug", "https://github.com/csgenos/genoslauncher/issues/new"),
+            ("Changelog",    "https://github.com/csgenos/genoslauncher/releases"),
+        ]
+        for txt, url in _links:
             btn = OutlineButton(txt)
             btn.setFixedHeight(32)
+            btn.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
             links_row.addWidget(btn)
         links_row.addStretch()
         about_layout.addLayout(links_row)

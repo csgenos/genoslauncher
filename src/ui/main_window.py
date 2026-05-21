@@ -167,6 +167,7 @@ class MainWindow(QMainWindow):
         self._sidebar.logout_requested.connect(self._logout)
         self._home_tab.launch_requested.connect(self._on_launch_requested)
         self._home_tab.install_requested.connect(self._on_install_requested)
+        self._home_tab.view_all_requested.connect(lambda: self._switch_tab("instances"))
         self._instances_tab.launch_requested.connect(self._on_launch_requested)
         self._instances_tab.instance_launch_requested.connect(self._on_instance_launch_requested)
         self._instances_tab.install_requested.connect(self._on_install_requested)

@@ -471,7 +471,7 @@ class AuthManager:
             _store_account(account)
             return True
         except Exception as exc:
-            print(f"[Auth] Token refresh failed: {exc}")
+            log.warning("Token refresh failed: %s", exc)
             return False
 
     def refresh_async(self) -> None:
