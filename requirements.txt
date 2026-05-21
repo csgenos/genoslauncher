@@ -1,0 +1,5 @@
+PySide6>=6.6.0
+minecraft-launcher-lib>=6.4
+requests>=2.31.0
+Pillow>=10.0.0
+psutil>=5.9.0
