@@ -14,6 +14,7 @@ import platform
 import subprocess
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -53,7 +54,7 @@ def get_java_version(java_executable: str) -> Optional[str]:
             [java_executable, "-version"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=3,
         )
         output = result.stderr or result.stdout
         for line in output.splitlines():
@@ -158,18 +159,31 @@ def find_java_installations(force_refresh: bool = False) -> list[dict]:
     seen: set[str] = set()
     results: list[dict] = []
 
+    candidates = []
     for candidate in _candidate_paths():
         exe = str(candidate)
         if exe in seen or not candidate.exists():
             continue
         seen.add(exe)
+        candidates.append((candidate, exe))
+
+    def probe(item: tuple[Path, str]) -> Optional[dict]:
+        _candidate, exe = item
         version = get_java_version(exe)
         if version:
-            results.append({
+            return {
                 "path":    exe,
                 "version": version,
                 "major":   get_java_major(version),
-            })
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(probe, item) for item in candidates]
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result:
+                results.append(result)
 
     _java_cache = results
     _java_cache_time = now

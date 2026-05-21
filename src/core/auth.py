@@ -20,7 +20,10 @@ from __future__ import annotations
 import hashlib
 import http.server
 import json
+import logging
 import os
+import platform
+import re
 import threading
 import time
 import urllib.parse
@@ -28,12 +31,16 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+_IMPORT_WARNINGS: list[str] = []
+
 try:
     import keyring
     _KEYRING_OK = True
 except ImportError:
     _KEYRING_OK = False
-    print("[Auth] Warning: keyring not installed — tokens stored in encrypted fallback file.")
+    _IMPORT_WARNINGS.append(
+        "keyring is not installed; secure OS keychain token storage is unavailable."
+    )
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -43,7 +50,9 @@ try:
     _CRYPTO_OK = True
 except ImportError:
     _CRYPTO_OK = False
-    print("[Auth] Warning: cryptography not installed — install it for secure fallback storage.")
+    _IMPORT_WARNINGS.append(
+        "cryptography is not installed; legacy fallback token reads are unavailable."
+    )
 
 from minecraft_launcher_lib.microsoft_account import (
     complete_login,
@@ -55,6 +64,10 @@ from minecraft_launcher_lib.microsoft_account import (
 
 from .config import APP_DIR, config
 
+log = logging.getLogger(__name__)
+for _warning in _IMPORT_WARNINGS:
+    log.warning(_warning)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -63,9 +76,12 @@ _KEYRING_SERVICE    = "GenosLauncher"
 _KEYRING_ACCOUNT    = "ms_account_json"
 _FALLBACK_STORE     = APP_DIR / ".auth_store"
 
-DEFAULT_CLIENT_ID      = ""
+DEFAULT_CLIENT_ID      = os.environ.get("GENOS_AZURE_CLIENT_ID", "")
 DEFAULT_REDIRECT_PORT  = 8090
 _PORT_SEARCH_RANGE     = 10
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -84,13 +100,39 @@ class NoClientIdError(AuthError):
 # Fallback encryption helpers (S-Z-001)
 # ---------------------------------------------------------------------------
 
+def _windows_crypt_protect(data: bytes, *, unprotect: bool = False) -> bytes:
+    """Protect/unprotect bytes with Windows DPAPI for the current user."""
+    if platform.system() != "Windows":
+        raise AuthError("Fallback token storage requires a system keyring on this platform.")
+    import ctypes
+    from ctypes import wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    in_buf = ctypes.create_string_buffer(data)
+    in_blob = DATA_BLOB(len(data), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_byte)))
+    out_blob = DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    fn = crypt32.CryptUnprotectData if unprotect else crypt32.CryptProtectData
+    ok = fn(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+    )
+    if not ok:
+        raise AuthError("Windows DPAPI token protection failed.")
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        kernel32.LocalFree(out_blob.pbData)
+
+
 def _derive_fallback_key() -> bytes:
     """
     Derive a Fernet-compatible key bound to this machine.
-    Uses PBKDF2-HMAC-SHA256(machine_MAC, fixed_salt, 100k iterations).
+    Uses PBKDF2-HMAC-SHA256(machine identifier, fixed_salt, 100k iterations).
     """
-    import uuid
-    machine_id = str(uuid.getnode()).encode("utf-8")
+    machine_id = _machine_secret().encode("utf-8")
     salt = b"GenosLauncher-fallback-auth-v1"
 
     if _CRYPTO_OK:
@@ -103,31 +145,44 @@ def _derive_fallback_key() -> bytes:
         raw = kdf.derive(machine_id)
         return _b64.urlsafe_b64encode(raw)
 
-    # Fallback if cryptography not installed — plain SHA-256 (weak but better than nothing)
-    import base64
-    digest = hashlib.sha256(salt + machine_id).digest()
-    return base64.urlsafe_b64encode(digest)
+    raise AuthError("cryptography is required for encrypted fallback token storage.")
+
+
+def _machine_secret() -> str:
+    if platform.system() == "Windows":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                value, _ = winreg.QueryValueEx(key, "MachineGuid")
+                return str(value)
+        except OSError as exc:
+            log.warning("Windows machine identifier read failed: %s", exc.__class__.__name__)
+    for candidate in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+        try:
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            log.warning("Machine identifier read failed for %s: %s", candidate, exc.__class__.__name__)
+    raise AuthError("Could not access a secure machine identifier.")
 
 
 def _encrypt_payload(payload: str) -> bytes:
-    if _CRYPTO_OK:
-        return Fernet(_derive_fallback_key()).encrypt(payload.encode("utf-8"))
-    import base64
-    return base64.b64encode(payload.encode("utf-8"))
+    if platform.system() == "Windows":
+        return b"DPAPI:" + _windows_crypt_protect(payload.encode("utf-8"))
+    raise AuthError("Fallback token storage requires a system keyring on this platform.")
 
 
 def _decrypt_payload(data: bytes) -> str:
-    if _CRYPTO_OK:
+    if data.startswith(b"DPAPI:"):
+        return _windows_crypt_protect(data[6:], unprotect=True).decode("utf-8")
+    if data.startswith(b"FERNET:") and _CRYPTO_OK:
         try:
-            return Fernet(_derive_fallback_key()).decrypt(data).decode("utf-8")
-        except (InvalidToken, Exception):
-            pass
-    # Legacy / non-Fernet fallback (base64 or plaintext)
-    try:
-        import base64
-        return base64.b64decode(data).decode("utf-8")
-    except Exception:
-        return data.decode("utf-8", errors="replace")
+            return Fernet(_derive_fallback_key()).decrypt(data[7:]).decode("utf-8")
+        except InvalidToken:
+            log.warning("Legacy fallback auth store could not be decrypted.")
+        except AuthError as exc:
+            log.warning("Legacy fallback auth store is unavailable: %s", exc)
+    raise AuthError("Could not decrypt stored account data.")
 
 
 def _secure_delete(path: Path) -> None:
@@ -143,8 +198,8 @@ def _secure_delete(path: Path) -> None:
     except OSError:
         try:
             path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("Secure delete failed for %s: %s", path, exc.__class__.__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -161,14 +216,14 @@ def _store_account(data: dict) -> None:
                 _secure_delete(_FALLBACK_STORE)
             return
         except Exception as exc:
-            print(f"[Auth] Keyring write failed ({exc}), using encrypted fallback.")
+            log.warning("Keyring write failed, using fallback: %s", exc.__class__.__name__)
     ciphertext = _encrypt_payload(payload)
     _FALLBACK_STORE.write_bytes(ciphertext)
     if os.name != "nt":
         try:
             os.chmod(_FALLBACK_STORE, 0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("Could not tighten fallback auth file permissions: %s", exc.__class__.__name__)
 
 
 def _load_account() -> Optional[dict]:
@@ -178,15 +233,15 @@ def _load_account() -> Optional[dict]:
             payload = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
             if payload:
                 return json.loads(payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Keyring read failed: %s", exc.__class__.__name__)
     if _FALLBACK_STORE.exists():
         try:
             raw = _FALLBACK_STORE.read_bytes()
             payload = _decrypt_payload(raw)
             return json.loads(payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Fallback auth store read failed: %s", exc.__class__.__name__)
     return None
 
 
@@ -195,8 +250,8 @@ def _delete_account() -> None:
     if _KEYRING_OK:
         try:
             keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Keyring delete failed: %s", exc.__class__.__name__)
     if _FALLBACK_STORE.exists():
         _secure_delete(_FALLBACK_STORE)
 
@@ -219,11 +274,20 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
     captured_url: Optional[str] = None
     done_event:   Optional[threading.Event] = None
+    expected_state: Optional[str] = None
 
     def do_GET(self) -> None:
-        _CallbackHandler.captured_url = f"http://localhost{self.path}"
-        if _CallbackHandler.done_event is not None:
-            _CallbackHandler.done_event.set()
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        state = params.get("state", [""])[0]
+        has_callback_data = bool(params.get("code") or params.get("error"))
+        if not has_callback_data or state != _CallbackHandler.expected_state:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        host = self.headers.get("Host", "localhost")
+        _CallbackHandler.captured_url = f"http://{host}{self.path}"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -235,6 +299,8 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             b"<p style='color:#4B5563'>You can close this tab and return to GenosLauncher.</p>"
             b"</body></html>"
         )
+        if _CallbackHandler.done_event is not None:
+            _CallbackHandler.done_event.set()
 
     def log_message(self, *_args) -> None:
         pass
@@ -278,6 +344,7 @@ class AuthManager:
     def __init__(self) -> None:
         self._account: Optional[dict] = None
         self._lock = threading.Lock()
+        self._login_cancel = threading.Event()
 
     # ------------------------------------------------------------------
     # Properties
@@ -326,13 +393,16 @@ class AuthManager:
         open_browser: bool = True,
     ) -> None:
         """Start the PKCE browser login flow on a background thread."""
-        client_id = config.get("azure_client_id", "")
+        client_id = config.get("azure_client_id", "") or DEFAULT_CLIENT_ID
         if not client_id:
             on_error(
                 "No Azure Client ID configured.\n\n"
-                "Go to Settings → Microsoft Authentication and paste your "
-                "Azure App (client) ID.\n\nSee README for step-by-step setup."
+                "Go to Settings > Microsoft Authentication and paste your "
+                "Azure App (client) ID.\n\nSee INSTALL.md for step-by-step setup."
             )
+            return
+        if not _GUID_RE.match(client_id):
+            on_error("The Azure Client ID must be a GUID like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.")
             return
 
         thread = threading.Thread(
@@ -341,6 +411,9 @@ class AuthManager:
             daemon=True,
         )
         thread.start()
+
+    def cancel_login(self) -> None:
+        self._login_cancel.set()
 
     def _login_thread(
         self,
@@ -351,6 +424,7 @@ class AuthManager:
         open_browser: bool,
     ) -> None:
         preferred_port = config.get("auth_redirect_port", DEFAULT_REDIRECT_PORT)
+        self._login_cancel.clear()
 
         # Bind first so the actual port is known before building the auth URL (S-Y-002)
         try:
@@ -379,11 +453,16 @@ class AuthManager:
             done_event = threading.Event()
             _CallbackHandler.captured_url = None
             _CallbackHandler.done_event   = done_event
+            _CallbackHandler.expected_state = state
 
             server.timeout = 1.0   # handle_request blocks at most 1s per call
             deadline = time.monotonic() + 300
 
             while not done_event.is_set():
+                if self._login_cancel.is_set():
+                    server.server_close()
+                    on_error("Login canceled.")
+                    return
                 if time.monotonic() > deadline:
                     server.server_close()
                     on_error("Login timed out (5 min). Please try again.")
@@ -425,8 +504,8 @@ class AuthManager:
         except Exception as exc:
             try:
                 server.server_close()
-            except Exception:
-                pass
+            except Exception as close_exc:
+                log.warning("OAuth callback server close failed: %s", close_exc.__class__.__name__)
             on_error(str(exc))
 
     # ------------------------------------------------------------------
@@ -451,7 +530,7 @@ class AuthManager:
             _store_account(account)
             return True
         except Exception as exc:
-            print(f"[Auth] Token refresh failed: {exc}")
+            log.warning("Token refresh failed: %s", exc.__class__.__name__)
             return False
 
     def refresh_async(self) -> None:
@@ -485,8 +564,8 @@ class AuthManager:
             if resp.ok:
                 dest.write_bytes(resp.content)
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Avatar download failed: %s", exc.__class__.__name__)
         return False
 
 

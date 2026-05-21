@@ -46,9 +46,10 @@ HIDDEN_IMPORTS = [
 # Data files bundled into the distribution
 # ---------------------------------------------------------------------------
 DATAS = [
-    # Bundled cacert.pem for requests
     ("src", "src"),
 ]
+if Path("assets").exists():
+    DATAS.append(("assets", "assets"))
 
 a = Analysis(
     ["src/main.py"],

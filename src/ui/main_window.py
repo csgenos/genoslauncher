@@ -7,11 +7,10 @@ Routes sidebar navigation, orchestrates launch/install workers.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QRect
+from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QMainWindow,
     QMessageBox,
@@ -33,7 +32,7 @@ from .tabs.accounts_tab import AccountsTab
 from .login_dialog import LoginDialog
 from ..core.auth import auth_manager
 from ..core.config import config
-from ..core.launcher import LaunchWorker
+from ..core.launcher import InstallWorker, LaunchWorker
 
 _RESIZE_MARGIN = 6
 
@@ -66,6 +65,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._launch_worker: LaunchWorker | None = None
+        self._install_worker: InstallWorker | None = None
         self._resize_edge: str = ""
         self._drag_start_pos = None
         self._drag_start_geom: QRect | None = None
@@ -143,6 +143,8 @@ class MainWindow(QMainWindow):
         }
 
         for tab in self._tabs.values():
+            tab.setVisible(True)
+            tab.setGraphicsEffect(None)
             self._content.stack.addWidget(tab)
 
         self._switch_tab("home")
@@ -161,7 +163,10 @@ class MainWindow(QMainWindow):
         self._sidebar.login_requested.connect(self._open_login_dialog)
         self._sidebar.logout_requested.connect(self._logout)
         self._home_tab.launch_requested.connect(self._on_launch_requested)
+        self._home_tab.install_requested.connect(self._on_install_requested)
         self._instances_tab.launch_requested.connect(self._on_launch_requested)
+        self._instances_tab.instance_launch_requested.connect(self._on_instance_launch_requested)
+        self._instances_tab.install_requested.connect(self._on_install_requested)
 
     # ------------------------------------------------------------------
     # Auth helpers
@@ -208,35 +213,32 @@ class MainWindow(QMainWindow):
 
         self._content.stack.setCurrentWidget(widget)
 
-        effect = widget.graphicsEffect()
-        if not isinstance(effect, QGraphicsOpacityEffect):
-            effect = QGraphicsOpacityEffect(widget)
-            widget.setGraphicsEffect(effect)
-
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(200)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        widget.setVisible(True)
+        widget.setGraphicsEffect(None)
+        widget.update()
 
     # ------------------------------------------------------------------
     # Launch
     # ------------------------------------------------------------------
 
     def _on_launch_requested(self, version_id: str) -> None:
+        self._start_launch(version_id, "")
+
+    def _on_instance_launch_requested(self, version_id: str, instance_id: str) -> None:
+        self._start_launch(version_id, instance_id)
+
+    def _start_launch(self, version_id: str, instance_id: str) -> None:
         if self._launch_worker is not None:
             return
 
         self._home_tab.set_launch_state(True)
         self._home_tab.update_progress(0, 100, f"Preparing {version_id}…")
 
-        # Auth priority: logged-in MS account → last_account config → "Player" (#5)
         if auth_manager.is_logged_in:
             username = auth_manager.username
         else:
             username = config.get("last_account") or "Player"
-        self._launch_worker = LaunchWorker(version_id, username, self)
+        self._launch_worker = LaunchWorker(version_id, username, self, instance_id=instance_id)
         self._launch_worker.status_changed.connect(self._on_launch_status)
         self._launch_worker.process_started.connect(self._on_process_started)
         self._launch_worker.process_ended.connect(self._on_process_ended)
@@ -254,7 +256,6 @@ class MainWindow(QMainWindow):
     def _on_process_ended(self, _exit_code: int) -> None:
         self._launch_worker = None
         self._home_tab.set_launch_state(False)
-        self._home_tab.refresh_versions()   # refresh picker after game exits
         if self.isHidden():
             self.show()
 
@@ -263,6 +264,26 @@ class MainWindow(QMainWindow):
         self._home_tab.set_launch_state(False)
         self._home_tab.update_progress(0, 100, "Launch failed.")
         QMessageBox.critical(self, "Launch Error", f"Failed to start Minecraft:\n\n{message}")
+
+    def _on_install_requested(self, version_id: str) -> None:
+        if self._install_worker is not None:
+            return
+        self._home_tab.set_launch_state(True)
+        self._home_tab.update_progress(0, 100, f"Installing {version_id}...")
+        self._install_worker = InstallWorker(version_id, self)
+        self._install_worker.progress_changed.connect(self._home_tab.update_progress)
+        self._install_worker.finished.connect(self._on_install_finished)
+        self._install_worker.start()
+
+    def _on_install_finished(self, ok: bool, message: str) -> None:
+        self._install_worker = None
+        self._home_tab.set_launch_state(False)
+        if ok:
+            self._home_tab.update_progress(100, 100, message)
+            self._instances_tab._load_versions()
+            self._instances_tab._render_instances()
+        else:
+            QMessageBox.critical(self, "Install Error", message)
 
     # ------------------------------------------------------------------
     # Frameless resize (edge detection + drag)

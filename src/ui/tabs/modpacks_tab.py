@@ -112,8 +112,8 @@ class InstallWorker(QObject):
         instance_dir = APP_DIR / "instances" / instance_name
         mods_dir = instance_dir / "mods"
 
-        # 3b. Install base Minecraft version
-        mc_dir = config.get("minecraft_dir", str(APP_DIR / "minecraft"))
+        # 3b. Install base Minecraft version into the isolated modpack instance.
+        mc_dir = str(instance_dir)
         self.progress.emit(0, 1, f"Installing Minecraft {mc_version}…")
         install_minecraft_base(
             mc_version, mc_dir,
@@ -142,17 +142,7 @@ class InstallWorker(QObject):
         mr.extract_mrpack_overrides(mrpack_path, instance_dir)
 
         # 6. Register instance in config
-        instances: list[dict] = config.get("instances", [])
-        instances = [i for i in instances if i.get("name") != instance_name]
-        instances.append({
-            "name":              instance_name,
-            "mc_version":        mc_version,
-            "loader_version_id": loader_version_id,
-            "directory":         str(instance_dir),
-            "type":              "modpack",
-            "source":            self.project.get("id", ""),
-        })
-        config.set("instances", instances)
+        create_modpack_instance(self.project, mc_version, instance_dir)
 
 
 # ---------------------------------------------------------------------------

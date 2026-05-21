@@ -112,9 +112,11 @@ class HomeTab(QWidget):
 
     Signals:
         launch_requested(str)  — version ID to launch
+        install_requested(str) — version ID to install
     """
 
     launch_requested = Signal(str)
+    install_requested = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -361,7 +363,7 @@ class HomeTab(QWidget):
             )
             card.setMinimumHeight(115)
             card.launch_requested.connect(self.launch_requested)
-            card.install_requested.connect(self.launch_requested)  # treat as intent
+            card.install_requested.connect(self.install_requested)
             self._quick_play_layout.addWidget(card)
 
         self._quick_play_layout.addStretch()
