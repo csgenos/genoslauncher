@@ -122,8 +122,8 @@ jobs:
         with:
           name: GenosLauncher-Windows-Installer
           path: |
-            installer_output\*.exe
-            installer_output\SHA256SUMS.txt
+            installer_output/*.exe
+            installer_output/SHA256SUMS.txt
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -132,8 +132,8 @@ jobs:
         with:
           name: GenosLauncher ${{ github.ref_name }}
           files: |
-            installer_output\GenosLauncher-*-Setup.exe
-            installer_output\SHA256SUMS.txt
+            installer_output/GenosLauncher-*-Setup.exe
+            installer_output/SHA256SUMS.txt
           generate_release_notes: true
           draft: ${{ github.event.inputs.draft == 'true' }}
           fail_on_unmatched_files: true
