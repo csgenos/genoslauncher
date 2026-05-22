@@ -146,8 +146,10 @@ def _derive_fallback_key() -> bytes:
             key_material = os.urandom(32)
             atomic_write_bytes(key_file, key_material)
     except OSError as exc:
-        log.warning("Could not read/write fallback key file: %s", exc)
-        key_material = hashlib.sha256(str(id(key_file)).encode()).digest()
+        raise RuntimeError(
+            f"Cannot read or write the credential key file at {key_file}. "
+            f"Check permissions on {APP_DIR}. Details: {exc}"
+        ) from exc
     salt = b"GenosLauncher-fallback-auth-v1"
     kdf = PBKDF2HMAC(algorithm=_hashes.SHA256(), length=32, salt=salt, iterations=100_000)
     return _b64.urlsafe_b64encode(kdf.derive(key_material))

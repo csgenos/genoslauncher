@@ -28,6 +28,7 @@ from .config import APP_DIR, config
 _NEWEST_KNOWN_JAVA = 21
 
 JAVA_INSTALLS_DIR = APP_DIR / "java"
+_ADOPTIUM_ALLOWED_HOSTS = frozenset({"adoptium.net", "github.com", "objects.githubusercontent.com"})
 
 # Detection cache (O-Y-005)
 _java_cache: Optional[list[dict]] = None
@@ -370,6 +371,15 @@ def download_java(
         _s("No download URL in release metadata.")
         return None
 
+    _parsed_url = urllib.parse.urlparse(url)
+    _hostname = (_parsed_url.hostname or "").lower()
+    if _parsed_url.scheme != "https" or not any(
+        _hostname == h or _hostname.endswith(f".{h}")
+        for h in _ADOPTIUM_ALLOWED_HOSTS
+    ):
+        _s("Unexpected download URL from Adoptium API — aborting for security.")
+        return None
+
     dest_dir = JAVA_INSTALLS_DIR / str(major)
     dest_dir.mkdir(parents=True, exist_ok=True)
     archive_name = Path(urllib.parse.urlparse(url).path).name
@@ -400,16 +410,19 @@ def download_java(
         _s(f"Download failed: {exc}")
         return None
 
-    if checksum:
-        _s("Verifying download…")
-        sha256 = hashlib.sha256()
-        with open(archive_path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                sha256.update(chunk)
-        if sha256.hexdigest() != checksum:
-            archive_path.unlink(missing_ok=True)
-            _s("SHA256 mismatch — download corrupted.")
-            return None
+    if not checksum:
+        archive_path.unlink(missing_ok=True)
+        _s("Adoptium did not provide a SHA256 checksum — aborting download.")
+        return None
+    _s("Verifying download…")
+    sha256 = hashlib.sha256()
+    with open(archive_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            sha256.update(chunk)
+    if sha256.hexdigest() != checksum:
+        archive_path.unlink(missing_ok=True)
+        _s("SHA256 mismatch — download corrupted.")
+        return None
 
     _s(f"Extracting Java {major}…")
     extract_dir = dest_dir / "extracted"
@@ -418,16 +431,34 @@ def download_java(
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        _extract_dir_resolved = extract_dir.resolve()
         if archive_name.endswith((".tar.gz", ".tar")):
             with tarfile.open(archive_path) as tf:
-                members = [
-                    m for m in tf.getmembers()
-                    if not m.name.startswith("/") and ".." not in m.name
-                ]
-                tf.extractall(extract_dir, members=members)
+                for member in tf.getmembers():
+                    if member.issym() or member.islnk() or (
+                        not member.isreg() and not member.isdir()
+                    ):
+                        continue
+                    target = (extract_dir / member.name).resolve()
+                    try:
+                        target.relative_to(_extract_dir_resolved)
+                    except ValueError:
+                        continue
+                    tf.extract(member, extract_dir, set_attrs=False)
         elif archive_name.endswith(".zip"):
             with zipfile.ZipFile(archive_path) as zf:
-                zf.extractall(extract_dir)
+                for member in zf.infolist():
+                    target = (extract_dir / member.filename).resolve()
+                    try:
+                        target.relative_to(_extract_dir_resolved)
+                    except ValueError:
+                        continue
+                    if member.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
         else:
             _s(f"Unsupported archive type: {archive_name}")
             return None
