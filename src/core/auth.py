@@ -65,12 +65,12 @@ from .config import APP_DIR, config
 # ---------------------------------------------------------------------------
 
 # Client ID for the GenosLauncher Azure App registration.
-# End users never need to touch this — sign-in works out of the box.
-# Maintainers: replace this with the Application (client) ID from your
-# Azure App registration (portal.azure.com → App registrations).
-# Keep the tenant set to "consumers" and platform to "Mobile and desktop
-# applications" with redirect URI http://localhost (no port suffix).
-_BUILTIN_CLIENT_ID = os.environ.get("GENOS_AZURE_CLIENT_ID", "")
+# This literal is replaced at build time by the CI injection step
+# (see .github/workflows/release.yml).  End users never configure this.
+# Maintainers: register a free app at portal.azure.com (consumers tenant,
+# Mobile/desktop platform, redirect URI http://localhost, public client flow)
+# and store the Application (client) ID as the GENOS_AZURE_CLIENT_ID secret.
+_BUILTIN_CLIENT_ID = ""
 
 
 def _resolve_client_id() -> str:

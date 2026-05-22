@@ -40,10 +40,29 @@ jobs:
           pip install pip-audit
           pip-audit -r requirements.lock
 
-      - name: Build with PyInstaller
-        run: pyinstaller GenosLauncher.spec --clean --noconfirm
+      - name: Inject built-in client ID into source
+        shell: python
         env:
           GENOS_AZURE_CLIENT_ID: ${{ secrets.GENOS_AZURE_CLIENT_ID }}
+        run: |
+          import os, re, sys
+          client_id = os.environ.get("GENOS_AZURE_CLIENT_ID", "").strip()
+          if not client_id:
+              print("WARNING: GENOS_AZURE_CLIENT_ID secret is not set — "
+                    "Microsoft sign-in will not work in the distributed build.")
+              sys.exit(0)
+          path = "src/core/auth.py"
+          src  = open(path, encoding="utf-8").read()
+          src  = re.sub(
+              r'(_BUILTIN_CLIENT_ID\s*=\s*)"[^"]*"',
+              f'\\1"{client_id}"',
+              src,
+          )
+          open(path, "w", encoding="utf-8").write(src)
+          print(f"Client ID injected ({client_id[:8]}…)")
+
+      - name: Build with PyInstaller
+        run: pyinstaller GenosLauncher.spec --clean --noconfirm
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y

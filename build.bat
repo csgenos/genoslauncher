@@ -44,13 +44,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ── 2. Clean previous builds ────────────────────────────────────────────
-echo [2/4] Cleaning previous builds...
+REM ── 2. Inject built-in client ID (if GENOS_AZURE_CLIENT_ID is set) ────────
+echo [2/4] Injecting client ID...
+if defined GENOS_AZURE_CLIENT_ID (
+    python -c "import os,re; p='src/core/auth.py'; s=open(p,encoding='utf-8').read(); s=re.sub(r'(_BUILTIN_CLIENT_ID\s*=\s*)\"[^\"]*\"','\\g<1>\"%s\"'%%os.environ['GENOS_AZURE_CLIENT_ID'],s); open(p,'w',encoding='utf-8').write(s); print('  Client ID injected.')"
+    if errorlevel 1 echo  WARNING: Client ID injection failed — sign-in may not work.
+) else (
+    echo  GENOS_AZURE_CLIENT_ID not set — skipping injection.
+    echo  Microsoft sign-in will not work in this build.
+)
+
+REM ── 3. Clean previous builds ────────────────────────────────────────────
+echo [3/4] Cleaning previous builds...
 if exist "dist"  rmdir /s /q dist
 if exist "build" rmdir /s /q build
 
-REM ── 3. PyInstaller — onedir build (via spec file) ───────────────────────
-echo [3/4] Running PyInstaller...
+REM ── 4. PyInstaller ──────────────────────────────────────────────────────
+echo [4/4] Running PyInstaller...
 pyinstaller GenosLauncher.spec --noconfirm --clean
 if errorlevel 1 (
     echo  ERROR: PyInstaller failed.
@@ -58,8 +68,8 @@ if errorlevel 1 (
 )
 echo  PyInstaller finished. Output: dist\%APP_NAME%\
 
-REM ── 4. Inno Setup installer (optional) ──────────────────────────────────
-echo [4/4] Building installer...
+REM ── 5. Inno Setup installer (optional) ──────────────────────────────────
+echo [5/4] Building installer...
 set ISCC=""
 if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" (
     set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
