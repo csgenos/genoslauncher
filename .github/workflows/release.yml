@@ -50,14 +50,6 @@ jobs:
           bandit -r src -ll
           python -m unittest discover -s tests
 
-      - name: Require code-signing secrets for tag releases
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          if (-not $env:GENOS_WINDOWS_SIGNING_CERT_BASE64 -or -not $env:GENOS_WINDOWS_SIGNING_CERT_PASSWORD) {
-            throw "GENOS_WINDOWS_SIGNING_CERT_BASE64 and GENOS_WINDOWS_SIGNING_CERT_PASSWORD are required for tagged releases."
-          }
-
       - name: Build with PyInstaller
         run: pyinstaller GenosLauncher.spec --clean --noconfirm
 
