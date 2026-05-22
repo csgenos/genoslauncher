@@ -94,19 +94,40 @@ def _profile_path(instance_dir: Path) -> Path:
 
 
 def _load_profiles(instance_dir: Path) -> dict:
+    def _default_profiles() -> dict:
+        mods_dir = instance_dir / "mods"
+        mods = [f.name for f in mods_dir.iterdir() if f.suffix.lower() == ".jar"] if mods_dir.exists() else []
+        return {"active": "Default", "profiles": {"Default": mods}}
+
     p = _profile_path(instance_dir)
     if p.exists():
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("Profile root must be an object.")
+            profiles = raw.get("profiles", {})
+            if not isinstance(profiles, dict):
+                raise ValueError("profiles must be an object.")
+            cleaned_profiles: dict[str, list[str]] = {}
+            for name, values in profiles.items():
+                if not isinstance(name, str):
+                    continue
+                if not isinstance(values, list):
+                    continue
+                cleaned_profiles[name] = [v for v in values if isinstance(v, str)]
+            if "Default" not in cleaned_profiles:
+                cleaned_profiles["Default"] = []
+            active = raw.get("active", "Default")
+            if not isinstance(active, str) or active not in cleaned_profiles:
+                active = "Default"
+            return {"active": active, "profiles": cleaned_profiles}
         except Exception:
             backup = p.with_suffix(f".corrupt-{int(time.time())}.json")
             try:
                 shutil.copy2(p, backup)
             except OSError:
                 pass
-    mods_dir = instance_dir / "mods"
-    mods = [f.name for f in mods_dir.iterdir() if f.suffix.lower() == ".jar"] if mods_dir.exists() else []
-    return {"active": "Default", "profiles": {"Default": mods}}
+    return _default_profiles()
 
 
 def _save_profiles(instance_dir: Path, data: dict) -> None:

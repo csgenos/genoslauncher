@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import secrets
 import shutil
 import threading
 import time
@@ -286,7 +287,7 @@ class Config:
             k: v for k, v in self._data.items()
             if k not in _SENSITIVE_KEYS and k not in _SECRET_CONFIG_KEYS
         }
-        tmp = CONFIG_FILE.with_suffix(".tmp")
+        tmp = CONFIG_FILE.with_name(f".{CONFIG_FILE.name}.{secrets.token_hex(8)}.tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(safe_data, f, indent=2, ensure_ascii=False)

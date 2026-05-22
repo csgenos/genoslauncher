@@ -106,16 +106,19 @@ _HTTP = _req.Session()
 from .._version import __version__ as _VERSION
 _HTTP.headers.update({"User-Agent": f"GenosLauncher/{_VERSION}"})
 _STORAGE_WARNING = ""
+_STORAGE_WARNING_LOCK = threading.Lock()
 
 
 def _set_storage_warning(message: str) -> None:
-    global _STORAGE_WARNING
-    _STORAGE_WARNING = message
+    with _STORAGE_WARNING_LOCK:
+        global _STORAGE_WARNING
+        _STORAGE_WARNING = message
     log.warning(message)
 
 
 def credential_storage_warning() -> str:
-    return _STORAGE_WARNING
+    with _STORAGE_WARNING_LOCK:
+        return _STORAGE_WARNING
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +148,11 @@ def _derive_fallback_key() -> bytes:
         else:
             key_material = os.urandom(32)
             atomic_write_bytes(key_file, key_material)
+        if os.name != "nt":
+            try:
+                os.chmod(key_file, 0o600)
+            except OSError:
+                pass
     except OSError as exc:
         raise RuntimeError(
             f"Cannot read or write the credential key file at {key_file}. "

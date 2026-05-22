@@ -187,8 +187,8 @@ class ServersTab(QWidget):
             return
 
         self._status.setText(f"{len(servers)} saved server(s)")
-        for i, srv in enumerate(servers):
-            row = ServerRow(srv, on_remove=lambda _=False, idx=i: self._remove_server(idx))
+        for srv in servers:
+            row = ServerRow(srv, on_remove=lambda _=False, s=dict(srv): self._remove_server(s))
             row.launch_requested.connect(self._on_play)
             self._layout.addWidget(row)
         self._layout.addStretch()
@@ -212,18 +212,29 @@ class ServersTab(QWidget):
         config.set("servers", servers)
         self._refresh()
 
-    def _remove_server(self, index: int) -> None:
+    def _remove_server(self, server_ref: dict) -> None:
         servers = list(config.get("servers", []))
-        if 0 <= index < len(servers):
-            name = servers[index].get("name", "server")
-            reply = QMessageBox.question(
-                self, "Remove Server", f"Remove {name}?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply == QMessageBox.Yes:
-                servers.pop(index)
-                config.set("servers", servers)
-                self._refresh()
+        match_index = -1
+        for i, srv in enumerate(servers):
+            if (
+                srv.get("name", "") == server_ref.get("name", "")
+                and str(srv.get("ip", "")) == str(server_ref.get("ip", ""))
+                and int(srv.get("port", _DEFAULT_PORT)) == int(server_ref.get("port", _DEFAULT_PORT))
+            ):
+                match_index = i
+                break
+        if match_index < 0:
+            self._status.setText("Server not found (list changed).")
+            return
+        name = servers[match_index].get("name", "server")
+        reply = QMessageBox.question(
+            self, "Remove Server", f"Remove {name}?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            servers.pop(match_index)
+            config.set("servers", servers)
+            self._refresh()
 
     def _on_play(self, ip: str, port: str) -> None:
         instance = selected_instance()

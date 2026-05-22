@@ -85,6 +85,7 @@ class InstallWorker(QObject):
         self.version = version
         self.dest_dir = dest_dir
         self.requested_game_version = requested_game_version
+        self._mrpack_path: Path | None = None
 
     def run(self) -> None:
         try:
@@ -92,6 +93,12 @@ class InstallWorker(QObject):
         except Exception as exc:
             self.finished.emit(False, str(exc))
             return
+        finally:
+            if self._mrpack_path is not None:
+                try:
+                    self._mrpack_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         msg = f"'{self.project['title']}' installed successfully."
         self.finished.emit(True, msg)
 
@@ -105,6 +112,7 @@ class InstallWorker(QObject):
         file_url = primary["url"]
         filename = mr.safe_filename(primary["filename"])
         mrpack_path = mr.safe_download_path(self.dest_dir, filename)
+        self._mrpack_path = mrpack_path
 
         # 2. Download .mrpack
         total_size = primary.get("size", 0)

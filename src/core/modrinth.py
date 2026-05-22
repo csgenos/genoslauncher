@@ -146,6 +146,9 @@ def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
     with _cache_lock:
         if cache_key in _cache:
             etag, cached_data = _cache[cache_key]
+            # LRU touch: move key to the end of insertion order.
+            _cache.pop(cache_key, None)
+            _cache[cache_key] = (etag, cached_data)
             headers["If-None-Match"] = etag
 
     last_error: Exception | None = None
@@ -176,6 +179,8 @@ def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
     etag = resp.headers.get("ETag", "")
     if etag:
         with _cache_lock:
+            if cache_key in _cache:
+                _cache.pop(cache_key, None)
             _cache[cache_key] = (etag, data)
             if len(_cache) > _CACHE_MAX_ENTRIES:
                 try:
