@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
 from ...core import modrinth as mr
+from ...core.instances import create_modpack_instance
 from ...core.launcher import install_minecraft_base, install_loader
 
 
@@ -78,12 +79,23 @@ class InstallWorker(QObject):
 
     def run(self) -> None:
         try:
-            self._install()
-            self.finished.emit(True, f"'{self.project['title']}' installed successfully.")
+            failures = self._install()
         except Exception as exc:
             self.finished.emit(False, str(exc))
+            return
+        if failures:
+            failed_str = ", ".join(failures[:3])
+            if len(failures) > 3:
+                failed_str += f" (+{len(failures) - 3} more)"
+            msg = (
+                f"'{self.project['title']}' installed — "
+                f"{len(failures)} mod(s) could not be downloaded: {failed_str}"
+            )
+        else:
+            msg = f"'{self.project['title']}' installed successfully."
+        self.finished.emit(True, msg)
 
-    def _install(self) -> None:
+    def _install(self) -> list[str]:
         # 1. Find the primary file
         files = self.version.get("files", [])
         primary = next((f for f in files if f.get("primary")), files[0] if files else None)
@@ -110,7 +122,6 @@ class InstallWorker(QObject):
         mc_version = index.get("dependencies", {}).get("minecraft", "")
         instance_name = self.project["title"]
         instance_dir = APP_DIR / "instances" / instance_name
-        mods_dir = instance_dir / "mods"
 
         # 3b. Install base Minecraft version into the isolated modpack instance.
         mc_dir = str(instance_dir)
@@ -129,13 +140,10 @@ class InstallWorker(QObject):
         )
 
         # 4. Download mods
-        mod_files = index.get("files", [])
-        n = len(mod_files)
-
         def on_mod(current: int, total: int, fname: str) -> None:
             self.progress.emit(current, max(total, 1), f"Downloading mod {current}/{total}: {fname}")
 
-        mr.install_mrpack_mods(index, mods_dir, on_progress=on_mod)
+        failures = mr.install_mrpack_mods(index, instance_dir, on_progress=on_mod)
 
         # 5. Extract overrides
         self.progress.emit(0, 1, "Extracting overrides...")
@@ -143,6 +151,8 @@ class InstallWorker(QObject):
 
         # 6. Register instance in config
         create_modpack_instance(self.project, mc_version, instance_dir)
+
+        return failures
 
 
 # ---------------------------------------------------------------------------

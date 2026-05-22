@@ -1056,7 +1056,7 @@ class SetupWizard(QDialog):
 
     def _apply_and_accept(self) -> None:
         ram = self._ready_page.recommended_ram_mb
-        config.set("ram_mb", ram)
+        updates: dict = {"ram_mb": ram, "first_run": False}
 
         account = self._account_page.account_info
         if account.get("type") == "offline" and account.get("name"):
@@ -1064,11 +1064,11 @@ class SetupWizard(QDialog):
             existing: list = config.get("offline_accounts", [])
             if name not in existing:
                 existing.insert(0, name)
-            config.set("offline_accounts", existing)
-            config.set("last_account", name)
+            updates["offline_accounts"] = existing
+            updates["last_account"] = name
         # Microsoft account is already stored in the keyring by auth_manager.
 
-        config.set("first_run", False)
+        config.update(updates)
         self.accept()
 
     # ------------------------------------------------------------------

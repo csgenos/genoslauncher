@@ -96,14 +96,28 @@ class AuthError(Exception):
 # ---------------------------------------------------------------------------
 
 def _derive_fallback_key() -> bytes:
-    import uuid
-    machine_id = str(uuid.getnode()).encode()
+    """Derive the Fernet key for the fallback credential store.
+
+    Uses a random 32-byte secret written to APP_DIR/.fallback_key on first
+    run.  This key is non-reproducible from public information (unlike a MAC
+    address), making the fallback store infeasible to decrypt without direct
+    access to the installation directory.
+    """
+    key_file = APP_DIR / ".fallback_key"
+    try:
+        if key_file.exists():
+            key_material = key_file.read_bytes()
+        else:
+            key_material = os.urandom(32)
+            key_file.write_bytes(key_material)
+            if os.name != "nt":
+                os.chmod(key_file, 0o600)
+    except OSError as exc:
+        log.warning("Could not read/write fallback key file: %s", exc)
+        key_material = hashlib.sha256(str(id(key_file)).encode()).digest()
     salt = b"GenosLauncher-fallback-auth-v1"
-    if _CRYPTO_OK:
-        kdf = PBKDF2HMAC(algorithm=_hashes.SHA256(), length=32, salt=salt, iterations=100_000)
-        return _b64.urlsafe_b64encode(kdf.derive(machine_id))
-    import base64
-    return base64.urlsafe_b64encode(hashlib.sha256(salt + machine_id).digest())
+    kdf = PBKDF2HMAC(algorithm=_hashes.SHA256(), length=32, salt=salt, iterations=100_000)
+    return _b64.urlsafe_b64encode(kdf.derive(key_material))
 
 
 def _encrypt(payload: str) -> bytes:
@@ -342,34 +356,42 @@ class AuthManager:
         auth_manager.logout()                     # secure wipe
     """
 
+    _TOKEN_MAX_AGE = 50 * 60  # seconds — proactively refresh before the ~60-min MS expiry
+
     def __init__(self) -> None:
         self._account: Optional[dict] = None
         self._lock = threading.Lock()
         self._cancel_event = threading.Event()
+        self._token_acquired_at: float = 0.0
 
     # ------------------------------------------------------------------
-    # Properties
+    # Properties  (all reads hold _lock to prevent torn reads on logout/refresh)
     # ------------------------------------------------------------------
 
     @property
     def is_logged_in(self) -> bool:
-        return bool(self._account and self._account.get("access_token"))
+        with self._lock:
+            return bool(self._account and self._account.get("access_token"))
 
     @property
     def username(self) -> str:
-        return (self._account or {}).get("name", "")
+        with self._lock:
+            return (self._account or {}).get("name", "")
 
     @property
     def uuid(self) -> str:
-        return (self._account or {}).get("id", "")
+        with self._lock:
+            return (self._account or {}).get("id", "")
 
     @property
     def access_token(self) -> str:
-        return (self._account or {}).get("access_token", "")
+        with self._lock:
+            return (self._account or {}).get("access_token", "")
 
     @property
     def refresh_token(self) -> str:
-        return (self._account or {}).get("refresh_token", "")
+        with self._lock:
+            return (self._account or {}).get("refresh_token", "")
 
     # ------------------------------------------------------------------
     # Persistence
@@ -378,7 +400,10 @@ class AuthManager:
     def load_stored(self) -> bool:
         data = _load_account()
         if data and data.get("name") and data.get("refresh_token"):
-            self._account = data
+            with self._lock:
+                self._account = data
+                # _token_acquired_at stays 0.0 so ensure_token_fresh() will
+                # always do a proactive refresh on the first launch attempt.
             return True
         return False
 
@@ -406,8 +431,8 @@ class AuthManager:
         if not client_id:
             on_error(
                 "Microsoft sign-in is not configured for this build.\n\n"
-                "If you are a developer, register an Azure App at portal.azure.com "
-                "and set APP_CLIENT_ID in src/core/auth.py."
+                "Register an Azure App at portal.azure.com and set the "
+                "GENOS_AZURE_CLIENT_ID environment variable."
             )
             return
 
@@ -451,6 +476,7 @@ class AuthManager:
             )
             with self._lock:
                 self._account = account
+                self._token_acquired_at = time.monotonic()
             _store_account(account)
             on_success(account)
         except AuthError as exc:
@@ -476,6 +502,7 @@ class AuthManager:
             )
             with self._lock:
                 self._account = account
+                self._token_acquired_at = time.monotonic()
             _store_account(account)
             return True
         except Exception as exc:
@@ -484,6 +511,20 @@ class AuthManager:
 
     def refresh_async(self) -> None:
         threading.Thread(target=self.refresh, daemon=True).start()
+
+    def ensure_token_fresh(self) -> None:
+        """Synchronously refresh the access token if it is approaching expiry.
+
+        Called on the LaunchWorker thread just before launch so Minecraft
+        always starts with a valid token.  No-op when offline or when the
+        token was acquired less than _TOKEN_MAX_AGE seconds ago.
+        """
+        with self._lock:
+            if not self._account:
+                return
+            age = time.monotonic() - self._token_acquired_at
+        if age >= self._TOKEN_MAX_AGE:
+            self.refresh()
 
     # ------------------------------------------------------------------
     # Logout

@@ -37,7 +37,9 @@ log = logging.getLogger(__name__)
 
 _cache: dict[str, tuple[str, Any]] = {}
 _cache_lock = threading.Lock()
+_CACHE_MAX_ENTRIES = 256          # oldest entry evicted once this is exceeded
 _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_MAX_ICON_BYTES     =   2 * 1024 * 1024  # per-icon cap for untrusted CDN images
 _MAX_ZIP_FILES = 5000
 _MAX_ZIP_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
 _MAX_ZIP_COMPRESSION_RATIO = 100
@@ -81,6 +83,11 @@ def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
     if etag:
         with _cache_lock:
             _cache[cache_key] = (etag, data)
+            if len(_cache) > _CACHE_MAX_ENTRIES:
+                try:
+                    del _cache[next(iter(_cache))]
+                except StopIteration:
+                    pass
     return data
 
 
@@ -181,6 +188,7 @@ def download_file(
     expected_sha1: str = "",
     expected_sha512: str = "",
     allow_unverified: bool = False,
+    max_bytes: int = _MAX_DOWNLOAD_BYTES,
 ) -> None:
     """
     Stream-download url → dest_path.
@@ -206,7 +214,7 @@ def download_file(
         with _session.get(url, stream=True, timeout=30) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("Content-Length", 0))
-            if total > _MAX_DOWNLOAD_BYTES:
+            if total > max_bytes:
                 raise ModrinthError(f"Download too large: {total} bytes")
             done  = 0
             with open(tmp_path, "wb") as fh:
@@ -215,7 +223,7 @@ def download_file(
                         continue
                     fh.write(chunk)
                     done += len(chunk)
-                    if done > _MAX_DOWNLOAD_BYTES:
+                    if done > max_bytes:
                         raise ModrinthError("Download exceeded maximum allowed size")
                     if sha1_h:   sha1_h.update(chunk)
                     if sha512_h: sha512_h.update(chunk)
@@ -254,10 +262,10 @@ def download_icon(icon_url: str, cache_dir: Path) -> Optional[Path]:
         return None
     safe = re.sub(r"[^a-zA-Z0-9._-]", "_", icon_url.split("/")[-1])
     dest = cache_dir / safe
-    if dest.exists():
+    if dest.exists() and dest.stat().st_size > 0:
         return dest
     try:
-        download_file(icon_url, dest, allow_unverified=True)
+        download_file(icon_url, dest, allow_unverified=True, max_bytes=_MAX_ICON_BYTES)
         return dest
     except ModrinthError:
         return None
@@ -328,37 +336,48 @@ def extract_mrpack_overrides(mrpack_path: Path, dest_dir: Path) -> None:
 
 def install_mrpack_mods(
     index: dict,
-    mods_dir: Path,
+    instance_dir: Path,
     on_progress: Callable[[int, int, str], None] | None = None,
-) -> None:
+) -> list[str]:
     """
-    Download all mod files listed in the mrpack index into mods_dir.
+    Download all mod files listed in the mrpack index into instance_dir,
+    preserving the subdirectory structure declared in the index (mods/,
+    config/, resourcepacks/, etc.).
+
     Verifies SHA1/SHA512 hashes from the index (S-Y-006).
-    Skips paths that would escape mods_dir (B-Y-010).
+    Skips paths that would escape instance_dir (B-Y-010).
 
     on_progress(current_file, total_files, filename)
+
+    Returns a list of filenames that could not be downloaded.  An empty list
+    means all files were installed successfully.
     """
     files = index.get("files", [])
-    mods_dir.mkdir(parents=True, exist_ok=True)
+    instance_dir.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
 
     for i, file_entry in enumerate(files):
         raw_path = file_entry.get("path", "").lstrip("/")
 
-        # Strip any traversal components before taking just the filename
+        # Sanitize path components — strip traversal sequences while keeping
+        # the intended subdirectory structure (mods/, config/, resourcepacks/ …)
         parts = [p for p in Path(raw_path).parts if p not in (".", "..")]
         if not parts:
             continue
-        filename = Path(*parts).name
-        dest = _safe_path(mods_dir, filename)
+        rel_path = Path(*parts)
+        dest = _safe_path(instance_dir, str(rel_path))
         if dest is None:
             log.warning("Skipping unsafe mod path: %s", raw_path)
             continue
 
+        filename = rel_path.name
         if on_progress:
             on_progress(i + 1, len(files), filename)
 
         if dest.exists():
             continue
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
 
         hashes = file_entry.get("hashes", {})
         sha1   = hashes.get("sha1", "")
@@ -376,3 +395,6 @@ def install_mrpack_mods(
 
         if not downloaded:
             log.warning("Could not download %s", filename)
+            failures.append(filename)
+
+    return failures
