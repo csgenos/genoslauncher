@@ -106,6 +106,14 @@ if /I "%GENOS_RELEASE%"=="1" (
         if errorlevel 1 exit /b 1
     )
 )
+
+echo Generating SHA256 checksums...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$items=@('dist\%APP_NAME%\%APP_NAME%.exe'); $installer='installer_output\%APP_NAME%-%VERSION%-Setup.exe'; if (Test-Path $installer) { $items += $installer }; $items | Where-Object { Test-Path $_ } | Get-FileHash -Algorithm SHA256 | ForEach-Object { '{0}  {1}' -f $_.Hash.ToLowerInvariant(), (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ASCII 'SHA256SUMS.txt'"
+if errorlevel 1 (
+    echo  WARNING: Failed to generate SHA256SUMS.txt.
+) else (
+    echo  Checksums: SHA256SUMS.txt
+)
 REM
 REM  To sign: obtain an EV or OV code-signing certificate (e.g. DigiCert,
 REM  Sectigo) and run after build:

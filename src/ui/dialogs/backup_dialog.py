@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import threading
 import zipfile
 from datetime import datetime
@@ -29,6 +30,40 @@ def _backup_dir() -> Path:
     d = APP_DIR / "backups"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+_MAX_BACKUP_FILES = 20_000
+_MAX_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _safe_child(base_dir: Path, relative: str) -> Path:
+    target = (base_dir / relative).resolve()
+    target.relative_to(base_dir.resolve())
+    return target
+
+
+def _validate_backup_zip(zf: zipfile.ZipFile) -> None:
+    infos = zf.infolist()
+    if len(infos) > _MAX_BACKUP_FILES:
+        raise ValueError("Backup contains too many files")
+    total = 0
+    for info in infos:
+        total += info.file_size
+        if total > _MAX_BACKUP_BYTES:
+            raise ValueError("Backup is too large to restore safely")
+        _safe_child(Path("."), info.filename)
+
+
+def _extract_backup_safe(backup_path: Path, dest: Path) -> None:
+    with zipfile.ZipFile(backup_path, "r") as zf:
+        _validate_backup_zip(zf)
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            target = _safe_child(dest, info.filename)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 class WorldRow(QFrame):
@@ -232,17 +267,31 @@ class WorldBackupDialog(QDialog):
             return
 
         world_name = backup_path.stem.rsplit("_", 2)[0]
-        dest = self._saves_dir / world_name
+        try:
+            self._saves_dir.mkdir(parents=True, exist_ok=True)
+            dest = _safe_child(self._saves_dir, world_name)
+        except (OSError, ValueError):
+            self._status.setText("Restore failed: unsafe backup name.")
+            return
 
         def _do():
+            staging = Path(tempfile.mkdtemp(prefix=f".restore-{world_name}-", dir=str(self._saves_dir)))
+            rollback = self._saves_dir / f".rollback-{world_name}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             try:
+                _extract_backup_safe(backup_path, staging)
                 if dest.exists():
-                    shutil.rmtree(dest)
-                dest.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(backup_path, "r") as zf:
-                    zf.extractall(dest)
+                    dest.replace(rollback)
+                staging.replace(dest)
+                if rollback.exists():
+                    shutil.rmtree(rollback)
                 QTimer.singleShot(0, lambda: self._status.setText(f"Restored {world_name} successfully."))
             except Exception as exc:
+                if rollback.exists() and not dest.exists():
+                    try:
+                        rollback.replace(dest)
+                    except OSError:
+                        pass
+                shutil.rmtree(staging, ignore_errors=True)
                 QTimer.singleShot(0, lambda: self._status.setText(f"Restore failed: {exc}"))
 
         threading.Thread(target=_do, daemon=True).start()

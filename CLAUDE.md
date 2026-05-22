@@ -10,13 +10,13 @@ This file documents the architecture, conventions, and invariants of the GenosLa
 # First time
 python -m venv venv && venv/Scripts/activate   # Windows
 source venv/bin/activate                        # macOS / Linux
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 
 # Every time
 python src/main.py
 ```
 
-There is no test suite or linter configured yet. Validate changes by running the app directly.
+There is no full test suite configured yet. Validate changes with `python -m compileall -q src`, `python -m pip_audit -r requirements.lock --disable-pip`, and by running the app directly.
 
 ---
 
@@ -159,8 +159,9 @@ Saved servers in `config["servers"]` as `[{name, ip, port}]`. `ServerRow._ping()
 - **`--accessToken`** in the Minecraft launch command is visible in `/proc/<pid>/cmdline` on Linux and Task Manager on Windows. This is a known limitation of the MLL-based launch approach (documented in `SECURITY.md`).
 - Tokens are stored per-account in the system keyring where available. A Fernet-encrypted file in `APP_DIR` is used as a fallback.
 - The CurseForge API key is stored in `config.json` in plaintext. Treat it like a password.
-- All mod downloads from Modrinth are verified with SHA-1 and SHA-512 hashes. CurseForge downloads do not currently perform hash verification.
-- Zip extraction uses `_safe_path()` to prevent zip-slip attacks.
+- All mod downloads from Modrinth are verified with SHA-1 and SHA-512 hashes.
+- CurseForge downloads enforce HTTPS, maximum size caps, temporary-file atomic replace, and hash verification when metadata provides hashes.
+- Backup restore validates archive entries, applies extraction limits, blocks traversal, and restores via staged swap with rollback on failure.
 
 ---
 
@@ -172,3 +173,5 @@ Saved servers in `config["servers"]` as `[{name, ip, port}]`. `ServerRow._ping()
 4. Tag the commit: `git tag v0.x.0`.
 5. Push the tag — GitHub Actions builds and attaches the release artifacts.
 6. The in-app updater compares the tag against `CURRENT_VERSION` on next launch.
+
+Release workflow now requires code-signing secrets for tag releases, signs artifacts in CI when configured, and publishes SHA256 checksum files with release artifacts.

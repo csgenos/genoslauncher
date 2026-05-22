@@ -453,5 +453,18 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         config.update({"window_width": self.width(), "window_height": self.height()})
         if self._launch_worker:
-            self._launch_worker.terminate()
+            box = QMessageBox(self)
+            box.setWindowTitle("Minecraft is running")
+            box.setText("Minecraft is still running. What would you like to do?")
+            leave_running = box.addButton("Close Launcher", QMessageBox.AcceptRole)
+            stop_game = box.addButton("Stop Minecraft", QMessageBox.DestructiveRole)
+            cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+            box.setDefaultButton(leave_running)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked == cancel:
+                event.ignore()
+                return
+            if clicked == stop_game:
+                self._launch_worker.terminate()
         super().closeEvent(event)

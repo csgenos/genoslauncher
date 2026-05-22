@@ -681,7 +681,7 @@ class AuthManager:
             _store_account(account)
             _store_account_for(account)
             _register_username(account["name"])
-            config.update({"active_ms_username": account["name"]})
+            config.update({"active_ms_username": account["name"], "last_account": account["name"]})
             on_success(account)
         except AuthError as exc:
             on_error(str(exc))
@@ -747,10 +747,8 @@ class AuthManager:
                 ms_tokens["access_token"],
                 ms_tokens.get("refresh_token", ""),
             )
-            _store_account(account)
             _store_account_for(account)
             _register_username(account["name"])
-            config.update({"active_ms_username": account["name"]})
             on_success(account)
         except AuthError as exc:
             on_error(str(exc))
@@ -801,6 +799,7 @@ class AuthManager:
                 self._account = account
                 self._token_acquired_at = time.monotonic()
             _store_account(account)
+            _store_account_for(account)
             return True
         except Exception as exc:
             log.warning("Token refresh failed: %s", exc)
@@ -809,19 +808,21 @@ class AuthManager:
     def refresh_async(self) -> None:
         threading.Thread(target=self.refresh, daemon=True).start()
 
-    def ensure_token_fresh(self) -> None:
+    def ensure_token_fresh(self) -> bool:
         """Synchronously refresh the access token if it is approaching expiry.
 
         Called on the LaunchWorker thread just before launch so Minecraft
         always starts with a valid token.  No-op when offline or when the
-        token was acquired less than _TOKEN_MAX_AGE seconds ago.
+        token was acquired less than _TOKEN_MAX_AGE seconds ago. Returns False
+        when an online account needs refresh but refresh fails.
         """
         with self._lock:
             if not self._account:
-                return
+                return True
             age = time.monotonic() - self._token_acquired_at
         if age >= self._TOKEN_MAX_AGE:
-            self.refresh()
+            return self.refresh()
+        return True
 
     # ------------------------------------------------------------------
     # Logout

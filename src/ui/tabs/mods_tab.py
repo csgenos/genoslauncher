@@ -174,31 +174,53 @@ class ModInstallWorker(QObject):
     def run(self) -> None:
         try:
             mc_version = (self.instance or {}).get("mc_version", "")
-            versions = mr.get_project_versions(
-                self.project["id"],
-                game_versions=[mc_version] if mc_version else None,
-            )
-            if not versions:
-                raise mr.ModrinthError("No compatible versions found for the active instance.")
-            version = versions[0]
-            files = version.get("files", [])
-            primary = next((f for f in files if f.get("primary")), files[0] if files else None)
-            if not primary:
-                raise mr.ModrinthError("No downloadable mod file found.")
-
             instance_dir = Path((self.instance or {}).get("directory", str(self.fallback_dir)))
             mods_dir = instance_dir / "mods"
             mods_dir.mkdir(parents=True, exist_ok=True)
-            hashes = primary.get("hashes", {})
-            dest = mods_dir / primary["filename"]
-            mr.download_file(
-                primary["url"],
-                dest,
-                expected_sha1=hashes.get("sha1", ""),
-                expected_sha512=hashes.get("sha512", ""),
-            )
-            _register_mod(instance_dir, self.project, version, primary["filename"])
-            name = self.project.get("title", primary["filename"])
+
+            if self.project.get("source") == "curseforge":
+                files = cf.get_mod_files(int(self.project["cf_id"]), mc_version)
+                if not files:
+                    raise cf.CurseForgeError("No compatible CurseForge files found for the active instance.")
+                version = files[0]
+                file_id = int(version.get("id", 0))
+                url = version.get("downloadUrl") or cf.get_download_url(int(self.project["cf_id"]), file_id)
+                if not url:
+                    raise cf.CurseForgeError("CurseForge did not provide a download URL for this file.")
+                filename = mr.safe_filename(version.get("fileName", "mod.jar"))
+                sha1, sha512 = cf.hashes_for_file(version)
+                dest = mr.safe_download_path(mods_dir, filename)
+                cf.download_file(url, dest, expected_sha1=sha1, expected_sha512=sha512)
+                index_version = {
+                    "id": str(file_id),
+                    "version_number": version.get("displayName", filename),
+                }
+                _register_mod(instance_dir, self.project, index_version, filename)
+            else:
+                versions = mr.get_project_versions(
+                    self.project["id"],
+                    game_versions=[mc_version] if mc_version else None,
+                )
+                if not versions:
+                    raise mr.ModrinthError("No compatible versions found for the active instance.")
+                version = versions[0]
+                files = version.get("files", [])
+                primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+                if not primary:
+                    raise mr.ModrinthError("No downloadable mod file found.")
+
+                hashes = primary.get("hashes", {})
+                filename = mr.safe_filename(primary["filename"])
+                dest = mr.safe_download_path(mods_dir, filename)
+                mr.download_file(
+                    primary["url"],
+                    dest,
+                    expected_sha1=hashes.get("sha1", ""),
+                    expected_sha512=hashes.get("sha512", ""),
+                )
+                _register_mod(instance_dir, self.project, version, filename)
+
+            name = self.project.get("title", filename)
             self.finished.emit(True, f"Installed {name} to {mods_dir}.")
         except Exception as exc:
             self.finished.emit(False, str(exc))
@@ -695,21 +717,24 @@ class ModsTab(QWidget):
         def _do_update():
             try:
                 hashes  = latest_file.get("hashes", {})
-                dest    = mods_dir / latest_file["filename"]
+                filename = mr.safe_filename(latest_file["filename"])
+                dest    = mr.safe_download_path(mods_dir, filename)
                 mr.download_file(
                     latest_file["url"], dest,
                     expected_sha1=hashes.get("sha1", ""),
                     expected_sha512=hashes.get("sha512", ""),
                 )
-                old = mods_dir / info["current_filename"]
-                if old.exists() and old != dest:
-                    old.unlink(missing_ok=True)
+                old_name = info.get("current_filename", "")
+                if old_name:
+                    old = mr.safe_download_path(mods_dir, old_name)
+                    if old.exists() and old != dest:
+                        old.unlink(missing_ok=True)
                 index = _load_index(instance_dir)
                 pid = info["project_id"]
                 if pid in index:
                     index[pid]["version_id"]     = info["latest_version_id"]
                     index[pid]["version_number"]  = info["latest_version_number"]
-                    index[pid]["filename"]         = latest_file["filename"]
+                    index[pid]["filename"]         = filename
                     _save_index(instance_dir, index)
                 QTimer.singleShot(0, lambda: self._status.setText(f"Updated {info['title']}."))
             except Exception as exc:

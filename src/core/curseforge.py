@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import tempfile
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +21,7 @@ _GAME_ID = 432   # Minecraft game ID in CurseForge
 # CurseForge class IDs
 _CLASS_MOD      = 6
 _CLASS_MODPACK  = 4471
+_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 
 class CurseForgeError(Exception):
@@ -105,25 +109,76 @@ def get_mod_files(mod_id: int, game_version: str = "") -> list[dict]:
         raise CurseForgeError(f"Could not fetch mod files: {exc}") from exc
 
 
-def download_file(url: str, dest: Path, on_progress=None) -> None:
-    """Download a file to dest path with optional progress callback(done, total)."""
+def hashes_for_file(file_info: dict) -> tuple[str, str]:
+    """Return (sha1, sha512) from CurseForge file metadata when available."""
+    sha1 = ""
+    sha512 = ""
+    for item in file_info.get("hashes", []) or []:
+        algo = str(item.get("algo", "")).lower()
+        value = str(item.get("value", "")).strip()
+        if algo in {"1", "sha1"}:
+            sha1 = value
+        elif algo in {"sha512", "512"}:
+            sha512 = value
+    return sha1, sha512
+
+
+def download_file(
+    url: str,
+    dest: Path,
+    on_progress=None,
+    expected_sha1: str = "",
+    expected_sha512: str = "",
+    allow_unverified: bool = False,
+    max_bytes: int = _MAX_DOWNLOAD_BYTES,
+) -> None:
+    """Download a CurseForge file with HTTPS, size, and hash protections."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https":
+        raise CurseForgeError(f"Refusing non-HTTPS download URL: {url}")
+    expected_sha1 = expected_sha1.strip().lower()
+    expected_sha512 = expected_sha512.strip().lower()
+    if not allow_unverified and not (expected_sha1 or expected_sha512):
+        raise CurseForgeError(f"Refusing unverified download with no hash: {url}")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    sha1_h = hashlib.sha1(usedforsecurity=False) if expected_sha1 else None
+    sha512_h = hashlib.sha512() if expected_sha512 else None
+
     try:
         resp = _session().get(url, stream=True, timeout=60)
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
+        if total > max_bytes:
+            raise CurseForgeError(f"Download too large: {total} bytes")
         done = 0
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(".tmp")
-        with open(tmp, "wb") as fh:
+        with tempfile.NamedTemporaryFile(delete=False, dir=dest.parent, suffix=".download_tmp") as fh:
+            tmp_path = Path(fh.name)
             for chunk in resp.iter_content(chunk_size=65536):
                 if chunk:
                     fh.write(chunk)
                     done += len(chunk)
+                    if done > max_bytes:
+                        raise CurseForgeError("Download exceeded maximum allowed size")
+                    if sha1_h:
+                        sha1_h.update(chunk)
+                    if sha512_h:
+                        sha512_h.update(chunk)
                     if on_progress and total:
                         on_progress(done, total)
-        tmp.replace(dest)
+        if expected_sha1 and sha1_h and sha1_h.hexdigest() != expected_sha1:
+            raise CurseForgeError(f"SHA1 mismatch for {dest.name}")
+        if expected_sha512 and sha512_h and sha512_h.hexdigest() != expected_sha512:
+            raise CurseForgeError(f"SHA512 mismatch for {dest.name}")
+        tmp_path.replace(dest)
     except requests.RequestException as exc:
         raise CurseForgeError(f"Download failed: {exc}") from exc
+    except Exception:
+        raise
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def _normalize(raw: dict) -> dict:
