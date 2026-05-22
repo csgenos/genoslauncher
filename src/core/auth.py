@@ -64,13 +64,11 @@ from .config import APP_DIR, config
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# Client ID for the GenosLauncher Azure App registration.
-# This literal is replaced at build time by the CI injection step
-# (see .github/workflows/release.yml).  End users never configure this.
-# Maintainers: register a free app at portal.azure.com (consumers tenant,
-# Mobile/desktop platform, redirect URI http://localhost, public client flow)
-# and store the Application (client) ID as the GENOS_AZURE_CLIENT_ID secret.
-_BUILTIN_CLIENT_ID = ""
+# Xbox Live public client ID — used by HMCL, MultiMC, and many open-source
+# Minecraft launchers. No Azure registration required for end users.
+# Replace via GENOS_AZURE_CLIENT_ID env var or CI secret if you want your
+# own registered app instead.
+_BUILTIN_CLIENT_ID = "00000000402b5328"
 
 
 def _resolve_client_id() -> str:
