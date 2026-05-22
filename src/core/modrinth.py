@@ -170,7 +170,10 @@ def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
 
     if resp.status_code == 304:
         with _cache_lock:
-            return _cache[cache_key][1]
+            entry = _cache.get(cache_key)
+        if entry is not None:
+            return entry[1]
+        raise ModrinthError("Received 304 but cached response has been evicted")
 
     if not resp.ok:
         raise ModrinthError(f"Modrinth API error {resp.status_code}: {resp.text[:200]}")
@@ -223,6 +226,7 @@ def search_projects(
     limit: int = 20,
     offset: int = 0,
     categories: list[str] | None = None,
+    sort_index: str = "downloads",
 ) -> tuple[list[dict], int]:
     facets: list[list[str]] = [[f"project_type:{project_type}"]]
     if game_version:
@@ -235,7 +239,7 @@ def search_projects(
         "facets": json.dumps(facets),
         "limit":  limit,
         "offset": offset,
-        "index":  "downloads",
+        "index":  sort_index,
     }
     data = _get("/search", params)
     hits = [_project_from_hit(h) for h in data.get("hits", [])]

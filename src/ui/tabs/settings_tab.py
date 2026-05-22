@@ -30,8 +30,9 @@ from PySide6.QtWidgets import (
 
 from ..styles import COLORS as C, FONT, apply_theme
 from ..components.animated_button import OutlineButton, PrimaryButton
-from ...core.config import config
+from ...core.config import config, APP_DIR
 from ...core.java_manager import JVM_PRESETS, find_java_installations
+from ...core.secure_store import get_secret, set_secret
 from ..._version import __version__
 
 
@@ -503,10 +504,12 @@ class SettingsTab(QWidget):
         behav_layout.addWidget(cf_hint)
         self._cf_key_input = QLineEdit()
         self._cf_key_input.setPlaceholderText("Enter CurseForge API key…")
-        self._cf_key_input.setText(config.get("curseforge_api_key", ""))
+        self._cf_key_input.setText(get_secret(APP_DIR, "curseforge_api_key"))
         self._cf_key_input.setEchoMode(QLineEdit.Password)
         self._cf_key_input.setFixedHeight(38)
-        self._cf_key_input.textChanged.connect(lambda t: self._debounced_set("curseforge_api_key", t))
+        self._cf_key_input.textChanged.connect(
+            lambda t: set_secret(APP_DIR, "curseforge_api_key", t)
+        )
         behav_layout.addWidget(self._cf_key_input)
 
         cl.addWidget(behav_card)

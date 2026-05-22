@@ -14,7 +14,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .config import config
+from .config import APP_DIR
+from .secure_store import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class CurseForgeError(Exception):
 
 
 def _key() -> str:
-    return config.get("curseforge_api_key", "")
+    return get_secret(APP_DIR, "curseforge_api_key")
 
 
 def _session() -> requests.Session:
