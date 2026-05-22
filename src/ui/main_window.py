@@ -7,13 +7,17 @@ Routes sidebar navigation, orchestrates launch/install workers.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRect
+import webbrowser
+
+from PySide6.QtCore import Qt, QRect, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSizeGrip,
     QStackedWidget,
     QVBoxLayout,
@@ -34,6 +38,7 @@ from .login_dialog import LoginDialog
 from ..core.auth import auth_manager
 from ..core.config import config
 from ..core.launcher import InstallWorker, LaunchWorker
+from ..core.updater import check_async
 
 _RESIZE_MARGIN = 6
 
@@ -76,6 +81,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._load_auth()
+        QTimer.singleShot(3000, self._check_for_update)
 
     # ------------------------------------------------------------------
     # Window setup
@@ -112,6 +118,11 @@ class MainWindow(QMainWindow):
         # Title bar
         self._title_bar = TitleBar(root)
         root_layout.addWidget(self._title_bar)
+
+        # Update notification bar (hidden until an update is found)
+        self._update_bar = self._build_update_bar()
+        self._update_bar.setVisible(False)
+        root_layout.addWidget(self._update_bar)
 
         # Body: sidebar | content
         body = QHBoxLayout()
@@ -156,6 +167,69 @@ class MainWindow(QMainWindow):
         grip = QSizeGrip(root)
         grip.setStyleSheet("background: transparent;")
         root_layout.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
+
+    def _build_update_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(38)
+        bar.setStyleSheet(f"""
+            background: {C["accent_blue_soft"]};
+            border-bottom: 1px solid {C["border_focus"]};
+        """)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(20, 0, 12, 0)
+        layout.setSpacing(10)
+
+        self._update_label = QLabel()
+        self._update_label.setStyleSheet(f"font-size: 12px; color: {C['text_primary']}; font-weight: 600;")
+        layout.addWidget(self._update_label)
+
+        self._update_url = ""
+        dl_btn = QPushButton("Download")
+        dl_btn.setFixedSize(90, 26)
+        dl_btn.setCursor(Qt.PointingHandCursor)
+        dl_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C["accent"]};
+                color: {C["text_inverse"]};
+                border: none;
+                border-radius: 5px;
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{ background: #1F2937; }}
+        """)
+        dl_btn.clicked.connect(lambda: webbrowser.open(self._update_url) if self._update_url else None)
+        layout.addWidget(dl_btn)
+
+        dismiss = QPushButton("✕")
+        dismiss.setFixedSize(26, 26)
+        dismiss.setCursor(Qt.PointingHandCursor)
+        dismiss.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {C["text_secondary"]};
+                border: none;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{ color: {C["text_primary"]}; }}
+        """)
+        dismiss.clicked.connect(lambda: self._update_bar.setVisible(False))
+        layout.addWidget(dismiss)
+
+        return bar
+
+    def _check_for_update(self) -> None:
+        def _on_result(result):
+            if result:
+                QTimer.singleShot(0, lambda: self._show_update_bar(result))
+        check_async(_on_result)
+
+    def _show_update_bar(self, result: dict) -> None:
+        self._update_url = result.get("url", "")
+        self._update_label.setText(
+            f"⬆  GenosLauncher {result['version']} is available"
+        )
+        self._update_bar.setVisible(True)
 
     # ------------------------------------------------------------------
     # Signals

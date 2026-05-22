@@ -275,6 +275,24 @@ def install_loader(
         )
         return f"quilt-loader-{quilt_ver}-{mc_version}"
 
+    forge_ver = deps.get("forge")
+    if forge_ver:
+        full_ver = f"{mc_version}-{forge_ver}"
+        _cb(0, 1, f"Installing Forge {forge_ver} for {mc_version}…")
+        java_path = config.get("java_path") or None
+        try:
+            mll.forge.install_forge_version(full_ver, mc_dir, callbacks, java=java_path)
+            return mll.forge.forge_to_installed_version(full_ver)
+        except Exception as exc:
+            log.warning("Forge install failed for %s: %s", full_ver, exc)
+
+    neoforge_ver = deps.get("neoforge")
+    if neoforge_ver:
+        log.warning(
+            "NeoForge %s detected in mrpack but is not yet supported by this MLL version; "
+            "launching with base Minecraft %s.", neoforge_ver, mc_version
+        )
+
     return mc_version
 
 

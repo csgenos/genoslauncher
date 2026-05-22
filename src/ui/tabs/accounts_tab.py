@@ -153,6 +153,18 @@ class AccountsTab(QWidget):
         self._ms_card = self._build_ms_card()
         self._root.addWidget(self._ms_card)
 
+        # Add another MS account
+        add_ms_row = QHBoxLayout()
+        add_ms_lbl = QLabel("Have multiple Minecraft accounts?")
+        add_ms_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        add_ms_row.addWidget(add_ms_lbl)
+        add_ms_row.addStretch()
+        self._add_ms_btn = OutlineButton("+ Add Microsoft Account")
+        self._add_ms_btn.setFixedHeight(34)
+        self._add_ms_btn.clicked.connect(self._add_ms_account)
+        add_ms_row.addWidget(self._add_ms_btn)
+        self._root.addLayout(add_ms_row)
+
         # Offline account row
         offline_row = QHBoxLayout()
         offline_lbl = QLabel("Or add an offline account:")
@@ -252,13 +264,14 @@ class AccountsTab(QWidget):
     def _refresh_state(self) -> None:
         # Update Microsoft card
         if auth_manager.is_logged_in:
-            self._ms_title.setText(f"Signed in as {auth_manager.username}")
+            self._ms_title.setText(f"Active: {auth_manager.username}")
             self._ms_sub.setText("Microsoft account linked · Minecraft online play enabled")
             self._ms_btn.setText("Sign Out")
         else:
             self._ms_title.setText("Sign in with Microsoft")
             self._ms_sub.setText("Required for online multiplayer. Links your Xbox / Minecraft account.")
             self._ms_btn.setText("Sign In")
+        self._add_ms_btn.setVisible(auth_manager.is_logged_in)
 
         # Rebuild accounts list
         while self._accounts_layout.count():
@@ -268,13 +281,15 @@ class AccountsTab(QWidget):
 
         active = config.get("last_account", "")
 
-        if auth_manager.is_logged_in:
+        active_ms = auth_manager.username if auth_manager.is_logged_in else ""
+        for ms_name in auth_manager.list_ms_accounts():
+            is_active = (ms_name == active_ms)
             row = AccountRow(
-                auth_manager.username,
-                "Microsoft · Online",
-                is_active=(active == auth_manager.username or not active),
-                on_select=lambda: self._select_account(auth_manager.username),
-                on_remove=self._logout_ms,
+                ms_name,
+                "Microsoft · Online" if is_active else "Microsoft · Saved",
+                is_active=(ms_name == active and is_active) or (is_active and not active),
+                on_select=lambda n=ms_name: self._switch_ms_account(n),
+                on_remove=lambda n=ms_name: self._remove_ms_account(n),
             )
             self._accounts_layout.addWidget(row)
 
@@ -322,6 +337,34 @@ class AccountsTab(QWidget):
         if reply == QMessageBox.Yes:
             auth_manager.logout()
             config.update({"last_account": ""})
+            self._refresh_state()
+
+    def _add_ms_account(self) -> None:
+        dlg = LoginDialog(self)
+        dlg.setWindowTitle("Add Microsoft Account")
+        # Use add_account so it doesn't replace the active session
+        original_start = auth_manager.start_login
+        auth_manager.start_login = auth_manager.add_account  # type: ignore[method-assign]
+        dlg.login_succeeded.connect(lambda _: self._refresh_state())
+        result = dlg.exec()
+        auth_manager.start_login = original_start  # type: ignore[method-assign]
+
+    def _switch_ms_account(self, username: str) -> None:
+        if auth_manager.switch_account(username):
+            self._refresh_state()
+        else:
+            QMessageBox.warning(self, "Switch Account",
+                                f"Could not load saved credentials for {username}.\n"
+                                "Please sign in again.")
+
+    def _remove_ms_account(self, username: str) -> None:
+        reply = QMessageBox.question(
+            self, "Remove Account",
+            f"Remove {username} from saved accounts?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            auth_manager.remove_ms_account(username)
             self._refresh_state()
 
     def _add_offline(self) -> None:

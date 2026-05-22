@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import uuid
 from pathlib import Path
 
 from .config import INSTANCES_DIR, config
+
+log = logging.getLogger(__name__)
 
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ -]+")
@@ -167,3 +170,71 @@ def find_instance_for_version(version_id: str) -> dict | None:
 
 def remove_instance(instance_id: str) -> None:
     save_instances([i for i in list_instances() if i.get("id") != instance_id])
+
+
+# ---------------------------------------------------------------------------
+# Import from MultiMC / Prism Launcher
+# ---------------------------------------------------------------------------
+
+def _parse_instance_cfg(path: Path) -> dict:
+    """Parse a MultiMC/Prism instance.cfg INI-style file into a plain dict."""
+    result: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("[") or not line or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = value.strip()
+    return result
+
+
+def import_prism_instances(prism_dir: Path) -> list[dict]:
+    """
+    Scan a MultiMC/Prism Launcher instances directory for importable instances.
+
+    Each subfolder containing an instance.cfg with an IntendedVersion is imported
+    as a GenosLauncher instance pointing to the existing game files (no copy made).
+    Returns the list of newly created instance dicts.
+    """
+    if not prism_dir.is_dir():
+        return []
+
+    imported: list[dict] = []
+    for child in sorted(prism_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        cfg_path = child / "instance.cfg"
+        if not cfg_path.exists():
+            continue
+        try:
+            cfg = _parse_instance_cfg(cfg_path)
+            version = cfg.get("IntendedVersion", "").strip()
+            if not version:
+                continue
+
+            name = cfg.get("name", child.name).strip() or child.name
+
+            # Locate the actual game dir (.minecraft or minecraft subdir)
+            for candidate in (".minecraft", "minecraft"):
+                game_dir = child / candidate
+                if game_dir.is_dir():
+                    break
+            else:
+                game_dir = child
+
+            instance_id = f"import-{uuid.uuid4().hex[:12]}"
+            instance = upsert_instance({
+                "id":        instance_id,
+                "name":      safe_instance_name(f"{name} (imported)"),
+                "title":     name,
+                "mc_version": version,
+                "directory": str(game_dir),
+                "type":      "imported",
+                "source":    "prism",
+                "jvm_args":  cfg.get("JvmArgs", ""),
+            })
+            imported.append(instance)
+        except Exception as exc:
+            log.warning("Failed to import instance from %s: %s", child, exc)
+
+    return imported

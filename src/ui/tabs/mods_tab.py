@@ -1,7 +1,9 @@
-"""Modrinth mods browser and per-instance mod installer."""
+"""Modrinth mods browser, per-instance mod installer, and mod update checker."""
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
@@ -21,6 +23,44 @@ from ..styles import COLORS as C, FONT
 from ...core import modrinth as mr
 from ...core.config import APP_DIR, config
 from ...core.instances import list_instances, selected_instance, selected_instance_dir, set_selected_instance
+
+
+# ---------------------------------------------------------------------------
+# Mod metadata helpers
+# ---------------------------------------------------------------------------
+
+def _index_path(instance_dir: Path) -> Path:
+    return instance_dir / "mods_index.json"
+
+
+def _load_index(instance_dir: Path) -> dict:
+    p = _index_path(instance_dir)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_index(instance_dir: Path, index: dict) -> None:
+    _index_path(instance_dir).write_text(
+        json.dumps(index, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _register_mod(instance_dir: Path, project: dict, version: dict, filename: str) -> None:
+    index = _load_index(instance_dir)
+    index[project["id"]] = {
+        "project_id":     project["id"],
+        "version_id":     version.get("id", ""),
+        "version_number": version.get("version_number", ""),
+        "filename":       filename,
+        "title":          project.get("title", filename),
+        "installed_at":   datetime.now(timezone.utc).isoformat(),
+    }
+    _save_index(instance_dir, index)
 
 
 class ModSearchWorker(QObject):
@@ -63,12 +103,14 @@ class ModInstallWorker(QObject):
             )
             if not versions:
                 raise mr.ModrinthError("No compatible versions found for the active instance.")
-            files = versions[0].get("files", [])
+            version = versions[0]
+            files = version.get("files", [])
             primary = next((f for f in files if f.get("primary")), files[0] if files else None)
             if not primary:
                 raise mr.ModrinthError("No downloadable mod file found.")
 
-            mods_dir = (Path((self.instance or {}).get("directory", self.fallback_dir)) / "mods")
+            instance_dir = Path((self.instance or {}).get("directory", str(self.fallback_dir)))
+            mods_dir = instance_dir / "mods"
             mods_dir.mkdir(parents=True, exist_ok=True)
             hashes = primary.get("hashes", {})
             dest = mods_dir / primary["filename"]
@@ -78,10 +120,110 @@ class ModInstallWorker(QObject):
                 expected_sha1=hashes.get("sha1", ""),
                 expected_sha512=hashes.get("sha512", ""),
             )
+            _register_mod(instance_dir, self.project, version, primary["filename"])
             name = self.project.get("title", primary["filename"])
             self.finished.emit(True, f"Installed {name} to {mods_dir}.")
         except Exception as exc:
             self.finished.emit(False, str(exc))
+
+
+class ModUpdateWorker(QObject):
+    """Check for newer versions of tracked mods in the active instance."""
+    updates_found = Signal(list)   # list of update-info dicts
+    status        = Signal(str)
+
+    def __init__(self, instance: dict) -> None:
+        super().__init__()
+        self._instance = instance
+
+    def run(self) -> None:
+        instance_dir = Path(self._instance.get("directory", ""))
+        mc_version   = self._instance.get("mc_version", "")
+        index        = _load_index(instance_dir)
+        if not index:
+            self.status.emit("No tracked mods for this instance.")
+            self.updates_found.emit([])
+            return
+        updates: list[dict] = []
+        for i, (project_id, entry) in enumerate(index.items()):
+            self.status.emit(f"Checking {i + 1}/{len(index)}: {entry.get('title', project_id)}…")
+            try:
+                versions = mr.get_project_versions(
+                    project_id,
+                    game_versions=[mc_version] if mc_version else None,
+                )
+                if not versions:
+                    continue
+                latest = versions[0]
+                if latest.get("id") != entry.get("version_id"):
+                    files = latest.get("files", [])
+                    primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+                    updates.append({
+                        "project_id":      project_id,
+                        "title":           entry.get("title", project_id),
+                        "current_version": entry.get("version_number", "?"),
+                        "current_filename": entry.get("filename", ""),
+                        "latest_version_id":     latest.get("id", ""),
+                        "latest_version_number": latest.get("version_number", "?"),
+                        "latest_file":     primary,
+                        "instance_dir":    str(instance_dir),
+                    })
+            except Exception:
+                continue
+        msg = f"{len(updates)} update(s) available." if updates else "All tracked mods are up to date."
+        self.status.emit(msg)
+        self.updates_found.emit(updates)
+
+
+class ModUpdateCard(QFrame):
+    """A single row in the mod update list."""
+    update_requested = Signal(dict)
+
+    def __init__(self, info: dict, parent=None) -> None:
+        super().__init__(parent)
+        self._info = info
+        self.setObjectName("ModUpdateCard")
+        self.setFixedHeight(56)
+        self.setStyleSheet(f"""
+            #ModUpdateCard {{
+                background: {C["bg_primary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 8px;
+            }}
+        """)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setSpacing(10)
+
+        name = QLabel(info["title"])
+        name.setStyleSheet(f"font-size: {FONT['sm']}; font-weight: 700; color: {C['text_primary']};")
+        layout.addWidget(name, 1)
+
+        ver_lbl = QLabel(f"{info['current_version']}  →  {info['latest_version_number']}")
+        ver_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_secondary']};")
+        layout.addWidget(ver_lbl)
+
+        self._btn = QPushButton("Update")
+        self._btn.setFixedSize(72, 28)
+        self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C["accent"]};
+                color: {C["text_inverse"]};
+                border: none;
+                border-radius: 5px;
+                font-size: {FONT["xs"]};
+                font-weight: 700;
+            }}
+            QPushButton:hover {{ background: #1F2937; }}
+            QPushButton:disabled {{ background: {C["bg_tertiary"]}; color: {C["text_disabled"]}; }}
+        """)
+        self._btn.clicked.connect(lambda: self.update_requested.emit(self._info))
+        layout.addWidget(self._btn)
+
+    def set_updated(self) -> None:
+        self._btn.setText("Done")
+        self._btn.setEnabled(False)
 
 
 def _fmt_dl(n: int) -> str:
@@ -183,6 +325,24 @@ class ModsTab(QWidget):
         title.setStyleSheet(f"font-size: {FONT['2xl']}; font-weight: 800; color: {C['text_primary']};")
         header.addWidget(title)
         header.addStretch()
+
+        self._check_updates_btn = QPushButton("Check for Updates")
+        self._check_updates_btn.setFixedHeight(34)
+        self._check_updates_btn.setCursor(Qt.PointingHandCursor)
+        self._check_updates_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {C["text_secondary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 7px;
+                padding: 0 14px;
+                font-size: {FONT["sm"]};
+            }}
+            QPushButton:hover {{ border-color: {C["border_strong"]}; color: {C["text_primary"]}; }}
+        """)
+        self._check_updates_btn.clicked.connect(self._run_update_check)
+        header.addWidget(self._check_updates_btn)
+
         self._instance_combo = QComboBox()
         self._instance_combo.setFixedSize(260, 36)
         self._instance_combo.currentIndexChanged.connect(self._on_instance_changed)
@@ -205,6 +365,20 @@ class ModsTab(QWidget):
         self._status = QLabel("Select an instance to install mods.")
         self._status.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
         root.addWidget(self._status)
+
+        # Updates section (hidden until check runs)
+        self._updates_section = QWidget()
+        self._updates_section.setVisible(False)
+        updates_layout = QVBoxLayout(self._updates_section)
+        updates_layout.setContentsMargins(0, 0, 0, 0)
+        updates_layout.setSpacing(6)
+        updates_hdr = QLabel("Available updates")
+        updates_hdr.setStyleSheet(f"font-size: {FONT['sm']}; font-weight: 700; color: {C['text_primary']};")
+        updates_layout.addWidget(updates_hdr)
+        self._updates_list = QVBoxLayout()
+        self._updates_list.setSpacing(6)
+        updates_layout.addLayout(self._updates_list)
+        root.addWidget(self._updates_section)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -284,6 +458,87 @@ class ModsTab(QWidget):
             card = ModCard(project, self)
             card.install_requested.connect(self._install_mod)
             self._results.insertWidget(self._results.count() - 1, card)
+
+    def _run_update_check(self) -> None:
+        instance = selected_instance()
+        if not instance:
+            self._status.setText("Select an instance first.")
+            return
+        self._check_updates_btn.setEnabled(False)
+        self._check_updates_btn.setText("Checking…")
+        while self._updates_list.count():
+            item = self._updates_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._updates_section.setVisible(False)
+
+        thread = QThread(self)
+        worker = ModUpdateWorker(instance)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.status.connect(self._status.setText)
+        worker.updates_found.connect(self._on_updates_found)
+        worker.updates_found.connect(thread.quit)
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(lambda: self._check_updates_btn.setEnabled(True))
+        thread.finished.connect(lambda: self._check_updates_btn.setText("Check for Updates"))
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_updates_found(self, updates: list[dict]) -> None:
+        if not updates:
+            return
+        self._updates_section.setVisible(True)
+        for info in updates:
+            card = ModUpdateCard(info, self._updates_section)
+            card.update_requested.connect(self._execute_mod_update)
+            self._updates_list.addWidget(card)
+
+    def _execute_mod_update(self, info: dict) -> None:
+        latest_file = info.get("latest_file")
+        if not latest_file:
+            return
+        instance_dir = Path(info["instance_dir"])
+        mods_dir     = instance_dir / "mods"
+
+        # Find the sending card and disable it
+        for i in range(self._updates_list.count()):
+            item = self._updates_list.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
+                card = item.widget()
+                if card._info.get("project_id") == info.get("project_id"):
+                    card.set_updated()
+                    break
+
+        def _do_update():
+            try:
+                hashes  = latest_file.get("hashes", {})
+                dest    = mods_dir / latest_file["filename"]
+                mr.download_file(
+                    latest_file["url"], dest,
+                    expected_sha1=hashes.get("sha1", ""),
+                    expected_sha512=hashes.get("sha512", ""),
+                )
+                old = mods_dir / info["current_filename"]
+                if old.exists() and old != dest:
+                    old.unlink(missing_ok=True)
+                index = _load_index(instance_dir)
+                pid = info["project_id"]
+                if pid in index:
+                    index[pid]["version_id"]     = info["latest_version_id"]
+                    index[pid]["version_number"]  = info["latest_version_number"]
+                    index[pid]["filename"]         = latest_file["filename"]
+                    _save_index(instance_dir, index)
+                QTimer.singleShot(0, lambda: self._status.setText(f"Updated {info['title']}."))
+            except Exception as exc:
+                QTimer.singleShot(0, lambda: self._status.setText(f"Update failed: {exc}"))
+
+        import threading as _th
+        _th.Thread(target=_do_update, daemon=True).start()
 
     def _install_mod(self, project: dict) -> None:
         instance = selected_instance()

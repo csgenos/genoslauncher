@@ -29,6 +29,7 @@ import http.server
 import json
 import logging
 import os
+import re as _re
 import secrets
 import socket
 import threading
@@ -208,6 +209,79 @@ def _delete_account() -> None:
             pass
     if _FALLBACK_STORE.exists():
         _secure_delete(_FALLBACK_STORE)
+
+
+# ---------------------------------------------------------------------------
+# Per-username account helpers (multi-account support)
+# ---------------------------------------------------------------------------
+
+def _account_key(username: str) -> str:
+    return "ms_account_" + _re.sub(r"[^a-z0-9]", "_", username.lower())
+
+
+def _fallback_path_for(username: str) -> Path:
+    return APP_DIR / ("." + _account_key(username))
+
+
+def _store_account_for(data: dict) -> None:
+    """Store an account under its username-specific key without affecting the active slot."""
+    username = data.get("name", "")
+    if not username:
+        return
+    key      = _account_key(username)
+    fallback = _fallback_path_for(username)
+    payload  = json.dumps(data)
+    if _KEYRING_OK:
+        try:
+            keyring.set_password(_KEYRING_SERVICE, key, payload)
+            fallback.unlink(missing_ok=True)
+            return
+        except Exception:
+            pass
+    ciphertext = _encrypt(payload)
+    fallback.write_bytes(ciphertext)
+    if os.name != "nt":
+        try:
+            os.chmod(fallback, 0o600)
+        except OSError:
+            pass
+
+
+def _load_account_for(username: str) -> Optional[dict]:
+    key      = _account_key(username)
+    fallback = _fallback_path_for(username)
+    if _KEYRING_OK:
+        try:
+            payload = keyring.get_password(_KEYRING_SERVICE, key)
+            if payload:
+                return json.loads(payload)
+        except Exception:
+            pass
+    if fallback.exists():
+        try:
+            return json.loads(_decrypt(fallback.read_bytes()))
+        except Exception:
+            pass
+    return None
+
+
+def _delete_account_for(username: str) -> None:
+    key      = _account_key(username)
+    fallback = _fallback_path_for(username)
+    if _KEYRING_OK:
+        try:
+            keyring.delete_password(_KEYRING_SERVICE, key)
+        except Exception:
+            pass
+    if fallback.exists():
+        _secure_delete(fallback)
+
+
+def _register_username(username: str) -> None:
+    usernames = list(config.get("ms_usernames", []))
+    if username not in usernames:
+        usernames.append(username)
+    config.update({"ms_usernames": usernames})
 
 
 # ---------------------------------------------------------------------------
@@ -585,11 +659,104 @@ class AuthManager:
                 self._account = account
                 self._token_acquired_at = time.monotonic()
             _store_account(account)
+            _store_account_for(account)
+            _register_username(account["name"])
+            config.update({"active_ms_username": account["name"]})
             on_success(account)
         except AuthError as exc:
             on_error(str(exc))
         except Exception as exc:
             on_error(f"Unexpected error during sign-in:\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Multi-account management
+    # ------------------------------------------------------------------
+
+    def list_ms_accounts(self) -> list[str]:
+        """Return all stored Microsoft account usernames."""
+        return list(config.get("ms_usernames", []))
+
+    def add_account(
+        self,
+        on_browser_opened: Callable[[str], None],
+        on_success:        Callable[[dict], None],
+        on_error:          Callable[[str], None],
+    ) -> None:
+        """
+        Add an additional Microsoft account without replacing the currently active one.
+        on_success receives the new account dict.
+        """
+        client_id = APP_CLIENT_ID or config.get("azure_client_id", "")
+        if not client_id:
+            on_error(
+                "Microsoft sign-in is not configured for this build.\n\n"
+                "Set the GENOS_AZURE_CLIENT_ID environment variable."
+            )
+            return
+        add_cancel = threading.Event()
+        threading.Thread(
+            target=self._add_account_thread,
+            args=(client_id, on_browser_opened, on_success, on_error, add_cancel),
+            daemon=True,
+        ).start()
+
+    def _add_account_thread(
+        self,
+        client_id:         str,
+        on_browser_opened: Callable,
+        on_success:        Callable,
+        on_error:          Callable,
+        stop_event:        threading.Event,
+    ) -> None:
+        try:
+            port = _find_free_port()
+        except OSError as exc:
+            on_error(f"Could not start local sign-in server: {exc}")
+            return
+        redirect_uri = f"http://localhost:{port}{_REDIRECT_PATH}"
+        verifier, challenge = _pkce_pair()
+        state    = secrets.token_urlsafe(16)
+        auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
+        webbrowser.open(auth_url)
+        on_browser_opened(auth_url)
+        try:
+            code      = _wait_for_callback(port, state, stop_event)
+            ms_tokens = _exchange_code(client_id, code, redirect_uri, verifier)
+            account   = _ms_token_to_minecraft(
+                ms_tokens["access_token"],
+                ms_tokens.get("refresh_token", ""),
+            )
+            _store_account_for(account)
+            _register_username(account["name"])
+            on_success(account)
+        except AuthError as exc:
+            on_error(str(exc))
+        except Exception as exc:
+            on_error(f"Unexpected error adding account:\n{exc}")
+
+    def switch_account(self, username: str) -> bool:
+        """Switch the active Microsoft account. Returns True on success."""
+        data = _load_account_for(username)
+        if not data:
+            return False
+        with self._lock:
+            self._account = data
+            self._token_acquired_at = 0.0  # force proactive refresh on next launch
+        _store_account(data)
+        config.update({"active_ms_username": username, "last_account": username})
+        return True
+
+    def remove_ms_account(self, username: str) -> None:
+        """Remove a stored Microsoft account."""
+        _delete_account_for(username)
+        usernames = [u for u in config.get("ms_usernames", []) if u != username]
+        config.update({"ms_usernames": usernames})
+        with self._lock:
+            if self._account and self._account.get("name") == username:
+                self._account = None
+        if config.get("active_ms_username") == username:
+            config.update({"active_ms_username": "", "last_account": ""})
+            _delete_account()
 
     # ------------------------------------------------------------------
     # Token refresh

@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from PySide6.QtWidgets import QFileDialog
+
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton
 from ..components.version_card import VersionCard
@@ -31,6 +33,7 @@ from ...core.config import config
 from ...core.instances import (
     clone_instance,
     create_custom_instance,
+    import_prism_instances,
     list_instances,
     remove_instance,
     set_selected_instance,
@@ -129,6 +132,13 @@ class InstancesTab(QWidget):
         new_btn.setFixedWidth(132)
         new_btn.clicked.connect(self._create_instance)
         header_row.addWidget(new_btn)
+
+        import_btn = OutlineButton("Import…")
+        import_btn.setFixedHeight(34)
+        import_btn.setFixedWidth(100)
+        import_btn.clicked.connect(self._import_instances)
+        header_row.addWidget(import_btn)
+
         root.addLayout(header_row)
 
         self._instances_title = QLabel("Installed Instances")
@@ -326,6 +336,27 @@ class InstancesTab(QWidget):
             self._repair_workers.remove(worker)
         self._count_label.setText(message if ok else f"Repair failed: {message}")
         self._load_versions()
+
+    def _import_instances(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select MultiMC / Prism Launcher instances folder",
+        )
+        if not folder:
+            return
+        from pathlib import Path
+        imported = import_prism_instances(Path(folder))
+        if imported:
+            self._render_instances()
+            self._count_label.setText(
+                f"Imported {len(imported)} instance(s) from {folder}. "
+                "Use Repair if game files are missing."
+            )
+        else:
+            self._count_label.setText(
+                "No importable instances found. "
+                "Make sure you selected the folder that contains the instance subfolders."
+            )
 
     def _remove_instance(self, instance: dict) -> None:
         reply = QMessageBox.question(
