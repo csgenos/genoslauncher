@@ -64,9 +64,27 @@ from .config import APP_DIR, config
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# Register your own Azure App at portal.azure.com and set this env var
-# (or the GENOS_AZURE_CLIENT_ID CI secret) to your Application (client) ID.
-APP_CLIENT_ID = os.environ.get("GENOS_AZURE_CLIENT_ID", "")
+# Client ID for the GenosLauncher Azure App registration.
+# End users never need to touch this — sign-in works out of the box.
+# Maintainers: replace this with the Application (client) ID from your
+# Azure App registration (portal.azure.com → App registrations).
+# Keep the tenant set to "consumers" and platform to "Mobile and desktop
+# applications" with redirect URI http://localhost (no port suffix).
+_BUILTIN_CLIENT_ID = os.environ.get("GENOS_AZURE_CLIENT_ID", "")
+
+
+def _resolve_client_id() -> str:
+    """Return the best available OAuth client ID.
+
+    Priority: GENOS_AZURE_CLIENT_ID env var (CI/dev builds)
+              → user override stored in config (advanced users)
+              → project built-in ID (normal end-user path)
+    """
+    return (
+        os.environ.get("GENOS_AZURE_CLIENT_ID", "")
+        or config.get("azure_client_id", "")
+        or _BUILTIN_CLIENT_ID
+    )
 
 # ---------------------------------------------------------------------------
 # Microsoft / Xbox / Minecraft API endpoints
@@ -608,12 +626,13 @@ class AuthManager:
         on_error(message)
             Called on any failure.
         """
-        client_id = APP_CLIENT_ID or config.get("azure_client_id", "")
+        client_id = _resolve_client_id()
         if not client_id:
             on_error(
-                "Microsoft sign-in is not configured for this build.\n\n"
-                "Register an Azure App at portal.azure.com and set the "
-                "GENOS_AZURE_CLIENT_ID environment variable."
+                "Microsoft sign-in could not start — no client ID is configured.\n\n"
+                "If you built GenosLauncher from source, set the "
+                "GENOS_AZURE_CLIENT_ID environment variable or paste a "
+                "client ID in Settings → Microsoft Authentication."
             )
             return
 
@@ -687,11 +706,12 @@ class AuthManager:
         Add an additional Microsoft account without replacing the currently active one.
         on_success receives the new account dict.
         """
-        client_id = APP_CLIENT_ID or config.get("azure_client_id", "")
+        client_id = _resolve_client_id()
         if not client_id:
             on_error(
-                "Microsoft sign-in is not configured for this build.\n\n"
-                "Set the GENOS_AZURE_CLIENT_ID environment variable."
+                "Microsoft sign-in could not start — no client ID is configured.\n\n"
+                "Set the GENOS_AZURE_CLIENT_ID environment variable or paste a "
+                "client ID in Settings → Microsoft Authentication."
             )
             return
         add_cancel = threading.Event()
@@ -768,7 +788,7 @@ class AuthManager:
     def refresh(self) -> bool:
         if not self.refresh_token:
             return False
-        client_id = APP_CLIENT_ID or config.get("azure_client_id", "")
+        client_id = _resolve_client_id()
         if not client_id:
             return False
         try:

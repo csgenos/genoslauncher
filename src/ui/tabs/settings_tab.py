@@ -461,19 +461,20 @@ class SettingsTab(QWidget):
         self._dark_mode.toggled.connect(self._on_dark_mode_toggled)
         behav_layout.addWidget(self._dark_mode)
 
-        # Azure Client ID (Microsoft sign-in)
-        az_lbl = QLabel("Microsoft Authentication — Azure Client ID")
+        # Azure Client ID override (advanced users / self-builds)
+        az_lbl = QLabel("Microsoft Authentication — Client ID Override")
         az_lbl.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 600; color: {C['text_primary']}; margin-top: 8px;")
         behav_layout.addWidget(az_lbl)
         az_hint = QLabel(
-            "Paste your Azure App's Application (client) ID here to enable Microsoft sign-in. "
-            "Register a free app at portal.azure.com — see README for the full walkthrough."
+            "Optional. GenosLauncher includes a built-in client ID — "
+            "Microsoft sign-in works without filling this in. "
+            "Only set this if you are building from source and have registered your own Azure App."
         )
         az_hint.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
         az_hint.setWordWrap(True)
         behav_layout.addWidget(az_hint)
         self._az_client_input = QLineEdit()
-        self._az_client_input.setPlaceholderText("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+        self._az_client_input.setPlaceholderText("Leave blank to use the built-in client ID")
         self._az_client_input.setText(config.get("azure_client_id", ""))
         self._az_client_input.setFixedHeight(38)
         self._az_client_input.textChanged.connect(lambda t: config.set("azure_client_id", t.strip()))
