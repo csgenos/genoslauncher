@@ -234,6 +234,30 @@ def search_resource_packs(query="", game_version="", limit=20, offset=0):
     return search_projects(query, "resourcepack", game_version, limit, offset)
 
 
+def list_categories(project_type: str = "mod") -> list[dict]:
+    """Return Modrinth tag categories for the given project type."""
+    try:
+        data = _get("/tag/category")
+        return [c for c in data if c.get("project_type") == project_type]
+    except ModrinthError:
+        return []
+
+
+def list_loaders() -> list[str]:
+    """Return all known mod loader names from the Modrinth tag API."""
+    try:
+        data = _get("/tag/loader")
+        return [ld["name"] for ld in data if ld.get("supported_project_types") and
+                "mod" in ld.get("supported_project_types", [])]
+    except ModrinthError:
+        return ["fabric", "forge", "quilt", "neoforge"]
+
+
+def get_project_full(project_id_or_slug: str) -> dict:
+    """Return project data enriched with gallery and body fields."""
+    return _get(f"/project/{project_id_or_slug}")
+
+
 # ---------------------------------------------------------------------------
 # Project & version details
 # ---------------------------------------------------------------------------

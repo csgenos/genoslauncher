@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=GenosLauncher
+Comment=Minecraft Launcher
+Exec=GenosLauncher
+Icon=genoslauncher
+Type=Application
+Categories=Game;
+StartupNotify=true

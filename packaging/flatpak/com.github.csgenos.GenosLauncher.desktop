@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=GenosLauncher
+GenericName=Minecraft Launcher
+Comment=Open source Minecraft launcher with modpack support
+Exec=genoslauncher
+Icon=com.github.csgenos.GenosLauncher
+Type=Application
+Categories=Game;
+StartupNotify=true
+Keywords=Minecraft;Mods;Modpack;Fabric;Forge;
