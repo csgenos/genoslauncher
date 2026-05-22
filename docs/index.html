@@ -20,6 +20,7 @@
       --border:    #1e2128;
       --accent:    #4f8ef7;
       --accent-h:  #3a7be0;
+      --accent-a:  #2d6dd4;
       --text:      #f0f2f5;
       --muted:     #8b939f;
       --green:     #22c55e;
@@ -46,8 +47,9 @@
       justify-content: space-between;
       padding: 0 40px;
       height: 60px;
-      background: rgba(10, 12, 16, 0.85);
+      background: rgba(10, 12, 16, 0.88);
       backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
     }
 
@@ -63,7 +65,8 @@
 
     .nav-icon {
       width: 30px; height: 30px;
-      background: #111827;
+      background: linear-gradient(145deg, #1a2035, #111827);
+      border: 1px solid rgba(79,142,247,.2);
       border-radius: 8px;
       display: flex;
       align-items: center;
@@ -174,21 +177,29 @@
       justify-content: center;
     }
 
-    .btn-primary {
+    /* ── BUTTONS ── */
+    .btn-primary,
+    .btn-secondary {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
-      background: var(--accent);
-      color: #fff;
+      justify-content: center;
+      gap: 9px;
       font-family: inherit;
-      font-size: 16px;
       font-weight: 700;
-      padding: 14px 32px;
-      border-radius: var(--radius);
       text-decoration: none;
       border: none;
       cursor: pointer;
-      transition: background .15s, transform .1s, box-shadow .15s;
+      border-radius: var(--radius);
+      transition: background .15s, border-color .15s, color .15s,
+                  transform .1s, box-shadow .15s;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      font-size: 15px;
+      padding: 13px 28px;
       box-shadow: 0 4px 20px rgba(79,142,247,.35);
     }
 
@@ -198,25 +209,72 @@
       box-shadow: 0 6px 28px rgba(79,142,247,.45);
     }
 
-    .btn-primary:active { transform: translateY(0); }
-
-    .btn-secondary {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      background: transparent;
-      color: var(--muted);
-      font-family: inherit;
-      font-size: 15px;
-      font-weight: 500;
-      padding: 14px 24px;
-      border-radius: var(--radius);
-      text-decoration: none;
-      border: 1px solid var(--border);
-      transition: color .15s, border-color .15s;
+    .btn-primary:active {
+      background: var(--accent-a);
+      transform: translateY(0);
+      box-shadow: 0 2px 10px rgba(79,142,247,.25);
     }
 
-    .btn-secondary:hover { color: var(--text); border-color: #3a4050; }
+    .btn-primary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 500;
+      padding: 13px 24px;
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      color: var(--text);
+      border-color: #3a4050;
+    }
+
+    .btn-secondary:active {
+      color: var(--text);
+      border-color: #4a5060;
+      background: rgba(255,255,255,.03);
+    }
+
+    .btn-secondary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    /* download icon inside button */
+    .btn-primary .ico {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .btn-primary .ico svg {
+      width: 16px; height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* GitHub icon in secondary button */
+    .btn-secondary .ico {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      opacity: .7;
+    }
+
+    .btn-secondary .ico svg {
+      width: 16px; height: 16px;
+      fill: currentColor;
+    }
 
     .dl-note {
       margin-top: 16px;
@@ -260,10 +318,13 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 28px;
-      transition: border-color .2s;
+      transition: border-color .2s, box-shadow .2s;
     }
 
-    .card:hover { border-color: #2e3340; }
+    .card:hover {
+      border-color: #2e3340;
+      box-shadow: 0 4px 24px rgba(0,0,0,.25);
+    }
 
     .card-icon {
       width: 44px; height: 44px;
@@ -286,6 +347,15 @@
       font-size: 14px;
       color: var(--muted);
       line-height: 1.65;
+    }
+
+    .code-tag {
+      font-size: 12px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      background: #1a1f2e;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,.06);
     }
 
     /* ── STEPS ── */
@@ -332,6 +402,7 @@
       font-size: 14px;
       font-weight: 700;
       margin-top: 2px;
+      flex-shrink: 0;
     }
 
     .step-body h4 {
@@ -404,14 +475,13 @@
 
     .footer-links a:hover { color: var(--text); }
 
-    /* ── ICONS (inline SVG as CSS bg or emoji fallback) ── */
-    .ico-win::before { content: '⊞'; margin-right: 6px; }
-
     /* ── RESPONSIVE ── */
     @media (max-width: 640px) {
       nav { padding: 0 20px; }
       .nav-links { display: none; }
       footer { flex-direction: column; align-items: flex-start; }
+      .btn-primary, .btn-secondary { width: 100%; justify-content: center; }
+      .btn-group { width: 100%; max-width: 320px; flex-direction: column; }
     }
   </style>
 </head>
@@ -443,12 +513,23 @@
     <a class="btn-primary"
        href="https://github.com/csgenos/genoslauncher/releases/latest"
        target="_blank" rel="noopener">
-      &#11015; &nbsp;Download for Windows
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 3v13M5 13l7 7 7-7"/>
+          <path d="M3 21h18"/>
+        </svg>
+      </span>
+      <span>Download for Windows</span>
     </a>
     <a class="btn-secondary"
        href="https://github.com/csgenos/genoslauncher"
        target="_blank" rel="noopener">
-      View on GitHub
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.167 6.839 9.49.5.09.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.532 1.03 1.532 1.03.891 1.529 2.341 1.087 2.912.832.09-.647.349-1.087.635-1.337-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.03-2.682-.103-.253-.447-1.27.098-2.647 0 0 .84-.268 2.75 1.026A9.578 9.578 0 0 1 12 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.026 2.747-1.026.546 1.377.202 2.394.1 2.647.64.698 1.028 1.59 1.028 2.682 0 3.841-2.337 4.687-4.565 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.577.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
+        </svg>
+      </span>
+      <span>View on GitHub</span>
     </a>
   </div>
   <p class="dl-note">Windows 10 / 11 &nbsp;·&nbsp; No admin required &nbsp;·&nbsp; Free forever</p>
@@ -463,25 +544,25 @@
     <div class="card">
       <div class="card-icon" style="background:rgba(79,142,247,.1);">🔐</div>
       <h3>Microsoft Sign-In</h3>
-      <p>Log in with your real Microsoft account — no Azure registration, no browser redirects, no setup. Just enter a code and you're in.</p>
+      <p>Full OAuth 2.0 PKCE login — your browser opens automatically and you sign in there. No code copy-paste, no third-party servers. Tokens stored securely in your system keyring.</p>
     </div>
 
     <div class="card">
       <div class="card-icon" style="background:rgba(34,197,94,.1);">📦</div>
       <h3>Modpack Support</h3>
-      <p>Import any <code style="font-size:12px;background:#1a1f2e;padding:1px 5px;border-radius:4px;">.mrpack</code> file. GenosLauncher automatically installs the right Fabric or Quilt version and all mods — no manual steps.</p>
+      <p>Import any <code class="code-tag">.mrpack</code> file. GenosLauncher automatically installs the right Fabric or Quilt version and all mods — no manual steps.</p>
     </div>
 
     <div class="card">
       <div class="card-icon" style="background:rgba(168,85,247,.1);">✨</div>
-      <h3>Iris &amp; Sodium</h3>
-      <p>Install Iris Shaders and Sodium with a single click, verified against official Modrinth hashes. Then drop in any shader pack you want.</p>
+      <h3>Shaders &amp; Resource Packs</h3>
+      <p>Browse and install shaders and resource packs directly from the built-in browser. All downloads are verified against official Modrinth hashes.</p>
     </div>
 
     <div class="card">
       <div class="card-icon" style="background:rgba(251,146,60,.1);">⚡</div>
       <h3>Smart JVM Tuning</h3>
-      <p>Choose from Performance, Balanced, or Custom JVM presets. GenosLauncher detects your system RAM and recommends the right allocation.</p>
+      <p>Choose from Performance, Low Latency, ZGC, or Custom JVM presets. GenosLauncher detects your system RAM and recommends the right allocation.</p>
     </div>
 
     <div class="card">
@@ -493,7 +574,7 @@
     <div class="card">
       <div class="card-icon" style="background:rgba(244,63,94,.1);">🎨</div>
       <h3>Clean Design</h3>
-      <p>A polished dark UI with a first-run setup wizard. Feels like Lunar Client — not a hobby project thrown together on a weekend.</p>
+      <p>A polished dark UI with a first-run setup wizard, dark mode toggle, and crash log viewer built in. Feels like a real launcher — not a weekend project.</p>
     </div>
 
   </div>
@@ -542,10 +623,26 @@
     <a class="btn-primary"
        href="https://github.com/csgenos/genoslauncher/releases/latest"
        target="_blank" rel="noopener">
-      &#11015; &nbsp;Download for Windows
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 3v13M5 13l7 7 7-7"/>
+          <path d="M3 21h18"/>
+        </svg>
+      </span>
+      <span>Download for Windows</span>
+    </a>
+    <a class="btn-secondary"
+       href="https://github.com/csgenos/genoslauncher"
+       target="_blank" rel="noopener">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.167 6.839 9.49.5.09.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.532 1.03 1.532 1.03.891 1.529 2.341 1.087 2.912.832.09-.647.349-1.087.635-1.337-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.03-2.682-.103-.253-.447-1.27.098-2.647 0 0 .84-.268 2.75 1.026A9.578 9.578 0 0 1 12 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.026 2.747-1.026.546 1.377.202 2.394.1 2.647.64.698 1.028 1.59 1.028 2.682 0 3.841-2.337 4.687-4.565 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.577.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
+        </svg>
+      </span>
+      <span>View on GitHub</span>
     </a>
   </div>
-  <p class="dl-note" style="margin-top:14px;">Windows 10 1809 or later &nbsp;·&nbsp; ~30 MB</p>
+  <p class="dl-note">Windows 10 1809 or later &nbsp;·&nbsp; ~30 MB</p>
 </section>
 
 <!-- ── FOOTER ─────────────────────────────────────────────────────────────── -->
