@@ -3,7 +3,7 @@ GenosLauncher — First-run setup wizard.
 
 580×500 frameless QDialog, three steps:
   1. Welcome
-  2. Account setup  (Microsoft device-code flow OR offline username)
+  2. Account setup  (Microsoft PKCE browser flow OR offline username)
   3. Ready summary  (auto-detected RAM + Java, applies config on accept)
 
 Thread safety: all callbacks from auth_manager arrive on a background thread.
@@ -231,7 +231,7 @@ class _AccountPage(QWidget):
     # Internal sub-state names
     _STATE_CHOOSE       = "choose"
     _STATE_MS_REQ       = "ms_requesting"
-    _STATE_MS_CODE      = "ms_code"
+    _STATE_MS_WAITING   = "ms_waiting"
     _STATE_MS_SUCCESS   = "ms_success"
     _STATE_OFFLINE      = "offline"
 
@@ -240,11 +240,7 @@ class _AccountPage(QWidget):
         self.setStyleSheet("background: transparent;")
 
         self._account_info: dict = {}
-        self._verification_uri: str = ""
-        self._code_expires_in: int = 0
-        self._countdown_timer = QTimer(self)
-        self._countdown_timer.setInterval(1000)
-        self._countdown_timer.timeout.connect(self._tick_countdown)
+        self._auth_url: str = ""
 
         self._stack = QStackedWidget(self)
         root = QVBoxLayout(self)
@@ -255,14 +251,14 @@ class _AccountPage(QWidget):
         # Build all sub-pages
         self._page_choose      = self._build_choose_page()
         self._page_ms_req      = self._build_ms_requesting_page()
-        self._page_ms_code     = self._build_ms_code_page()
+        self._page_ms_waiting  = self._build_ms_waiting_page()
         self._page_ms_success  = self._build_ms_success_page()
         self._page_offline     = self._build_offline_page()
 
         for page in (
             self._page_choose,
             self._page_ms_req,
-            self._page_ms_code,
+            self._page_ms_waiting,
             self._page_ms_success,
             self._page_offline,
         ):
@@ -278,7 +274,7 @@ class _AccountPage(QWidget):
         mapping = {
             self._STATE_CHOOSE:     self._page_choose,
             self._STATE_MS_REQ:     self._page_ms_req,
-            self._STATE_MS_CODE:    self._page_ms_code,
+            self._STATE_MS_WAITING: self._page_ms_waiting,
             self._STATE_MS_SUCCESS: self._page_ms_success,
             self._STATE_OFFLINE:    self._page_offline,
         }
@@ -289,7 +285,7 @@ class _AccountPage(QWidget):
     def reset_to_choose(self) -> None:
         """Cancel any in-progress login and return to the choose screen."""
         auth_manager.cancel_login()
-        self._countdown_timer.stop()
+        self._auth_url = ""
         self._account_info = {}
         self._show_state(self._STATE_CHOOSE)
 
@@ -430,54 +426,38 @@ class _AccountPage(QWidget):
         layout.addWidget(lbl)
         return page
 
-    def _build_ms_code_page(self) -> QWidget:
+    def _build_ms_waiting_page(self) -> QWidget:
         page = QWidget()
         page.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(48, 20, 48, 20)
+        layout.setContentsMargins(48, 30, 48, 30)
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        instr = QLabel("Enter this code at:")
+        instr = QLabel("Complete sign-in in your browser")
         instr.setAlignment(Qt.AlignCenter)
         instr.setStyleSheet(
-            f"color: {C['text_secondary']};"
+            f"color: {C['text_primary']};"
             f"font-size: {FONT['md']};"
+            "font-weight: 600;"
         )
         layout.addWidget(instr)
-        layout.addSpacing(4)
+        layout.addSpacing(8)
 
-        url_lbl = QLabel("microsoft.com/devicelogin")
-        url_lbl.setAlignment(Qt.AlignCenter)
-        url_lbl.setStyleSheet(
-            f"color: {C['accent_blue']};"
-            "font-size: 14px;"
-            "font-weight: 700;"
+        sub = QLabel("Once you finish, this screen will update automatically.")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
+        sub.setStyleSheet(
+            f"color: {C['text_secondary']};"
+            f"font-size: {FONT['sm']};"
         )
-        layout.addWidget(url_lbl)
-        layout.addSpacing(16)
+        layout.addWidget(sub)
+        layout.addSpacing(20)
 
-        # Large code box
-        self._code_label = QLabel("--------")
-        self._code_label.setAlignment(Qt.AlignCenter)
-        self._code_label.setStyleSheet(
-            f"color: {C['accent_blue']};"
-            "font-family: 'Consolas', 'Courier New', monospace;"
-            "font-size: 30px;"
-            "font-weight: 700;"
-            "letter-spacing: 8px;"
-            f"border: 2px solid {C['accent_blue']};"
-            "border-radius: 10px;"
-            "padding: 12px 28px;"
-            f"background-color: {C['accent_blue_soft']};"
-        )
-        layout.addWidget(self._code_label)
-        layout.addSpacing(14)
-
-        # Open Browser button
-        open_btn = QPushButton("Open Browser")
-        open_btn.setCursor(Qt.PointingHandCursor)
-        open_btn.setStyleSheet(
+        # Reopen Browser button
+        reopen_btn = QPushButton("Reopen Browser")
+        reopen_btn.setCursor(Qt.PointingHandCursor)
+        reopen_btn.setStyleSheet(
             f"""
             QPushButton {{
                 background-color: transparent;
@@ -497,22 +477,12 @@ class _AccountPage(QWidget):
             }}
             """
         )
-        open_btn.clicked.connect(self._open_browser)
+        reopen_btn.clicked.connect(self._reopen_browser)
         btn_row = QHBoxLayout()
         btn_row.setAlignment(Qt.AlignCenter)
-        btn_row.addWidget(open_btn)
+        btn_row.addWidget(reopen_btn)
         layout.addLayout(btn_row)
-        layout.addSpacing(10)
-
-        # Countdown label
-        self._countdown_label = QLabel("Code expires in 15:00")
-        self._countdown_label.setAlignment(Qt.AlignCenter)
-        self._countdown_label.setStyleSheet(
-            f"color: {C['text_tertiary']};"
-            f"font-size: {FONT['sm']};"
-        )
-        layout.addWidget(self._countdown_label)
-        layout.addSpacing(10)
+        layout.addSpacing(16)
 
         # Back link
         back_link = QLabel('<a href="#" style="color: {c}; text-decoration: none;">← Use a different account</a>'.format(c=C["text_secondary"]))
@@ -628,9 +598,10 @@ class _AccountPage(QWidget):
 
     def _on_ms_clicked(self) -> None:
         self._account_info = {}
+        self._auth_url = ""
         self._show_state(self._STATE_MS_REQ)
         auth_manager.start_login(
-            on_code_ready=self._cb_code_ready,
+            on_browser_opened=self._cb_browser_opened,
             on_success=self._cb_success,
             on_error=self._cb_error,
         )
@@ -656,16 +627,17 @@ class _AccountPage(QWidget):
             self._account_info = {}
             self._username_hint.setText("")
 
-    def _open_browser(self) -> None:
-        if self._verification_uri:
-            webbrowser.open(self._verification_uri)
+    def _reopen_browser(self) -> None:
+        if self._auth_url:
+            webbrowser.open(self._auth_url)
 
     # ------------------------------------------------------------------
     # Auth callbacks (called from background thread — hop to main thread)
     # ------------------------------------------------------------------
 
-    def _cb_code_ready(self, user_code: str, verification_uri: str, expires_in: int) -> None:
-        QTimer.singleShot(0, lambda: self._on_code_ready(user_code, verification_uri, expires_in))
+    def _cb_browser_opened(self, auth_url: str) -> None:
+        self._auth_url = auth_url
+        QTimer.singleShot(0, lambda: self._show_state(self._STATE_MS_WAITING))
 
     def _cb_success(self, account: dict) -> None:
         QTimer.singleShot(0, lambda: self._on_success(account))
@@ -673,16 +645,7 @@ class _AccountPage(QWidget):
     def _cb_error(self, message: str) -> None:
         QTimer.singleShot(0, lambda: self._on_error(message))
 
-    def _on_code_ready(self, user_code: str, verification_uri: str, expires_in: int) -> None:
-        self._verification_uri = verification_uri
-        self._code_expires_in = expires_in
-        self._code_label.setText(user_code)
-        self._update_countdown_label()
-        self._countdown_timer.start()
-        self._show_state(self._STATE_MS_CODE)
-
     def _on_success(self, account: dict) -> None:
-        self._countdown_timer.stop()
         name = account.get("name", "Unknown")
         self._account_info = {
             "name": name,
@@ -694,23 +657,7 @@ class _AccountPage(QWidget):
         self.account_ready.emit()
 
     def _on_error(self, message: str) -> None:
-        self._countdown_timer.stop()
-        # Go back to choose and show a brief error hint
         self.reset_to_choose()
-
-    # ------------------------------------------------------------------
-    # Countdown
-    # ------------------------------------------------------------------
-
-    def _tick_countdown(self) -> None:
-        self._code_expires_in = max(0, self._code_expires_in - 1)
-        self._update_countdown_label()
-        if self._code_expires_in == 0:
-            self._countdown_timer.stop()
-
-    def _update_countdown_label(self) -> None:
-        mins, secs = divmod(self._code_expires_in, 60)
-        self._countdown_label.setText(f"Code expires in {mins}:{secs:02d}")
 
 
 # ---------------------------------------------------------------------------

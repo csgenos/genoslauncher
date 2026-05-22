@@ -1,10 +1,10 @@
 """
-Microsoft Login Dialog — device code flow.
+Microsoft Login Dialog — PKCE browser flow.
 
 States:
   idle        → "Sign In" button
-  requesting  → fetching device code from Microsoft
-  code_shown  → displays user_code + countdown + "Open Browser" button, polling in background
+  requesting  → finding a free port, building the auth URL
+  waiting     → browser is open, waiting for the user to complete sign-in
   success     → welcome message
   error       → error message + retry
 """
@@ -31,7 +31,7 @@ from ..core.auth import auth_manager
 
 class LoginDialog(QDialog):
     """
-    Device-code sign-in dialog.
+    PKCE browser sign-in dialog.
 
     Signals:
         login_succeeded(account_dict)
@@ -43,7 +43,7 @@ class LoginDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Sign in with Microsoft")
         self.setModal(True)
-        self.setFixedSize(460, 400)
+        self.setFixedSize(460, 340)
         self.setStyleSheet(f"""
             QDialog {{
                 background: {C["bg_primary"]};
@@ -51,12 +51,7 @@ class LoginDialog(QDialog):
             QLabel {{ background: transparent; }}
         """)
 
-        self._verification_uri = "https://microsoft.com/devicelogin"
-        self._expires_in = 0
-        self._remaining = 0
-        self._countdown_timer = QTimer(self)
-        self._countdown_timer.setInterval(1000)
-        self._countdown_timer.timeout.connect(self._tick_countdown)
+        self._auth_url: str = ""
 
         self._build_ui()
         self._set_state("idle")
@@ -124,31 +119,6 @@ class LoginDialog(QDialog):
         )
         card_l.addWidget(self._state_title)
 
-        # Large code display (only visible in code_shown state)
-        self._code_box = QFrame()
-        self._code_box.setObjectName("CodeBox")
-        self._code_box.setStyleSheet(f"""
-            #CodeBox {{
-                background: {C["bg_primary"]};
-                border: 2px solid {C["border_focus"]};
-                border-radius: 10px;
-            }}
-        """)
-        code_box_l = QVBoxLayout(self._code_box)
-        code_box_l.setContentsMargins(0, 14, 0, 14)
-        self._code_label = QLabel()
-        self._code_label.setAlignment(Qt.AlignCenter)
-        self._code_label.setStyleSheet(
-            "font-family: 'Courier New', monospace; "
-            "font-size: 32px; "
-            "font-weight: 800; "
-            "letter-spacing: 6px; "
-            f"color: {C['text_primary']};"
-        )
-        code_box_l.addWidget(self._code_label)
-        self._code_box.setVisible(False)
-        card_l.addWidget(self._code_box)
-
         self._state_body = QLabel()
         self._state_body.setAlignment(Qt.AlignCenter)
         self._state_body.setWordWrap(True)
@@ -156,14 +126,6 @@ class LoginDialog(QDialog):
             f"font-size: {FONT['sm']}; color: {C['text_secondary']}; line-height: 1.5;"
         )
         card_l.addWidget(self._state_body)
-
-        self._countdown_label = QLabel()
-        self._countdown_label.setAlignment(Qt.AlignCenter)
-        self._countdown_label.setStyleSheet(
-            f"font-size: {FONT['xs']}; color: {C['text_tertiary']};"
-        )
-        self._countdown_label.setVisible(False)
-        card_l.addWidget(self._countdown_label)
 
         root.addWidget(self._card)
         root.addSpacing(20)
@@ -191,41 +153,42 @@ class LoginDialog(QDialog):
 
     def _set_state(self, state: str, extra: str = "") -> None:
         self._state = state
-        self._countdown_timer.stop()
-        self._code_box.setVisible(False)
-        self._countdown_label.setVisible(False)
         self._cancel_btn.setVisible(True)
 
         if state == "idle":
             self._state_icon.setText("🔐")
             self._state_title.setText("Connect your Microsoft account")
             self._state_body.setText(
-                "We'll show you a short code to enter at\n"
-                "microsoft.com/devicelogin — no passwords typed here."
+                "Click Sign In to open Microsoft's login page in your browser.\n"
+                "No passwords are entered here."
+            )
+            self._state_body.setStyleSheet(
+                f"font-size: {FONT['sm']}; color: {C['text_secondary']};"
             )
             self._primary_btn.setText("Sign In")
             self._primary_btn.setEnabled(True)
 
         elif state == "requesting":
             self._state_icon.setText("⏳")
-            self._state_title.setText("Connecting to Microsoft…")
-            self._state_body.setText("Requesting sign-in code…")
+            self._state_title.setText("Opening your browser…")
+            self._state_body.setText("Preparing sign-in…")
+            self._state_body.setStyleSheet(
+                f"font-size: {FONT['sm']}; color: {C['text_secondary']};"
+            )
             self._primary_btn.setText("Please wait…")
             self._primary_btn.setEnabled(False)
 
-        elif state == "code_shown":
-            self._state_icon.setText("")
-            self._state_title.setText("Enter this code at:")
-            self._state_body.setText("microsoft.com/devicelogin")
-            self._state_body.setStyleSheet(
-                f"font-size: {FONT['md']}; font-weight: 700; "
-                f"color: {C['accent_blue']};"
+        elif state == "waiting":
+            self._state_icon.setText("🌐")
+            self._state_title.setText("Complete sign-in in your browser")
+            self._state_body.setText(
+                "Your browser should have opened automatically.\n"
+                "Once you finish signing in, this dialog will update."
             )
-            self._code_box.setVisible(True)
-            self._countdown_label.setVisible(True)
-            self._countdown_label.setText(f"Code expires in {self._remaining // 60}:{self._remaining % 60:02d}")
-            self._countdown_timer.start()
-            self._primary_btn.setText("Open Browser")
+            self._state_body.setStyleSheet(
+                f"font-size: {FONT['sm']}; color: {C['text_secondary']};"
+            )
+            self._primary_btn.setText("Reopen Browser")
             self._primary_btn.setEnabled(True)
 
         elif state == "success":
@@ -250,14 +213,6 @@ class LoginDialog(QDialog):
             self._primary_btn.setEnabled(True)
             self._cancel_btn.setVisible(True)
 
-    def _tick_countdown(self) -> None:
-        self._remaining = max(0, self._remaining - 1)
-        m, s = divmod(self._remaining, 60)
-        self._countdown_label.setText(f"Code expires in {m}:{s:02d}")
-        if self._remaining == 0:
-            self._countdown_timer.stop()
-            self._set_state("error", "Sign-in code expired. Please try again.")
-
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -265,20 +220,20 @@ class LoginDialog(QDialog):
     def _on_primary(self) -> None:
         if self._state in ("idle", "error"):
             self._start_login()
-        elif self._state == "code_shown":
-            webbrowser.open(self._verification_uri)
+        elif self._state == "waiting" and self._auth_url:
+            webbrowser.open(self._auth_url)
         elif self._state == "success":
             self.accept()
 
     def _on_cancel(self) -> None:
-        self._countdown_timer.stop()
         auth_manager.cancel_login()
         self.reject()
 
     def _start_login(self) -> None:
+        self._auth_url = ""
         self._set_state("requesting")
         auth_manager.start_login(
-            on_code_ready=self._on_code_ready,
+            on_browser_opened=self._on_browser_opened,
             on_success=self._on_success,
             on_error=self._on_error,
         )
@@ -287,22 +242,15 @@ class LoginDialog(QDialog):
     # Auth callbacks (called from background thread → hop to main thread)
     # ------------------------------------------------------------------
 
-    def _on_code_ready(self, user_code: str, verification_uri: str, expires_in: int) -> None:
-        self._verification_uri = verification_uri
-        self._remaining = expires_in
-        QTimer.singleShot(0, lambda: self._apply_code(user_code, verification_uri))
-
-    def _apply_code(self, user_code: str, verification_uri: str) -> None:
-        self._code_label.setText(user_code)
-        self._set_state("code_shown")
-        webbrowser.open(verification_uri)
+    def _on_browser_opened(self, auth_url: str) -> None:
+        self._auth_url = auth_url
+        QTimer.singleShot(0, lambda: self._set_state("waiting"))
 
     def _on_success(self, account: dict) -> None:
         name = account.get("name", "Unknown")
         QTimer.singleShot(0, lambda: self._apply_success(name, account))
 
     def _apply_success(self, name: str, account: dict) -> None:
-        self._countdown_timer.stop()
         self._set_state("success", name)
         self.login_succeeded.emit(account)
 

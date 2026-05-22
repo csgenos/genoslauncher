@@ -1,16 +1,21 @@
 """
-Microsoft Account authentication — device code flow.
+Microsoft Account authentication — PKCE Authorization Code Flow.
 
-Flow (OAuth 2.0 Device Authorization Grant):
-  1. Request device code from Microsoft
-  2. Show user_code in UI and open microsoft.com/devicelogin
-  3. Poll token endpoint on background thread
-  4. Exchange MS access token for Xbox Live → XSTS → Minecraft credentials
-  5. Persist refresh token in system keyring (or encrypted fallback)
-  6. Silently refresh on next launch with stored refresh token
+Flow (OAuth 2.0 for Native Apps, RFC 8252 + PKCE):
+  1. Generate a PKCE code verifier + S256 challenge
+  2. Open the system browser to Microsoft's authorization URL
+  3. A temporary local HTTP server on a random loopback port catches the redirect
+  4. Exchange the authorization code for tokens (PKCE — no client secret needed)
+  5. Exchange the MS access token for Xbox Live → XSTS → Minecraft credentials
+  6. Persist the refresh token in the system keyring (or an encrypted fallback)
+  7. Silently refresh on next launch with the stored refresh token
 
-No redirect URIs, no local HTTP server, no Azure setup required for end users.
-The APP_CLIENT_ID below must be set once by the publisher (portal.azure.com).
+Azure App setup (portal.azure.com):
+  - Supported account types: Personal Microsoft accounts (consumers)
+  - Platform: Mobile and desktop applications (public client)
+  - Redirect URI: http://localhost  (loopback — any port is allowed)
+  - Enable "Allow public client flows"
+  - No client secret needed — PKCE provides proof-of-possession
 
 Security:
   S-Z-001: Fernet-encrypted fallback with machine-bound PBKDF2 key; secure delete on logout
@@ -18,12 +23,18 @@ Security:
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import http.server
 import json
 import logging
 import os
+import secrets
+import socket
 import threading
 import time
+import urllib.parse
+import webbrowser
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -52,32 +63,27 @@ from .config import APP_DIR, config
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# Register your own Azure App at portal.azure.com:
-#   - Accounts: Personal Microsoft accounts only
-#   - Platform: Mobile and desktop applications (public client)
-#   - Enable: "Allow public client flows" → Device code flow
-#   - No client secret needed
-# Then set the GENOS_AZURE_CLIENT_ID environment variable (or CI secret) to
-# your Application (client) ID.  Leaving it empty causes the sign-in flow to
-# surface a clear configuration error instead of using another project's quota.
+# Register your own Azure App at portal.azure.com and set this env var
+# (or the GENOS_AZURE_CLIENT_ID CI secret) to your Application (client) ID.
 APP_CLIENT_ID = os.environ.get("GENOS_AZURE_CLIENT_ID", "")
 
 # ---------------------------------------------------------------------------
 # Microsoft / Xbox / Minecraft API endpoints
 # ---------------------------------------------------------------------------
 
-_TENANT           = "consumers"
-_DEVICE_CODE_URL  = f"https://login.microsoftonline.com/{_TENANT}/oauth2/v2.0/devicecode"
-_TOKEN_URL        = f"https://login.microsoftonline.com/{_TENANT}/oauth2/v2.0/token"
-_SCOPE            = "XboxLive.signin offline_access"
-_XBL_URL          = "https://user.auth.xboxlive.com/user/authenticate"
-_XSTS_URL         = "https://xsts.auth.xboxlive.com/xsts/authorize"
-_MC_LOGIN_URL     = "https://api.minecraftservices.com/authentication/login_with_xbox"
-_MC_PROFILE_URL   = "https://api.minecraftservices.com/minecraft/profile"
+_TENANT         = "consumers"
+_AUTH_URL       = f"https://login.microsoftonline.com/{_TENANT}/oauth2/v2.0/authorize"
+_TOKEN_URL      = f"https://login.microsoftonline.com/{_TENANT}/oauth2/v2.0/token"
+_SCOPE          = "XboxLive.signin offline_access"
+_REDIRECT_PATH  = "/callback"
+_XBL_URL        = "https://user.auth.xboxlive.com/user/authenticate"
+_XSTS_URL       = "https://xsts.auth.xboxlive.com/xsts/authorize"
+_MC_LOGIN_URL   = "https://api.minecraftservices.com/authentication/login_with_xbox"
+_MC_PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile"
 
-_KEYRING_SERVICE  = "GenosLauncher"
-_KEYRING_ACCOUNT  = "ms_account_json"
-_FALLBACK_STORE   = APP_DIR / ".auth_store"
+_KEYRING_SERVICE = "GenosLauncher"
+_KEYRING_ACCOUNT = "ms_account_json"
+_FALLBACK_STORE  = APP_DIR / ".auth_store"
 
 _HTTP = _req.Session()
 _HTTP.headers.update({"User-Agent": "GenosLauncher/0.2.0"})
@@ -138,8 +144,8 @@ def _decrypt(data: bytes) -> str:
     # _CRYPTO_OK is False: the store was written without encryption (legacy
     # path that no longer exists in _encrypt).  Attempt plain base64 decode
     # so that old installations are handled gracefully on upgrade.
-    import base64
-    return base64.b64decode(data).decode()
+    import base64 as _b64_legacy
+    return _b64_legacy.b64decode(data).decode()
 
 
 def _secure_delete(path: Path) -> None:
@@ -205,59 +211,158 @@ def _delete_account() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Device code flow
+# PKCE helpers
 # ---------------------------------------------------------------------------
 
-def _request_device_code(client_id: str) -> dict:
-    """
-    Request a device code from Microsoft.
-    Returns dict with: device_code, user_code, verification_uri, expires_in, interval.
-    """
-    resp = _HTTP.post(_DEVICE_CODE_URL, data={
-        "client_id": client_id,
-        "scope":     _SCOPE,
+def _pkce_pair() -> tuple[str, str]:
+    """Return (code_verifier, code_challenge) for S256 PKCE."""
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _build_auth_url(
+    client_id: str,
+    redirect_uri: str,
+    challenge: str,
+    state: str,
+) -> str:
+    params = {
+        "client_id":             client_id,
+        "response_type":         "code",
+        "redirect_uri":          redirect_uri,
+        "scope":                 _SCOPE,
+        "code_challenge":        challenge,
+        "code_challenge_method": "S256",
+        "state":                 state,
+        "prompt":                "select_account",
+    }
+    return _AUTH_URL + "?" + urllib.parse.urlencode(params)
+
+
+def _exchange_code(
+    client_id: str,
+    code: str,
+    redirect_uri: str,
+    verifier: str,
+) -> dict:
+    """Exchange an authorization code for MS access + refresh tokens."""
+    resp = _HTTP.post(_TOKEN_URL, data={
+        "client_id":     client_id,
+        "grant_type":    "authorization_code",
+        "code":          code,
+        "redirect_uri":  redirect_uri,
+        "code_verifier": verifier,
     }, timeout=15)
     if not resp.ok:
-        raise AuthError(f"Device code request failed ({resp.status_code}): {resp.text[:200]}")
-    return resp.json()
+        raise AuthError(f"Token exchange failed ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    if "error" in data:
+        raise AuthError(data.get("error_description", data["error"]))
+    return data
 
 
-def _poll_ms_token(
-    client_id:   str,
-    device_code: str,
-    interval:    int,
-    stop_event:  threading.Event,
-) -> dict:
+def _wait_for_callback(
+    port: int,
+    expected_state: str,
+    stop_event: threading.Event,
+    timeout: int = 300,
+) -> str:
     """
-    Poll until the user completes sign-in or the code expires.
-    Returns MS token dict: {access_token, refresh_token, ...}.
-    Raises AuthError on cancel, expiry, or user denial.
+    Run a local HTTP server on 127.0.0.1:port until the OAuth callback arrives.
+    Returns the authorization code, or raises AuthError on cancel/error/timeout.
     """
-    while not stop_event.is_set():
-        stop_event.wait(interval)
-        if stop_event.is_set():
-            raise AuthError("Sign-in cancelled.")
-        resp = _HTTP.post(_TOKEN_URL, data={
-            "client_id":   client_id,
-            "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
-            "device_code": device_code,
-        }, timeout=15)
-        data = resp.json()
-        err = data.get("error")
-        if err == "authorization_pending":
-            continue
-        if err == "slow_down":
-            interval = min(interval + 5, 30)
-            continue
-        if err == "expired_token":
-            raise AuthError("Sign-in code expired. Please try again.")
-        if err == "access_denied":
-            raise AuthError("Sign-in was denied or cancelled in the browser.")
-        if err:
-            raise AuthError(data.get("error_description", err))
-        return data
-    raise AuthError("Sign-in cancelled.")
+    result: dict[str, str] = {}
+    server_ref: list[http.server.HTTPServer] = []
 
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+
+            recv_state = params.get("state", [""])[0]
+            if recv_state != expected_state:
+                result["error"] = "State mismatch — possible CSRF. Please try again."
+                self._respond(self._error_html("State mismatch. Please try signing in again."))
+            else:
+                err = params.get("error", [""])[0]
+                if err:
+                    desc = params.get("error_description", [err])[0]
+                    result["error"] = desc
+                    self._respond(self._error_html(desc))
+                else:
+                    result["code"] = params.get("code", [""])[0]
+                    self._respond(self._success_html())
+
+            threading.Thread(target=server_ref[0].shutdown, daemon=True).start()
+
+        def _respond(self, html: str) -> None:
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        @staticmethod
+        def _success_html() -> str:
+            return (
+                "<!DOCTYPE html><html><head><title>Sign-in complete</title></head>"
+                "<body style='font-family:sans-serif;text-align:center;padding:60px;"
+                "background:#1a1a2e;color:#e0e0e0;'>"
+                "<h2 style='color:#4CAF50;'>&#10003; Signed in successfully!</h2>"
+                "<p>You can close this tab and return to GenosLauncher.</p>"
+                "</body></html>"
+            )
+
+        @staticmethod
+        def _error_html(message: str) -> str:
+            safe = (message.replace("&", "&amp;")
+                           .replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+            return (
+                "<!DOCTYPE html><html><head><title>Sign-in failed</title></head>"
+                "<body style='font-family:sans-serif;text-align:center;padding:60px;"
+                "background:#1a1a2e;color:#e0e0e0;'>"
+                "<h2 style='color:#f44336;'>&#10007; Sign-in failed</h2>"
+                f"<p>{safe}</p>"
+                "<p>Close this tab and try again in GenosLauncher.</p>"
+                "</body></html>"
+            )
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            pass  # suppress HTTP access log noise
+
+    server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    server_ref.append(server)
+
+    def _watchdog() -> None:
+        stop_event.wait(timeout)
+        server.shutdown()
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+    server.serve_forever()
+    server.server_close()
+
+    if stop_event.is_set():
+        raise AuthError("Sign-in cancelled.")
+    if "error" in result:
+        raise AuthError(result["error"])
+    if "code" not in result:
+        raise AuthError("Sign-in timed out. Please try again.")
+    return result["code"]
+
+
+# ---------------------------------------------------------------------------
+# Token refresh
+# ---------------------------------------------------------------------------
 
 def _refresh_ms_token(client_id: str, refresh_token: str) -> dict:
     """Exchange a stored refresh token for new MS access + refresh tokens."""
@@ -345,11 +450,11 @@ def _ms_token_to_minecraft(ms_access_token: str, ms_refresh_token: str) -> dict:
 
 class AuthManager:
     """
-    Manages Microsoft / Minecraft account authentication using device code flow.
+    Manages Microsoft / Minecraft account authentication using PKCE browser flow.
 
     Usage:
         auth_manager.load_stored()                # restore session on startup
-        auth_manager.start_login(on_code_ready,   # device code UI flow
+        auth_manager.start_login(on_browser_opened,  # PKCE browser flow
                                  on_success,
                                  on_error)
         auth_manager.refresh_async()              # silent background refresh
@@ -408,22 +513,23 @@ class AuthManager:
         return False
 
     # ------------------------------------------------------------------
-    # Device code login
+    # PKCE browser login
     # ------------------------------------------------------------------
 
     def start_login(
         self,
-        on_code_ready: Callable[[str, str, int], None],
-        on_success:    Callable[[dict], None],
-        on_error:      Callable[[str], None],
+        on_browser_opened: Callable[[str], None],
+        on_success:        Callable[[dict], None],
+        on_error:          Callable[[str], None],
     ) -> None:
         """
-        Start the device code login flow on a background thread.
+        Start the PKCE browser login flow on a background thread.
 
-        on_code_ready(user_code, verification_uri, expires_in)
-            Called when Microsoft returns the code to show the user.
+        on_browser_opened(auth_url)
+            Called once the system browser has been opened. auth_url can be
+            stored by the caller to re-open the browser if needed.
         on_success(account_dict)
-            Called when login completes.
+            Called when login completes successfully.
         on_error(message)
             Called on any failure.
         """
@@ -438,38 +544,39 @@ class AuthManager:
 
         self._cancel_event.clear()
         threading.Thread(
-            target=self._login_thread,
-            args=(client_id, on_code_ready, on_success, on_error),
+            target=self._login_thread_pkce,
+            args=(client_id, on_browser_opened, on_success, on_error),
             daemon=True,
         ).start()
 
     def cancel_login(self) -> None:
-        """Cancel an in-progress device code flow."""
+        """Cancel an in-progress login flow."""
         self._cancel_event.set()
 
-    def _login_thread(
+    def _login_thread_pkce(
         self,
-        client_id:     str,
-        on_code_ready: Callable,
-        on_success:    Callable,
-        on_error:      Callable,
+        client_id:         str,
+        on_browser_opened: Callable,
+        on_success:        Callable,
+        on_error:          Callable,
     ) -> None:
         try:
-            code_data = _request_device_code(client_id)
-        except Exception as exc:
-            on_error(str(exc))
+            port = _find_free_port()
+        except OSError as exc:
+            on_error(f"Could not start local sign-in server: {exc}")
             return
 
-        user_code        = code_data["user_code"]
-        verification_uri = code_data.get("verification_uri", "https://microsoft.com/devicelogin")
-        expires_in       = code_data.get("expires_in", 900)
-        interval         = code_data.get("interval", 5)
-        device_code      = code_data["device_code"]
+        redirect_uri = f"http://localhost:{port}{_REDIRECT_PATH}"
+        verifier, challenge = _pkce_pair()
+        state    = secrets.token_urlsafe(16)
+        auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
 
-        on_code_ready(user_code, verification_uri, expires_in)
+        webbrowser.open(auth_url)
+        on_browser_opened(auth_url)
 
         try:
-            ms_tokens = _poll_ms_token(client_id, device_code, interval, self._cancel_event)
+            code      = _wait_for_callback(port, state, self._cancel_event)
+            ms_tokens = _exchange_code(client_id, code, redirect_uri, verifier)
             account   = _ms_token_to_minecraft(
                 ms_tokens["access_token"],
                 ms_tokens.get("refresh_token", ""),
