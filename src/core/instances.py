@@ -233,6 +233,51 @@ def remove_instance(instance_id: str) -> None:
     save_instances([i for i in list_instances() if i.get("id") != instance_id])
 
 
+def validate_instance(instance: dict) -> tuple[bool, list[str]]:
+    issues: list[str] = []
+    instance_id = str(instance.get("id", "")).strip()
+    if not instance_id:
+        issues.append("Missing instance id.")
+    directory_raw = str(instance.get("directory", "")).strip()
+    if not directory_raw:
+        issues.append("Missing instance directory.")
+        return False, issues
+    directory = Path(directory_raw)
+    try:
+        _ = directory.resolve()
+    except OSError:
+        issues.append("Instance directory path is not resolvable.")
+    mc_version = str(instance.get("mc_version", "")).strip()
+    if not mc_version:
+        issues.append("Missing Minecraft version.")
+    else:
+        try:
+            validate_version_id(mc_version)
+        except ValueError:
+            issues.append(f"Invalid Minecraft version id: {mc_version}")
+    if not directory.exists():
+        issues.append("Instance directory does not exist.")
+    elif not directory.is_dir():
+        issues.append("Instance directory is not a directory.")
+    return len(issues) == 0, issues
+
+
+def repair_instance_layout(instance: dict) -> list[str]:
+    """
+    Best-effort local repair for expected instance folder structure.
+    Returns the list of created directories.
+    """
+    directory = Path(str(instance.get("directory", "")))
+    directory.mkdir(parents=True, exist_ok=True)
+    created: list[str] = []
+    for rel in ("mods", "saves", "resourcepacks", "shaderpacks", "screenshots", "logs", "crash-reports"):
+        target = directory / rel
+        if not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+            created.append(rel)
+    return created
+
+
 # ---------------------------------------------------------------------------
 # Import from MultiMC / Prism Launcher
 # ---------------------------------------------------------------------------

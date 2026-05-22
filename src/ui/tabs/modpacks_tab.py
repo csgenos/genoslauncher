@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -33,7 +34,9 @@ from ...core.config import APP_DIR, config
 from ...core import modrinth as mr
 from ...core import curseforge as cf
 from ...core.instances import create_modpack_instance
+from ...core.instances import set_selected_instance
 from ...core.launcher import install_minecraft_base, install_loader
+from ...core.modpack_archive import import_instance_archive
 from ...core.validators import safe_path_segment
 
 
@@ -402,6 +405,10 @@ class ModpacksTab(QWidget):
         self._source_combo.setFixedSize(140, 32)
         self._source_combo.currentIndexChanged.connect(self._on_search_changed)
         header_row.addWidget(self._source_combo)
+        import_btn = QPushButton("Import Pack...")
+        import_btn.setFixedHeight(32)
+        import_btn.clicked.connect(self._import_pack_archive)
+        header_row.addWidget(import_btn)
         root.addLayout(header_row)
 
         sub = QLabel("Browse and install Minecraft modpacks in one click.")
@@ -648,3 +655,19 @@ class ModpacksTab(QWidget):
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.start()
+
+    def _import_pack_archive(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Modpack Archive",
+            "",
+            "Archives (*.mrpack *.zip)",
+        )
+        if not path:
+            return
+        try:
+            instance = import_instance_archive(Path(path), instance_name=Path(path).stem)
+            set_selected_instance(instance.get("id", ""))
+            self._status_label.setText(f"Imported {Path(path).name} as '{instance.get('name', 'Instance')}'.")
+        except Exception as exc:
+            self._status_label.setText(f"Import failed: {exc}")

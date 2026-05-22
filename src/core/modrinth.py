@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import urllib.parse
 import zipfile
 from pathlib import Path
@@ -147,10 +148,22 @@ def _get(endpoint: str, params: dict | None = None, timeout: int = 15) -> Any:
             etag, cached_data = _cache[cache_key]
             headers["If-None-Match"] = etag
 
-    try:
-        resp = _session.get(url, params=params, headers=headers, timeout=timeout)
-    except requests.RequestException as exc:
-        raise ModrinthError(f"Network error: {exc}") from exc
+    last_error: Exception | None = None
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = _session.get(url, params=params, headers=headers, timeout=timeout)
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.25 * (attempt + 1))
+    if resp is None:
+        with _cache_lock:
+            if cache_key in _cache:
+                # Recovery path: return stale cache when network is unavailable.
+                return _cache[cache_key][1]
+        raise ModrinthError(f"Network error: {last_error}") from last_error
 
     if resp.status_code == 304:
         with _cache_lock:

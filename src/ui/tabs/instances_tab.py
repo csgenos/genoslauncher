@@ -37,11 +37,14 @@ from ...core.instances import (
     import_prism_instances,
     list_instance_groups,
     list_instances,
+    repair_instance_layout,
     remove_instance,
     set_instance_group,
     set_selected_instance,
     update_instance,
+    validate_instance,
 )
+from ...core.modpack_archive import export_instance_mrpack, export_instance_zip, import_instance_archive
 from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
 from ...core.validators import validate_version_id
 
@@ -76,12 +79,22 @@ class _RepairWorker(QObject):
 
     def run(self) -> None:
         try:
+            ok, issues = validate_instance(self._instance)
+            created = repair_instance_layout(self._instance)
+            if created:
+                self.progress.emit(0, 1, f"Created folders: {', '.join(created)}")
             version = self._instance.get("mc_version", "")
             directory = self._instance.get("directory", "")
             if not version or not directory:
                 raise RuntimeError("Instance is missing version or directory.")
             install_minecraft_base(version, directory, self.progress.emit)
-            self.finished.emit(True, f"Repaired {self._instance.get('name', 'instance')}.")
+            if ok:
+                self.finished.emit(True, f"Repaired {self._instance.get('name', 'instance')}.")
+            else:
+                self.finished.emit(
+                    True,
+                    f"Repaired with warnings ({len(issues)}): " + "; ".join(issues[:3]),
+                )
         except Exception as exc:
             self.finished.emit(False, str(exc))
 
@@ -134,7 +147,7 @@ class InstancesTab(QWidget):
         import_btn = OutlineButton("Import...")
         import_btn.setFixedHeight(34)
         import_btn.setFixedWidth(100)
-        import_btn.clicked.connect(self._import_instances)
+        import_btn.clicked.connect(self._import_menu)
         header_row.addWidget(import_btn)
 
         root.addLayout(header_row)
@@ -327,9 +340,12 @@ class InstancesTab(QWidget):
     def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
         menu = QMenu(self)
         menu.addAction("Edit", lambda: self._edit_instance(instance))
+        menu.addAction("Validate", lambda: self._validate_instance(instance))
         menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
         menu.addAction("Clone", lambda: self._clone_instance(instance))
         menu.addAction("Repair", lambda: self._repair_instance(instance))
+        menu.addAction("Export ZIP...", lambda: self._export_instance_zip(instance))
+        menu.addAction("Export MRPACK...", lambda: self._export_instance_mrpack(instance))
         menu.addSeparator()
         menu.addAction("View Crash Reports", lambda: self._view_crashes(instance))
         menu.addAction("Screenshots", lambda: self._view_screenshots(instance))
@@ -337,6 +353,12 @@ class InstancesTab(QWidget):
         menu.addSeparator()
         menu.addAction("Remove", lambda: self._remove_instance(instance))
         menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _import_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("Import Prism/MultiMC Folder...", self._import_instances)
+        menu.addAction("Import ZIP/MRPACK Archive...", self._import_archive)
+        menu.exec(self.mapToGlobal(self.rect().topLeft()))
 
     def _view_crashes(self, instance: dict) -> None:
         CrashReportDialog(instance, self).exec()
@@ -355,6 +377,35 @@ class InstancesTab(QWidget):
         set_instance_group(instance.get("id", ""), group_name.strip())
         self._render_instances()
         self._count_label.setText(f"Moved {instance.get('name', 'instance')} to group '{group_name.strip() or current}'.")
+
+    def _validate_instance(self, instance: dict) -> None:
+        ok, issues = validate_instance(instance)
+        if ok:
+            self._count_label.setText(f"{instance.get('name', 'Instance')}: validation OK.")
+        else:
+            self._count_label.setText(f"{instance.get('name', 'Instance')}: " + "; ".join(issues[:2]))
+
+    def _export_instance_zip(self, instance: dict) -> None:
+        default_name = f"{instance.get('name', 'instance')}.zip"
+        path, _ = QFileDialog.getSaveFileName(self, "Export Instance ZIP", default_name, "ZIP Archives (*.zip)")
+        if not path:
+            return
+        try:
+            export_instance_zip(instance, Path(path))
+            self._count_label.setText(f"Exported ZIP: {Path(path).name}")
+        except Exception as exc:
+            self._count_label.setText(f"Export failed: {exc}")
+
+    def _export_instance_mrpack(self, instance: dict) -> None:
+        default_name = f"{instance.get('name', 'instance')}.mrpack"
+        path, _ = QFileDialog.getSaveFileName(self, "Export Instance MRPACK", default_name, "MRPACK Archives (*.mrpack)")
+        if not path:
+            return
+        try:
+            export_instance_mrpack(instance, Path(path))
+            self._count_label.setText(f"Exported MRPACK: {Path(path).name}")
+        except Exception as exc:
+            self._count_label.setText(f"Export failed: {exc}")
 
     def _create_instance(self) -> None:
         default_version = config.get("selected_version", "1.21.4") or "1.21.4"
@@ -431,6 +482,24 @@ class InstancesTab(QWidget):
             self._count_label.setText(
                 "No importable instances found. Make sure you selected the folder that contains the instance subfolders."
             )
+
+    def _import_archive(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import ZIP/MRPACK Archive",
+            "",
+            "Archives (*.zip *.mrpack)",
+        )
+        if not path:
+            return
+        name_hint = Path(path).stem
+        try:
+            instance = import_instance_archive(Path(path), instance_name=name_hint)
+            set_selected_instance(instance.get("id", ""))
+            self._render_instances()
+            self._count_label.setText(f"Imported archive as instance: {instance.get('name', 'Instance')}")
+        except Exception as exc:
+            self._count_label.setText(f"Import failed: {exc}")
 
     def _remove_instance(self, instance: dict) -> None:
         reply = QMessageBox.question(

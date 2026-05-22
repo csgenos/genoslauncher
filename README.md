@@ -117,6 +117,15 @@ GenosLauncher includes a built-in client ID — Microsoft sign-in works out of t
 build.bat
 ```
 
+## Basic macOS App + DMG
+
+```bash
+chmod +x build_macos.sh
+./build_macos.sh
+```
+
+This creates `dist/GenosLauncher.app` and a compressed `dist/GenosLauncher-<version>.dmg`.
+
 Requires a virtual environment at `venv\`. For release builds set `GENOS_RELEASE=1`; this requires code signing and a detached signature for `SHA256SUMS.txt`.
 The build script reads the version from `src/_version.py` and emits `SHA256SUMS.txt` for artifact verification.
 
