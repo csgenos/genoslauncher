@@ -37,6 +37,7 @@ from ...core import modrinth as mr
 from ...core import curseforge as cf
 from ...core.instances import create_modpack_instance
 from ...core.launcher import install_minecraft_base, install_loader
+from ...core.validators import safe_path_segment
 
 
 # ---------------------------------------------------------------------------
@@ -78,28 +79,20 @@ class InstallWorker(QObject):
     progress = Signal(int, int, str)   # current, total, status text
     finished = Signal(bool, str)       # success, message
 
-    def __init__(self, project: dict, version: dict, dest_dir: Path) -> None:
+    def __init__(self, project: dict, version: dict, dest_dir: Path, requested_game_version: str = "") -> None:
         super().__init__()
         self.project = project
         self.version = version
         self.dest_dir = dest_dir
+        self.requested_game_version = requested_game_version
 
     def run(self) -> None:
         try:
-            failures = self._install()
+            self._install()
         except Exception as exc:
             self.finished.emit(False, str(exc))
             return
-        if failures:
-            failed_str = ", ".join(failures[:3])
-            if len(failures) > 3:
-                failed_str += f" (+{len(failures) - 3} more)"
-            msg = (
-                f"'{self.project['title']}' installed — "
-                f"{len(failures)} mod(s) could not be downloaded: {failed_str}"
-            )
-        else:
-            msg = f"'{self.project['title']}' installed successfully."
+        msg = f"'{self.project['title']}' installed successfully."
         self.finished.emit(True, msg)
 
     def _install(self) -> list[str]:
@@ -134,8 +127,21 @@ class InstallWorker(QObject):
         index = mr.parse_mrpack(mrpack_path)
 
         mc_version = index.get("dependencies", {}).get("minecraft", "")
-        instance_name = mr.safe_filename(self.project.get("title") or "Modpack")
+        if self.requested_game_version and mc_version != self.requested_game_version:
+            raise RuntimeError(
+                f"Resolved pack targets Minecraft {mc_version}, not {self.requested_game_version}."
+            )
+        if not mc_version:
+            raise RuntimeError("Modpack is missing a Minecraft dependency.")
+        instance_name = "-".join([
+            "modpack",
+            safe_path_segment(self.project.get("id", "project"), "project", 32),
+            safe_path_segment(self.version.get("id", "version"), "version", 32),
+            safe_path_segment(mc_version, "minecraft", 24),
+        ])
         instance_dir = APP_DIR / "instances" / instance_name
+        if instance_dir.exists() and any(instance_dir.iterdir()):
+            raise RuntimeError("This modpack version already has an instance directory.")
 
         # 3b. Install base Minecraft version into the isolated modpack instance.
         mc_dir = str(instance_dir)
@@ -158,13 +164,24 @@ class InstallWorker(QObject):
             self.progress.emit(current, max(total, 1), f"Downloading mod {current}/{total}: {fname}")
 
         failures = mr.install_mrpack_mods(index, instance_dir, on_progress=on_mod)
+        if failures:
+            failed_str = ", ".join(failures[:3])
+            if len(failures) > 3:
+                failed_str += f" (+{len(failures) - 3} more)"
+            raise RuntimeError(f"{len(failures)} required mod(s) could not be downloaded: {failed_str}")
 
         # 5. Extract overrides
         self.progress.emit(0, 1, "Extracting overrides...")
         mr.extract_mrpack_overrides(mrpack_path, instance_dir)
 
         # 6. Register instance in config
-        create_modpack_instance(self.project, mc_version, instance_dir)
+        create_modpack_instance(
+            self.project,
+            mc_version,
+            instance_dir,
+            pack_version_id=self.version.get("id", ""),
+            launch_version_id=loader_version_id,
+        )
 
         return failures
 
@@ -174,7 +191,8 @@ class InstallWorker(QObject):
 # ---------------------------------------------------------------------------
 
 class IconLoader(QObject):
-    loaded = Signal(str, QPixmap)   # project_id, pixmap
+    loaded = Signal(str, QImage)   # project_id, image
+    finished = Signal()
 
     def __init__(self, project_id: str, icon_url: str, cache_dir: Path) -> None:
         super().__init__()
@@ -183,12 +201,18 @@ class IconLoader(QObject):
         self.cache_dir = cache_dir
 
     def run(self) -> None:
-        path = mr.download_icon(self.icon_url, self.cache_dir)
-        if path:
-            px = QPixmap(str(path)).scaled(
-                56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self.loaded.emit(self.project_id, px)
+        try:
+            path = mr.download_icon(self.icon_url, self.cache_dir)
+            if path:
+                img = QImage(str(path))
+                if img.isNull() or img.width() > 4096 or img.height() > 4096:
+                    return
+                img = img.scaled(
+                    56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                self.loaded.emit(self.project_id, img)
+        finally:
+            self.finished.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +379,8 @@ class ModpacksTab(QWidget):
         self._icon_cache = APP_DIR / "cache" / "icons"
         self._icon_cache.mkdir(parents=True, exist_ok=True)
         self._search_threads: list[QThread] = []
+        self._workers: list[QObject] = []
+        self._search_generation = 0
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
@@ -463,20 +489,28 @@ class ModpacksTab(QWidget):
 
         self._status_label.setText("Searching…")
         self._clear_results()
+        self._search_generation += 1
+        generation = self._search_generation
 
         thread = QThread(self)
         worker = SearchWorker(query, "modpack", game_version, source=source)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.results_ready.connect(self._on_results)
-        worker.error.connect(self._on_search_error)
+        worker.results_ready.connect(lambda hits, total, gen=generation: self._on_results(gen, hits, total))
+        worker.error.connect(lambda msg, gen=generation: self._on_search_error(gen, msg))
         worker.results_ready.connect(thread.quit)
         worker.error.connect(thread.quit)
         thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         self._search_threads.append(thread)
+        self._workers.append(worker)
         thread.start()
 
-    def _on_results(self, hits: list[dict], total: int) -> None:
+    def _on_results(self, generation: int, hits: list[dict], total: int) -> None:
+        if generation != self._search_generation:
+            return
         self._status_label.setText(f"{total:,} modpacks found")
         self._clear_results()
         self._current_cards.clear()
@@ -497,7 +531,9 @@ class ModpacksTab(QWidget):
             if project.get("icon_url"):
                 self._load_icon_async(project["id"], project["icon_url"])
 
-    def _on_search_error(self, msg: str) -> None:
+    def _on_search_error(self, generation: int, msg: str) -> None:
+        if generation != self._search_generation:
+            return
         self._status_label.setText(f"Error: {msg}")
 
     def _clear_results(self) -> None:
@@ -516,12 +552,18 @@ class ModpacksTab(QWidget):
         loader.moveToThread(thread)
         thread.started.connect(loader.run)
         loader.loaded.connect(self._on_icon_loaded)
-        loader.loaded.connect(lambda: thread.quit())
+        loader.finished.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(loader)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(loader) if loader in self._workers else None)
+        thread.finished.connect(loader.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    def _on_icon_loaded(self, project_id: str, pixmap: QPixmap) -> None:
+    def _on_icon_loaded(self, project_id: str, image: QImage) -> None:
         if project_id in self._current_cards:
-            self._current_cards[project_id].set_icon(pixmap)
+            self._current_cards[project_id].set_icon(QPixmap.fromImage(image))
 
     # ------------------------------------------------------------------
     # Install
@@ -535,29 +577,44 @@ class ModpacksTab(QWidget):
             return
         # Fetch versions on background thread, then start install
         thread = QThread(self)
+        ver_text = self._version_filter.currentText()
+        game_version = "" if ver_text.startswith("Any") else ver_text
 
         class VersionFetcher(QObject):
             done = Signal(list)
             err = Signal(str)
-            def __init__(self, pid): super().__init__(); self.pid = pid
+            def __init__(self, pid, game_version):
+                super().__init__()
+                self.pid = pid
+                self.game_version = game_version
             def run(self):
-                try: self.done.emit(mr.get_project_versions(self.pid))
+                try:
+                    self.done.emit(mr.get_project_versions(
+                        self.pid,
+                        game_versions=[self.game_version] if self.game_version else None,
+                    ))
                 except mr.ModrinthError as e: self.err.emit(str(e))
 
-        fetcher = VersionFetcher(project["id"])
+        fetcher = VersionFetcher(project["id"], game_version)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
-        fetcher.done.connect(lambda versions: self._start_install(project, versions))
+        fetcher.done.connect(lambda versions, gv=game_version: self._start_install(project, versions, gv))
         fetcher.err.connect(lambda e: self._status_label.setText(f"Error: {e}"))
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(fetcher)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(fetcher) if fetcher in self._workers else None)
+        thread.finished.connect(fetcher.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
         card = self._current_cards.get(project["id"])
         if card:
             card.set_installing("Fetching…")
 
-    def _start_install(self, project: dict, versions: list[dict]) -> None:
+    def _start_install(self, project: dict, versions: list[dict], game_version: str = "") -> None:
         if not versions:
             self._status_label.setText("No versions available for this modpack.")
             return
@@ -567,7 +624,7 @@ class ModpacksTab(QWidget):
         dest_dir = APP_DIR / "downloads"
 
         thread = QThread(self)
-        worker = InstallWorker(project, version, dest_dir)
+        worker = InstallWorker(project, version, dest_dir, requested_game_version=game_version)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
@@ -587,4 +644,10 @@ class ModpacksTab(QWidget):
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finish)
         worker.finished.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()

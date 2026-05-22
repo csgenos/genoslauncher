@@ -26,6 +26,7 @@ from .config import APP_DIR, LOGS_DIR
 from .auth import auth_manager
 from .instances import create_vanilla_instance, find_instance, find_instance_for_version, list_instances
 from .java_manager import find_best_java, get_preset_args, required_java_for_mc
+from .validators import safe_path_segment, validate_version_id
 
 log = logging.getLogger(__name__)
 
@@ -208,6 +209,7 @@ def install_minecraft_base(
     on_progress=None,
 ) -> None:
     """Install a base Minecraft version into mc_dir (no-op if already present)."""
+    version_id = validate_version_id(version_id)
     if not MLL_AVAILABLE:
         return
 
@@ -308,7 +310,7 @@ class InstallWorker(QObject):
 
     def __init__(self, version_id: str, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
-        self.version_id = version_id
+        self.version_id = validate_version_id(version_id)
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -362,7 +364,7 @@ class LaunchWorker(QObject):
         server_port: str = "",
     ) -> None:
         super().__init__(parent)
-        self.version_id  = version_id
+        self.version_id  = validate_version_id(version_id)
         self.username    = username
         self.instance_id = instance_id
         self.server_ip   = server_ip
@@ -374,9 +376,20 @@ class LaunchWorker(QObject):
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def terminate(self) -> None:
+    def terminate(self, timeout: float = 10.0) -> bool:
         if self._process:
             self._process.terminate()
+            try:
+                self._process.wait(timeout=timeout)
+                return True
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                try:
+                    self._process.wait(timeout=5)
+                    return True
+                except subprocess.TimeoutExpired:
+                    return False
+        return True
 
     def _run(self) -> None:
         if not MLL_AVAILABLE:
@@ -411,7 +424,7 @@ class LaunchWorker(QObject):
 
         # Real credentials when logged in with a matching Microsoft account (B-Z-004)
         if auth_manager.is_logged_in and auth_manager.username == self.username:
-            if not auth_manager.ensure_token_fresh():
+            if not auth_manager.ensure_token_fresh(force=True):
                 self.error.emit(
                     "Microsoft session refresh failed. Please sign in again before launching online."
                 )
@@ -453,7 +466,8 @@ class LaunchWorker(QObject):
                 command.extend(["--server", self.server_ip,
                                  "--port", self.server_port or "25565"])
             self.status_changed.emit("Starting Minecraft...")
-            log_path = LOGS_DIR / f"minecraft-{self.version_id}.log"
+            safe_version = safe_path_segment(self.version_id, "version")
+            log_path = LOGS_DIR / f"minecraft-{safe_version}.log"
             log_fh = open(log_path, "a", encoding="utf-8", errors="replace")
             # SX-001: --accessToken is visible in /proc/<pid>/cmdline on Linux and
             # Task Manager / WMI on Windows.  This is a known Minecraft launcher

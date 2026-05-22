@@ -36,8 +36,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
+from ..qt_dispatch import run_on_ui_thread
 from ...core.config import APP_DIR, config
-from ...core.instances import list_instances, selected_instance_dir, set_selected_instance
+from ...core.instances import create_custom_instance, list_instances, selected_instance_dir, set_selected_instance
 from ...core import modrinth as mr
 
 
@@ -77,7 +78,7 @@ class IrisInstallWorker(QObject):
     """Installs Fabric loader then downloads Iris and Sodium JARs from Modrinth."""
 
     progress = Signal(str)
-    finished = Signal(bool, str)
+    finished = Signal(bool, str, str)
 
     IRIS_SLUG   = "iris"
     SODIUM_SLUG = "sodium"
@@ -89,25 +90,37 @@ class IrisInstallWorker(QObject):
 
     def run(self) -> None:
         try:
-            self._do_install()
-            self.finished.emit(True, "Iris + Sodium installed successfully.")
+            version_id = self._do_install()
+            self.finished.emit(True, "Iris + Sodium installed successfully.", version_id)
         except Exception as exc:
-            self.finished.emit(False, str(exc))
+            self.finished.emit(False, str(exc), "")
 
-    def _do_install(self) -> None:
+    def _do_install(self) -> str:
         from ...core.launcher import MLL_AVAILABLE
 
         # 1. Install Fabric loader
-        if MLL_AVAILABLE:
-            import minecraft_launcher_lib as mll
-            self.progress.emit(f"Installing Fabric for {self._mc_version}…")
-            mll.fabric.install_fabric(
-                minecraft_version=self._mc_version,
-                minecraft_directory=str(self._mc_dir),
-                callback={"setStatus": lambda t: self.progress.emit(t)},
-            )
-        else:
-            self.progress.emit("minecraft-launcher-lib not installed — skipping Fabric step.")
+        if not MLL_AVAILABLE:
+            raise RuntimeError("minecraft-launcher-lib is required to install Fabric for Iris.")
+        import minecraft_launcher_lib as mll
+        self.progress.emit(f"Installing Fabric for {self._mc_version}…")
+        try:
+            loader_version = mll.fabric.get_latest_loader_version()
+        except Exception:
+            loader_version = ""
+        install_kwargs = {
+            "minecraft_version": self._mc_version,
+            "minecraft_directory": str(self._mc_dir),
+            "callback": {"setStatus": lambda t: self.progress.emit(t)},
+        }
+        if loader_version:
+            install_kwargs["loader_version"] = loader_version
+        mll.fabric.install_fabric(**install_kwargs)
+        fabric_version_id = (
+            f"fabric-loader-{loader_version}-{self._mc_version}"
+            if loader_version else self._find_installed_fabric_version()
+        )
+        if not fabric_version_id:
+            raise RuntimeError("Fabric installed, but the loader version id could not be verified.")
 
         # 2. Download Iris and Sodium JARs into <mc_dir>/mods/
         mods_dir = self._mc_dir / "mods"
@@ -131,14 +144,52 @@ class IrisInstallWorker(QObject):
                 raise RuntimeError(f"No downloadable file found for {name}.")
             filename = mr.safe_filename(primary["filename"])
             dest = mr.safe_download_path(mods_dir, filename)
+            hashes = primary.get("hashes", {})
+            if dest.exists() and not mr.verify_file_hash(dest, hashes.get("sha1", ""), hashes.get("sha512", "")):
+                dest.unlink(missing_ok=True)
             if not dest.exists():
                 self.progress.emit(f"Downloading {primary['filename']}…")
-                hashes = primary.get("hashes", {})
                 mr.download_file(
                     primary["url"], dest,
                     expected_sha1=hashes.get("sha1", ""),
                     expected_sha512=hashes.get("sha512", ""),
                 )
+        return fabric_version_id
+
+    def _find_installed_fabric_version(self) -> str:
+        versions_dir = self._mc_dir / "versions"
+        if not versions_dir.exists():
+            return ""
+        prefix = "fabric-loader-"
+        suffix = f"-{self._mc_version}"
+        matches = sorted(
+            child.name for child in versions_dir.iterdir()
+            if child.is_dir() and child.name.startswith(prefix) and child.name.endswith(suffix)
+        )
+        return matches[-1] if matches else ""
+
+
+class ShaderDownloadWorker(QObject):
+    finished = Signal(bool, str)
+
+    def __init__(self, project: dict, primary: dict, dest: Path) -> None:
+        super().__init__()
+        self.project = project
+        self.primary = primary
+        self.dest = dest
+
+    def run(self) -> None:
+        try:
+            hashes = self.primary.get("hashes", {})
+            mr.download_file(
+                self.primary["url"],
+                self.dest,
+                expected_sha1=hashes.get("sha1", ""),
+                expected_sha512=hashes.get("sha512", ""),
+            )
+            self.finished.emit(True, f"Installed '{self.project['title']}'")
+        except Exception as exc:
+            self.finished.emit(False, f"Download failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +424,8 @@ class ShadersTab(QWidget):
         self._search_timer.timeout.connect(self._execute_shader_search)
         self._search_threads: list[QThread] = []
         self._install_threads: list[QThread] = []
+        self._workers: list[QObject] = []
+        self._search_generation = 0
         self.setAcceptDrops(True)
         self._build_ui()
         QTimer.singleShot(300, self._refresh_installed)
@@ -709,9 +762,15 @@ class ShadersTab(QWidget):
         def on_progress(status: str) -> None:
             self._iris_btn.setText(status[:14] if status else "Installing…")
 
-        def on_finished(success: bool, message: str) -> None:
+        def on_finished(success: bool, message: str, fabric_version_id: str) -> None:
             self._iris_version_combo.setEnabled(True)
             if success:
+                instance = create_custom_instance(
+                    f"Iris + Sodium {mc_version}",
+                    fabric_version_id,
+                    directory=self._mc_dir,
+                )
+                set_selected_instance(instance["id"])
                 self._iris_btn.setText("Installed ✓")
                 self._iris_btn.setEnabled(False)
             else:
@@ -724,10 +783,14 @@ class ShadersTab(QWidget):
         worker.finished.connect(on_finished)
         worker.finished.connect(thread.quit)
         self._install_threads.append(thread)
+        self._workers.append(worker)
         thread.finished.connect(
             lambda: self._install_threads.remove(thread)
             if thread in self._install_threads else None
         )
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     # ------------------------------------------------------------------
@@ -740,6 +803,8 @@ class ShadersTab(QWidget):
         game_version = "" if ver.startswith("Any") else ver
 
         self._shader_status.setText("Searching…")
+        self._search_generation += 1
+        generation = self._search_generation
         # Clear old results
         while self._shader_results_layout.count():
             item = self._shader_results_layout.takeAt(0)
@@ -750,35 +815,55 @@ class ShadersTab(QWidget):
         worker = ShaderSearchWorker(query, game_version)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.results_ready.connect(self._on_shader_results)
-        worker.error.connect(lambda e: self._shader_status.setText(f"Error: {e}"))
+        worker.results_ready.connect(lambda hits, total, gen=generation: self._on_shader_results(gen, hits, total))
+        worker.error.connect(lambda e, gen=generation: self._on_shader_error(gen, e))
         worker.results_ready.connect(thread.quit)
         worker.error.connect(thread.quit)
         self._search_threads.append(thread)
+        self._workers.append(worker)
         thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    def _on_shader_results(self, hits: list[dict], total: int) -> None:
+    def _on_shader_results(self, generation: int, hits: list[dict], total: int) -> None:
+        if generation != self._search_generation:
+            return
         self._shader_status.setText(f"{total:,} shaders found on Modrinth")
         for project in hits:
             card = ShaderCard(project, self)
             card.install_requested.connect(self._on_shader_install)
             self._shader_results_layout.addWidget(card)
 
+    def _on_shader_error(self, generation: int, msg: str) -> None:
+        if generation != self._search_generation:
+            return
+        self._shader_status.setText(f"Error: {msg}")
+
     def _on_shader_install(self, project: dict) -> None:
         self._shader_status.setText(f"Fetching versions for '{project['title']}'…")
 
         thread = QThread(self)
+        ver = self._shader_ver.currentText() if hasattr(self, "_shader_ver") else ""
+        game_version = "" if ver.startswith("Any") else ver
 
         class VersionFetcher(QObject):
             done = Signal(list)
             err  = Signal(str)
-            def __init__(self, pid): super().__init__(); self.pid = pid
+            def __init__(self, pid, game_version):
+                super().__init__()
+                self.pid = pid
+                self.game_version = game_version
             def run(self):
-                try: self.done.emit(mr.get_project_versions(self.pid))
+                try:
+                    self.done.emit(mr.get_project_versions(
+                        self.pid,
+                        game_versions=[self.game_version] if self.game_version else None,
+                    ))
                 except mr.ModrinthError as e: self.err.emit(str(e))
 
-        fetcher = VersionFetcher(project["id"])
+        fetcher = VersionFetcher(project["id"], game_version)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
         fetcher.done.connect(lambda versions: self._start_shader_download(project, versions))
@@ -786,9 +871,13 @@ class ShadersTab(QWidget):
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
         self._search_threads.append(thread)
+        self._workers.append(fetcher)
         thread.finished.connect(
             lambda: self._search_threads.remove(thread) if thread in self._search_threads else None
         )
+        thread.finished.connect(lambda: self._workers.remove(fetcher) if fetcher in self._workers else None)
+        thread.finished.connect(fetcher.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _start_shader_download(self, project: dict, versions: list[dict]) -> None:
@@ -806,22 +895,24 @@ class ShadersTab(QWidget):
         dest = mr.safe_download_path(self._shaderpacks_dir(), filename)
         self._shader_status.setText(f"Downloading {primary['filename']}…")
 
-        def do_download():
-            try:
-                hashes = primary.get("hashes", {})
-                mr.download_file(
-                    primary["url"], dest,
-                    expected_sha1=hashes.get("sha1", ""),
-                    expected_sha512=hashes.get("sha512", ""),
-                )
-                QTimer.singleShot(0, lambda: (
-                    self._shader_status.setText(f"Installed '{project['title']}'"),
-                    self._refresh_installed(),
-                ))
-            except mr.ModrinthError as exc:
-                QTimer.singleShot(0, lambda: self._shader_status.setText(f"Download failed: {exc}"))
+        thread = QThread(self)
+        worker = ShaderDownloadWorker(project, primary, dest)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda ok, msg: self._on_shader_download_finished(ok, msg))
+        worker.finished.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
-        threading.Thread(target=do_download, daemon=True).start()
+    def _on_shader_download_finished(self, success: bool, message: str) -> None:
+        self._shader_status.setText(message)
+        if success:
+            self._refresh_installed()
 
     # ------------------------------------------------------------------
     # Open folder

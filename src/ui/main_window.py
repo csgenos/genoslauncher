@@ -36,6 +36,7 @@ from .tabs.settings_tab import SettingsTab
 from .tabs.accounts_tab import AccountsTab
 from .tabs.servers_tab import ServersTab
 from .login_dialog import LoginDialog
+from .qt_dispatch import run_on_ui_thread
 from ..core.auth import auth_manager
 from ..core.config import config
 from ..core.launcher import InstallWorker, LaunchWorker
@@ -224,7 +225,7 @@ class MainWindow(QMainWindow):
     def _check_for_update(self) -> None:
         def _on_result(result):
             if result:
-                QTimer.singleShot(0, lambda: self._show_update_bar(result))
+                run_on_ui_thread(lambda: self._show_update_bar(result))
         check_async(_on_result)
 
     def _show_update_bar(self, result: dict) -> None:
@@ -466,5 +467,10 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             if clicked == stop_game:
-                self._launch_worker.terminate()
+                if not self._launch_worker.terminate():
+                    QMessageBox.warning(
+                        self,
+                        "Minecraft is still running",
+                        "GenosLauncher could not stop Minecraft. It may still be running.",
+                    )
         super().closeEvent(event)

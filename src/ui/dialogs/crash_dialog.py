@@ -18,6 +18,9 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 
 
+MAX_CRASH_BYTES = 2 * 1024 * 1024
+
+
 class CrashReportDialog(QDialog):
     """Shows crash reports from <instance>/crash-reports/ folder."""
 
@@ -96,7 +99,18 @@ class CrashReportDialog(QDialog):
         if not path_str:
             return
         try:
-            text = Path(path_str).read_text(encoding="utf-8", errors="replace")
+            path = Path(path_str)
+            size = path.stat().st_size
+            if size > MAX_CRASH_BYTES:
+                with open(path, "rb") as fh:
+                    fh.seek(max(0, size - MAX_CRASH_BYTES))
+                    raw = fh.read(MAX_CRASH_BYTES)
+                text = (
+                    f"[Showing last {MAX_CRASH_BYTES // 1024:,} KB of {size // 1024:,} KB]\n\n"
+                    + raw.decode("utf-8", errors="replace")
+                )
+            else:
+                text = path.read_text(encoding="utf-8", errors="replace")
             self._viewer.setPlainText(text)
         except OSError as exc:
             self._viewer.setPlainText(f"Could not read file:\n{exc}")

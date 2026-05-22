@@ -106,6 +106,7 @@ GenosLauncher includes a built-in client ID — Microsoft sign-in works out of t
 
 1. Get a free API key at [console.curseforge.com](https://console.curseforge.com).
 2. Open **Settings** in the launcher and paste the key into **CurseForge API Key**.
+   The key is stored with the same keyring-first secret storage used for account credentials, with an encrypted local fallback if the OS keyring is unavailable.
 3. The **Mods** and **Modpacks** tabs will show a source toggle (Modrinth | CurseForge).
 
 ---
@@ -116,14 +117,14 @@ GenosLauncher includes a built-in client ID — Microsoft sign-in works out of t
 build.bat
 ```
 
-Requires a virtual environment at `venv\`. For release builds set `GENOS_RELEASE=1` — this enables code signing if `signtool` and a certificate are available.
-The build script also emits `SHA256SUMS.txt` for artifact verification.
+Requires a virtual environment at `venv\`. For release builds set `GENOS_RELEASE=1`; this requires code signing and a detached signature for `SHA256SUMS.txt`.
+The build script reads the version from `src/_version.py` and emits `SHA256SUMS.txt` for artifact verification.
 
 | Artifact | Path |
 |---|---|
 | Application folder | `dist\GenosLauncher\` |
 | Main executable | `dist\GenosLauncher\GenosLauncher.exe` |
-| Windows installer | `installer_output\GenosLauncher-0.2.0-Setup.exe` |
+| Windows installer | `installer_output\GenosLauncher-<version>-Setup.exe` |
 | SHA256 checksums | `SHA256SUMS.txt` |
 
 ### Publishing a Release
@@ -137,7 +138,7 @@ git push origin v0.2.0
 
 GitHub Actions builds the Windows installer, generates SHA256 checksums, and attaches everything to the release. The installer is then available on the Releases page for users to download.
 
-> **Code signing:** The release workflow signs artifacts when `GENOS_WINDOWS_SIGNING_CERT_BASE64` and `GENOS_WINDOWS_SIGNING_CERT_PASSWORD` GitHub secrets are configured. Without them the installer is unsigned — Windows SmartScreen will show a warning on first run, but the app still works.
+> **Code signing:** Tagged release workflows require `GENOS_WINDOWS_SIGNING_CERT_BASE64` and `GENOS_WINDOWS_SIGNING_CERT_PASSWORD`. Unsigned official releases are not published.
 
 Manual PyInstaller invocation:
 

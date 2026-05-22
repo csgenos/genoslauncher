@@ -7,7 +7,7 @@ All settings auto-save to config.json via the config singleton.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
@@ -256,6 +256,8 @@ class SettingsTab(QWidget):
         self._jvm_preset_group = QButtonGroup(self)
         self._jvm_preset_group.setExclusive(True)
         self._preset_cards: dict[str, JvmPresetCard] = {}
+        self._debounce_timers: dict[str, QTimer] = {}
+        self._pending_values: dict[str, object] = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -330,7 +332,7 @@ class SettingsTab(QWidget):
         self._custom_jvm.setPlaceholderText("-XX:+UseStringDeduplication -Dfml.ignorePatchDiscrepancies=true …")
         self._custom_jvm.setText(config.get("jvm_args", ""))
         self._custom_jvm.setFixedHeight(40)
-        self._custom_jvm.textChanged.connect(lambda t: config.set("jvm_args", t))
+        self._custom_jvm.textChanged.connect(lambda t: self._debounced_set("jvm_args", t))
         cl.addWidget(self._custom_jvm)
 
         cl.addSpacing(28)
@@ -354,7 +356,7 @@ class SettingsTab(QWidget):
         self._java_input.setPlaceholderText("Auto-detect (leave blank)")
         self._java_input.setText(config.get("java_path", ""))
         self._java_input.setFixedHeight(38)
-        self._java_input.textChanged.connect(lambda t: config.set("java_path", t))
+        self._java_input.textChanged.connect(lambda t: self._debounced_set("java_path", t))
         java_h.addWidget(self._java_input)
         browse_btn = OutlineButton("Browse")
         browse_btn.setFixedSize(80, 38)
@@ -477,7 +479,7 @@ class SettingsTab(QWidget):
         self._az_client_input.setPlaceholderText("Leave blank to use the built-in client ID")
         self._az_client_input.setText(config.get("azure_client_id", ""))
         self._az_client_input.setFixedHeight(38)
-        self._az_client_input.textChanged.connect(lambda t: config.set("azure_client_id", t.strip()))
+        self._az_client_input.textChanged.connect(lambda t: self._debounced_set("azure_client_id", t.strip()))
         behav_layout.addWidget(self._az_client_input)
 
         # CurseForge API key
@@ -493,7 +495,7 @@ class SettingsTab(QWidget):
         self._cf_key_input.setText(config.get("curseforge_api_key", ""))
         self._cf_key_input.setEchoMode(QLineEdit.Password)
         self._cf_key_input.setFixedHeight(38)
-        self._cf_key_input.textChanged.connect(lambda t: config.set("curseforge_api_key", t))
+        self._cf_key_input.textChanged.connect(lambda t: self._debounced_set("curseforge_api_key", t))
         behav_layout.addWidget(self._cf_key_input)
 
         cl.addWidget(behav_card)
@@ -546,6 +548,16 @@ class SettingsTab(QWidget):
             }}
         """)
         return card
+
+    def _debounced_set(self, key: str, value: object, delay_ms: int = 600) -> None:
+        self._pending_values[key] = value
+        timer = self._debounce_timers.get(key)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda k=key: config.set(k, self._pending_values.pop(k, "")))
+            self._debounce_timers[key] = timer
+        timer.start(delay_ms)
 
     def _on_preset_selected(self, key: str) -> None:
         config.set("jvm_preset", key)

@@ -38,6 +38,16 @@ only.  GenosLauncher proactively refreshes the token immediately before launch
 (`ensure_token_fresh()`).  Ensure you trust other software running under your
 user account on the same machine.
 
+### Local privacy model
+
+GenosLauncher is offline-first and stores profile metadata locally so the app can
+work without network access. `config.json` may contain non-secret but sensitive
+metadata such as local instance paths, saved server addresses, offline usernames,
+Microsoft account display names, and launcher preferences. Account tokens and the
+CurseForge API key use OS keyring storage where available, with an encrypted
+app-local fallback. If you share logs, backups, screenshots, or your application
+data directory, review them for local paths, account names, and server addresses.
+
 ### Fallback credential encryption key
 
 When the system keyring is unavailable, GenosLauncher stores encrypted

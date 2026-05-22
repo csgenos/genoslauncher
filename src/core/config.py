@@ -16,6 +16,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .._version import __version__
+from .secure_store import delete_secret, get_secret, set_secret
+from .validators import normalize_offline_username
+
 log = logging.getLogger(__name__)
 
 
@@ -36,11 +40,12 @@ CONFIG_FILE = APP_DIR / "config.json"
 INSTANCES_DIR = APP_DIR / "instances"
 LOGS_DIR = APP_DIR / "logs"
 
-# Keys that must never be persisted to config.json (tokens live in keyring only)
+# Keys that must never be persisted to config.json.
 _SENSITIVE_KEYS: frozenset[str] = frozenset({"access_token", "refresh_token"})
+_SECRET_CONFIG_KEYS: frozenset[str] = frozenset({"curseforge_api_key"})
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": "0.2.0",
+    "version": __version__,
     "minecraft_dir": str(APP_DIR / "minecraft"),
     "java_path": "",
     "ram_mb": 4096,
@@ -62,7 +67,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "window_height": 760,
     "dark_mode": False,
     "azure_client_id": "",
-    "curseforge_api_key": "",
     "servers": [],
     "ms_usernames": [],
     "active_ms_username": "",
@@ -94,7 +98,6 @@ _SCHEMA: dict[str, type | tuple] = {
     "offline_accounts":   list,
     "instances":          list,
     "azure_client_id":    str,
-    "curseforge_api_key": str,
     "servers":            list,
     "ms_usernames":       list,
     "active_ms_username": str,
@@ -115,11 +118,20 @@ class Config:
     # ------------------------------------------------------------------
 
     def get(self, key: str, default: Any = None) -> Any:
+        if key in _SECRET_CONFIG_KEYS:
+            return get_secret(APP_DIR, key) or default or ""
         with self._lock:
             return self._data.get(key, DEFAULT_CONFIG.get(key, default))
 
     def set(self, key: str, value: Any) -> None:
         if key in _SENSITIVE_KEYS:
+            return
+        if key in _SECRET_CONFIG_KEYS:
+            secret_value = str(value or "")
+            if secret_value:
+                set_secret(APP_DIR, key, secret_value)
+            else:
+                delete_secret(APP_DIR, key)
             return
         with self._lock:
             self._data[key] = self._validate_value(key, value)
@@ -128,7 +140,13 @@ class Config:
     def update(self, mapping: dict[str, Any]) -> None:
         with self._lock:
             for k, v in mapping.items():
-                if k not in _SENSITIVE_KEYS:
+                if k in _SECRET_CONFIG_KEYS:
+                    secret_value = str(v or "")
+                    if secret_value:
+                        set_secret(APP_DIR, k, secret_value)
+                    else:
+                        delete_secret(APP_DIR, k)
+                elif k not in _SENSITIVE_KEYS:
                     self._data[k] = self._validate_value(k, v)
             self._save_locked()
 
@@ -179,9 +197,12 @@ class Config:
             unique = []
             seen = set()
             for x in val:
-                if isinstance(x, str) and x.strip() and x not in seen:
-                    unique.append(str(x)[:32])
-                    seen.add(x)
+                if not isinstance(x, str):
+                    continue
+                clean = normalize_offline_username(x) if key == "offline_accounts" else str(x).strip()[:32]
+                if clean and clean not in seen:
+                    unique.append(clean)
+                    seen.add(clean)
             return unique[:50]
         if key == "instances" and isinstance(val, list):
             clean: list[dict] = []
@@ -214,7 +235,7 @@ class Config:
         """Apply a strict known-key schema; fall back to defaults on error."""
         out = dict(DEFAULT_CONFIG)
         for key, val in data.items():
-            if key in _SENSITIVE_KEYS:
+            if key in _SENSITIVE_KEYS or key in _SECRET_CONFIG_KEYS:
                 continue
             expected = _SCHEMA.get(key)
             if expected is None and key not in DEFAULT_CONFIG:
@@ -228,7 +249,14 @@ class Config:
                 try:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         stored = json.load(f)
+                    migrated_secret = False
+                    legacy_cf_key = stored.pop("curseforge_api_key", "")
+                    if isinstance(legacy_cf_key, str) and legacy_cf_key.strip():
+                        set_secret(APP_DIR, "curseforge_api_key", legacy_cf_key.strip())
+                        migrated_secret = True
                     self._data = self._validate(stored)
+                    if migrated_secret:
+                        self._save_locked()
                     return
                 except (json.JSONDecodeError, OSError):
                     try:
@@ -246,7 +274,10 @@ class Config:
 
     def _save_locked(self) -> None:
         """Atomic write: write to .tmp then os.replace() to avoid partial reads."""
-        safe_data = {k: v for k, v in self._data.items() if k not in _SENSITIVE_KEYS}
+        safe_data = {
+            k: v for k, v in self._data.items()
+            if k not in _SENSITIVE_KEYS and k not in _SECRET_CONFIG_KEYS
+        }
         tmp = CONFIG_FILE.with_suffix(".tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
@@ -260,5 +291,5 @@ class Config:
                 pass
 
 
-# Module-level singleton — import and use directly
+# Module-level singleton - import and use directly
 config = Config()

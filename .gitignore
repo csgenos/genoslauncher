@@ -37,4 +37,11 @@ crash-reports/
 # Windows
 *.exe
 *.msi
+
+# Signing secrets / private keys
+*.pfx
+*.p12
+*.pem
+*.key
+*.asc
 .claude/

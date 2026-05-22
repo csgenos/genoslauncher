@@ -15,6 +15,7 @@ Security fixes applied:
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -45,6 +46,12 @@ _MAX_ZIP_FILES = 5000
 _MAX_ZIP_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
 _MAX_ZIP_COMPRESSION_RATIO = 100
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ +()\[\]-]+")
+_ALLOWED_DOWNLOAD_HOST_SUFFIXES = (
+    "cdn.modrinth.com",
+    "modrinth.com",
+    "github.com",
+    "githubusercontent.com",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +84,54 @@ def safe_download_path(base_dir: Path, filename: str) -> Path:
     except ValueError as exc:
         raise ModrinthError(f"Unsafe download path: {filename!r}") from exc
     return target
+
+
+def _is_blocked_host(hostname: str) -> bool:
+    host = hostname.strip().lower().strip("[]")
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+    except ValueError:
+        return False
+
+
+def _validate_download_url(url: str, allow_external_hosts: bool = False) -> urllib.parse.ParseResult:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https":
+        raise ModrinthError(f"Refusing non-HTTPS download URL: {url}")
+    hostname = parsed.hostname or ""
+    if not hostname or _is_blocked_host(hostname):
+        raise ModrinthError(f"Refusing blocked download host: {hostname or url}")
+    if not allow_external_hosts and not any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _ALLOWED_DOWNLOAD_HOST_SUFFIXES
+    ):
+        raise ModrinthError(f"Refusing unapproved download host: {hostname}")
+    return parsed
+
+
+def verify_file_hash(path: Path, expected_sha1: str = "", expected_sha512: str = "") -> bool:
+    if not path.is_file():
+        return False
+    expected_sha1 = expected_sha1.strip().lower()
+    expected_sha512 = expected_sha512.strip().lower()
+    if not (expected_sha1 or expected_sha512):
+        return False
+    sha1_h = hashlib.sha1(usedforsecurity=False) if expected_sha1 else None
+    sha512_h = hashlib.sha512() if expected_sha512 else None
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            if sha1_h:
+                sha1_h.update(chunk)
+            if sha512_h:
+                sha512_h.update(chunk)
+    if expected_sha1 and sha1_h and sha1_h.hexdigest() != expected_sha1:
+        return False
+    if expected_sha512 and sha512_h and sha512_h.hexdigest() != expected_sha512:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +269,7 @@ def download_file(
     expected_sha1: str = "",
     expected_sha512: str = "",
     allow_unverified: bool = False,
+    allow_external_hosts: bool = False,
     max_bytes: int = _MAX_DOWNLOAD_BYTES,
 ) -> None:
     """
@@ -224,9 +280,7 @@ def download_file(
 
     Raises ModrinthError on network failure or hash mismatch.
     """
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() != "https":
-        raise ModrinthError(f"Refusing non-HTTPS download URL: {url}")
+    _validate_download_url(url, allow_external_hosts=allow_external_hosts or allow_unverified)
     if not allow_unverified and not (expected_sha1 or expected_sha512):
         raise ModrinthError(f"Refusing unverified download with no hash: {url}")
 
@@ -286,7 +340,13 @@ def download_icon(icon_url: str, cache_dir: Path) -> Optional[Path]:
     """Download a project icon to disk; return cached path or None on error."""
     if not icon_url:
         return None
-    safe = re.sub(r"[^a-zA-Z0-9._-]", "_", icon_url.split("/")[-1])
+    parsed = urllib.parse.urlparse(icon_url)
+    basename = Path(parsed.path).name
+    if not basename:
+        basename = "icon"
+    safe = re.sub(r"[^a-zA-Z0-9._-]", "_", basename)
+    digest = hashlib.sha256(icon_url.encode("utf-8")).hexdigest()[:12]
+    safe = f"{Path(safe).stem[:80]}-{digest}{Path(safe).suffix[:10]}"
     dest = cache_dir / safe
     if dest.exists() and dest.stat().st_size > 0:
         return dest
@@ -400,14 +460,15 @@ def install_mrpack_mods(
         if on_progress:
             on_progress(i + 1, len(files), filename)
 
-        if dest.exists():
-            continue
-
-        dest.parent.mkdir(parents=True, exist_ok=True)
-
         hashes = file_entry.get("hashes", {})
         sha1   = hashes.get("sha1", "")
         sha512 = hashes.get("sha512", "")
+        if dest.exists():
+            if verify_file_hash(dest, sha1, sha512):
+                continue
+            dest.unlink(missing_ok=True)
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
 
         urls: list[str] = file_entry.get("downloads", [])
         downloaded = False

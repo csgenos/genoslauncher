@@ -42,6 +42,7 @@ from ...core.instances import (
     set_selected_instance,
     update_instance,
 )
+from ...core.validators import validate_version_id
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class InstancesTab(QWidget):
         self._installed:      set[str]    = set()
         self._search_text     = ""
         self._load_threads:   list[QThread] = []
+        self._load_workers:   list[QObject] = []
         self._install_workers: dict[str, InstallWorker] = {}
         self._repair_threads: list[QThread] = []
         self._repair_workers: list[_RepairWorker] = []
@@ -216,7 +218,11 @@ class InstancesTab(QWidget):
             lambda: self._load_threads.remove(thread)
             if thread in self._load_threads else None
         )
+        thread.finished.connect(lambda: self._load_workers.remove(worker) if worker in self._load_workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         self._load_threads.append(thread)
+        self._load_workers.append(worker)
         thread.start()
 
     def _on_versions_loaded(self, versions: list[dict], installed: list[str]) -> None:
@@ -294,10 +300,15 @@ class InstancesTab(QWidget):
         version, ok = QInputDialog.getText(self, "New Instance", "Minecraft version:", text=default_version)
         if not ok or not version.strip():
             return
+        try:
+            version = validate_version_id(version.strip())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Version", str(exc))
+            return
         name, ok = QInputDialog.getText(self, "New Instance", "Instance name:", text=f"Minecraft {version.strip()}")
         if not ok or not name.strip():
             return
-        instance = create_custom_instance(name.strip(), version.strip())
+        instance = create_custom_instance(name.strip(), version)
         set_selected_instance(instance["id"])
         self._render_instances()
         self._count_label.setText(f"Created {instance['name']}. Use Repair to download game files.")
@@ -343,6 +354,8 @@ class InstancesTab(QWidget):
         worker.finished.connect(thread.quit)
         self._repair_threads.append(thread)
         self._repair_workers.append(worker)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _on_repair_finished(self, thread: QThread, worker: _RepairWorker, ok: bool, message: str) -> None:

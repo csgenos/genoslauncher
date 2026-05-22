@@ -7,7 +7,7 @@ GenosLauncher — First-run setup wizard.
   3. Ready summary  (auto-detected RAM + Java, applies config on accept)
 
 Thread safety: all callbacks from auth_manager arrive on a background thread.
-  → Always re-dispatch to the Qt main thread via QTimer.singleShot(0, ...).
+  → Always re-dispatch to the Qt main thread via run_on_ui_thread(...).
 """
 
 from __future__ import annotations
@@ -49,7 +49,9 @@ from PySide6.QtWidgets import (
 from src.core.auth import auth_manager
 from src.core.config import config
 from src.core.java_manager import find_java_installations
+from src.core.validators import normalize_offline_username
 from src.ui.styles import C, FONT
+from src.ui.qt_dispatch import run_on_ui_thread
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +289,7 @@ class _AccountPage(QWidget):
         auth_manager.cancel_login()
         self._auth_url = ""
         self._account_info = {}
+        self._choose_error.setText("")
         self._show_state(self._STATE_CHOOSE)
 
     @property
@@ -322,6 +325,11 @@ class _AccountPage(QWidget):
             f"font-size: {FONT['sm']};"
         )
         layout.addWidget(sub)
+        self._choose_error = QLabel("")
+        self._choose_error.setAlignment(Qt.AlignCenter)
+        self._choose_error.setWordWrap(True)
+        self._choose_error.setStyleSheet(f"color: {C['danger']}; font-size: {FONT['sm']};")
+        layout.addWidget(self._choose_error)
         layout.addSpacing(20)
 
         # Microsoft card
@@ -599,6 +607,7 @@ class _AccountPage(QWidget):
     def _on_ms_clicked(self) -> None:
         self._account_info = {}
         self._auth_url = ""
+        self._choose_error.setText("")
         self._show_state(self._STATE_MS_REQ)
         auth_manager.start_login(
             on_browser_opened=self._cb_browser_opened,
@@ -608,6 +617,7 @@ class _AccountPage(QWidget):
 
     def _on_offline_clicked(self) -> None:
         self._account_info = {}
+        self._choose_error.setText("")
         self._username_input.clear()
         self._username_hint.setText("")
         self._show_state(self._STATE_OFFLINE)
@@ -619,10 +629,13 @@ class _AccountPage(QWidget):
             self._username_input.setText(clean)
             return
 
-        if clean:
+        if clean and normalize_offline_username(clean):
             self._account_info = {"name": clean, "type": "offline"}
             self._username_hint.setText(f"Playing as: {clean}")
             self.account_ready.emit()
+        elif clean:
+            self._account_info = {}
+            self._username_hint.setText("Use 3-16 letters, numbers, or underscores.")
         else:
             self._account_info = {}
             self._username_hint.setText("")
@@ -636,14 +649,17 @@ class _AccountPage(QWidget):
     # ------------------------------------------------------------------
 
     def _cb_browser_opened(self, auth_url: str) -> None:
+        run_on_ui_thread(lambda: self._apply_browser_opened(auth_url))
+
+    def _apply_browser_opened(self, auth_url: str) -> None:
         self._auth_url = auth_url
-        QTimer.singleShot(0, lambda: self._show_state(self._STATE_MS_WAITING))
+        self._show_state(self._STATE_MS_WAITING)
 
     def _cb_success(self, account: dict) -> None:
-        QTimer.singleShot(0, lambda: self._on_success(account))
+        run_on_ui_thread(lambda: self._on_success(account))
 
     def _cb_error(self, message: str) -> None:
-        QTimer.singleShot(0, lambda: self._on_error(message))
+        run_on_ui_thread(lambda: self._on_error(message))
 
     def _on_success(self, account: dict) -> None:
         name = account.get("name", "Unknown")
@@ -657,7 +673,10 @@ class _AccountPage(QWidget):
         self.account_ready.emit()
 
     def _on_error(self, message: str) -> None:
-        self.reset_to_choose()
+        self._auth_url = ""
+        self._account_info = {}
+        self._choose_error.setText(message or "Microsoft sign-in failed.")
+        self._show_state(self._STATE_CHOOSE)
 
 
 # ---------------------------------------------------------------------------

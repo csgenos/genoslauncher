@@ -13,6 +13,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-windows:
@@ -36,41 +38,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --require-hashes -r requirements.lock
-          pip install pyinstaller
+          pip install -r requirements-build.txt
 
       - name: Audit dependencies for known vulnerabilities
         run: |
-          pip install pip-audit
           pip-audit --disable-pip -r requirements.lock
 
-      - name: Warn if code-signing secrets are absent
+      - name: Run source checks
+        run: |
+          python -m compileall -q src
+          bandit -r src -ll
+          python -m unittest discover -s tests
+
+      - name: Require code-signing secrets for tag releases
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           if (-not $env:GENOS_WINDOWS_SIGNING_CERT_BASE64 -or -not $env:GENOS_WINDOWS_SIGNING_CERT_PASSWORD) {
-            Write-Warning "GENOS_WINDOWS_SIGNING_CERT_BASE64 / GENOS_WINDOWS_SIGNING_CERT_PASSWORD not set — release will be unsigned. Windows SmartScreen may warn users on first run."
+            throw "GENOS_WINDOWS_SIGNING_CERT_BASE64 and GENOS_WINDOWS_SIGNING_CERT_PASSWORD are required for tagged releases."
           }
-
-      - name: Inject built-in client ID into source
-        shell: python
-        env:
-          GENOS_AZURE_CLIENT_ID: ${{ secrets.GENOS_AZURE_CLIENT_ID }}
-        run: |
-          import os, re, sys
-          client_id = os.environ.get("GENOS_AZURE_CLIENT_ID", "").strip()
-          if not client_id:
-              print("WARNING: GENOS_AZURE_CLIENT_ID secret is not set — "
-                    "Microsoft sign-in will not work in the distributed build.")
-              sys.exit(0)
-          path = "src/core/auth.py"
-          src  = open(path, encoding="utf-8").read()
-          src  = re.sub(
-              r'(_BUILTIN_CLIENT_ID\s*=\s*)"[^"]*"',
-              f'\\1"{client_id}"',
-              src,
-          )
-          open(path, "w", encoding="utf-8").write(src)
-          print(f"Client ID injected ({client_id[:8]}…)")
 
       - name: Build with PyInstaller
         run: pyinstaller GenosLauncher.spec --clean --noconfirm
@@ -92,7 +78,10 @@ jobs:
         run: choco install innosetup --no-progress -y
 
       - name: Build installer
-        run: iscc GenosLauncher.iss
+        shell: pwsh
+        run: |
+          $version = python -c "import pathlib,re; print(re.search(r'__version__\s*=\s*[\"'']([^\"'']+)', pathlib.Path('src/_version.py').read_text()).group(1))"
+          iscc "/DAppVersion=$version" GenosLauncher.iss
 
       - name: Sign installer
         if: env.GENOS_WINDOWS_SIGNING_CERT_BASE64 != ''
@@ -116,6 +105,14 @@ jobs:
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } |
             Set-Content -Encoding ASCII "installer_output\SHA256SUMS.txt"
+
+      - name: Attest release artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            installer_output/*.exe
+            installer_output/SHA256SUMS.txt
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from .config import INSTANCES_DIR, config
+from .validators import safe_path_segment, validate_version_id
 
 log = logging.getLogger(__name__)
 
@@ -60,8 +61,9 @@ def set_selected_instance(instance_id: str) -> None:
 
 
 def create_vanilla_instance(version_id: str, name: str | None = None) -> dict:
+    version_id = validate_version_id(version_id)
     display_name = safe_instance_name(name or f"Minecraft {version_id}")
-    instance_id = f"vanilla-{version_id.replace('.', '_')}"
+    instance_id = f"vanilla-{safe_path_segment(version_id, 'version').replace('.', '_')}"
     directory = INSTANCES_DIR / instance_id
     directory.mkdir(parents=True, exist_ok=True)
     return upsert_instance({
@@ -82,6 +84,7 @@ def create_custom_instance(
     directory: Path | None = None,
     jvm_args: str = "",
 ) -> dict:
+    version_id = validate_version_id(version_id)
     display_name = safe_instance_name(name)
     instance_id = f"custom-{uuid.uuid4().hex[:12]}"
     instance_dir = directory or (INSTANCES_DIR / instance_id)
@@ -123,7 +126,7 @@ def clone_instance(instance_id: str) -> dict | None:
     src_dir = Path(source["directory"])
     if src_dir.exists():
         ignore = shutil.ignore_patterns("logs", "crash-reports", "*.log")
-        shutil.copytree(src_dir, clone_dir, ignore=ignore)
+        shutil.copytree(src_dir, clone_dir, ignore=ignore, symlinks=True)
     else:
         clone_dir.mkdir(parents=True, exist_ok=True)
     name = safe_instance_name(f"{source.get('name', 'Instance')} Copy")
@@ -138,15 +141,26 @@ def clone_instance(instance_id: str) -> dict | None:
     return upsert_instance(cloned)
 
 
-def create_modpack_instance(project: dict, mc_version: str, directory: Path) -> dict:
-    project_id = project.get("id", str(uuid.uuid4()))
+def create_modpack_instance(
+    project: dict,
+    mc_version: str,
+    directory: Path,
+    pack_version_id: str = "",
+    launch_version_id: str | None = None,
+) -> dict:
+    project_id = safe_path_segment(project.get("id", str(uuid.uuid4())), "project", 48)
+    pack_id = safe_path_segment(pack_version_id or "version", "version", 48)
+    mc_segment = safe_path_segment(mc_version, "minecraft", 32)
+    launch_id = validate_version_id(launch_version_id or mc_version)
     display = safe_instance_name(project.get("title", "Modpack"))
-    instance_id = f"modpack-{project_id[:12]}"
+    instance_id = f"modpack-{project_id[:16]}-{pack_id[:16]}-{mc_segment}"
     return upsert_instance({
         "id": instance_id,
         "name": f"{display} ({mc_version})",
         "title": project.get("title", display),
-        "mc_version": mc_version,
+        "mc_version": launch_id,
+        "base_mc_version": mc_version,
+        "pack_version_id": pack_version_id,
         "directory": str(directory),
         "type": "modpack",
         "source": project_id,
@@ -210,6 +224,11 @@ def import_prism_instances(prism_dir: Path) -> list[dict]:
             cfg = _parse_instance_cfg(cfg_path)
             version = cfg.get("IntendedVersion", "").strip()
             if not version:
+                continue
+            try:
+                version = validate_version_id(version)
+            except ValueError:
+                log.warning("Skipping imported instance with unsafe version id: %s", version)
                 continue
 
             name = cfg.get("name", child.name).strip() or child.name

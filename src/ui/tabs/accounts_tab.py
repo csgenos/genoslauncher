@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import base64
 import json
-import threading
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QImage
 from PySide6.QtWidgets import (
     QFrame,
@@ -26,44 +25,29 @@ import requests
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton, PrimaryButton
 from ..login_dialog import LoginDialog
-from ...core.auth import auth_manager
+from ...core.auth import auth_manager, credential_storage_warning
 from ...core.config import config
+from ...core.validators import validate_offline_username
 
 
 # ---------------------------------------------------------------------------
 # Skin face widget — fetches face from Mojang skin API asynchronously
 # ---------------------------------------------------------------------------
 
-class SkinWidget(QLabel):
-    """Displays the 8×8 face crop from the player's Minecraft skin, scaled up."""
+class _SkinFetchWorker(QObject):
+    image_ready = Signal(int, QImage)
+    finished = Signal()
 
-    _FACE_SIZE = 56
+    def __init__(self, username: str, generation: int, face_size: int) -> None:
+        super().__init__()
+        self._username = username
+        self._generation = generation
+        self._face_size = face_size
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(self._FACE_SIZE, self._FACE_SIZE)
-        self.setAlignment(Qt.AlignCenter)
-        self._set_placeholder()
-
-    def _set_placeholder(self) -> None:
-        self.setStyleSheet(f"""
-            background: {C["bg_tertiary"]};
-            border: 1px solid {C["border"]};
-            border-radius: 8px;
-            font-size: 20px;
-        """)
-        self.setText("?")
-        self.setPixmap(QPixmap())
-
-    def load_for(self, username: str) -> None:
-        """Start async fetch. Safe to call from UI thread."""
-        self._set_placeholder()
-        threading.Thread(target=self._fetch, args=(username,), daemon=True).start()
-
-    def _fetch(self, username: str) -> None:
+    def run(self) -> None:
         try:
             resp = requests.get(
-                f"https://api.mojang.com/users/profiles/minecraft/{username}",
+                f"https://api.mojang.com/users/profiles/minecraft/{self._username}",
                 timeout=5,
             )
             if not resp.ok:
@@ -82,28 +66,87 @@ class SkinWidget(QLabel):
             skin_url = decoded.get("textures", {}).get("SKIN", {}).get("url", "")
             if not skin_url:
                 return
-            img_data = requests.get(skin_url, timeout=5).content
-            img = QImage.fromData(img_data)
-            if img.isNull():
+            skin_resp = requests.get(skin_url, timeout=5)
+            if int(skin_resp.headers.get("content-length", 0)) > 2 * 1024 * 1024:
                 return
-            # Crop 8×8 face (head layer) starting at (8, 8)
+            img_data = skin_resp.content
+            if len(img_data) > 2 * 1024 * 1024:
+                return
+            img = QImage.fromData(img_data)
+            if img.isNull() or img.width() > 4096 or img.height() > 4096:
+                return
             face = img.copy(8, 8, 8, 8)
-            px = QPixmap.fromImage(face).scaled(
-                self._FACE_SIZE, self._FACE_SIZE,
+            face = face.scaled(
+                self._face_size, self._face_size,
                 Qt.KeepAspectRatio, Qt.FastTransformation,
             )
-            QTimer.singleShot(0, lambda: self._apply_pixmap(px))
+            self.image_ready.emit(self._generation, face)
         except Exception:
             pass
+        finally:
+            self.finished.emit()
 
-    def _apply_pixmap(self, px: QPixmap) -> None:
+
+class SkinWidget(QLabel):
+    """Displays the 8×8 face crop from the player's Minecraft skin, scaled up."""
+
+    _FACE_SIZE = 56
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._FACE_SIZE, self._FACE_SIZE)
+        self.setAlignment(Qt.AlignCenter)
+        self._skin_generation = 0
+        self._skin_threads: list[QThread] = []
+        self._skin_workers: list[_SkinFetchWorker] = []
+        self._set_placeholder()
+
+    def _set_placeholder(self) -> None:
+        self.setStyleSheet(f"""
+            background: {C["bg_tertiary"]};
+            border: 1px solid {C["border"]};
+            border-radius: 8px;
+            font-size: 20px;
+        """)
+        self.setText("?")
+        self.setPixmap(QPixmap())
+
+    def load_for(self, username: str) -> None:
+        """Start async fetch. Safe to call from UI thread."""
+        self._set_placeholder()
+        self._skin_generation += 1
+        generation = self._skin_generation
+        worker = _SkinFetchWorker(username, generation, self._FACE_SIZE)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.image_ready.connect(self._on_image_ready)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread, w=worker: self._cleanup_skin_worker(t, w))
+        self._skin_threads.append(thread)
+        self._skin_workers.append(worker)
+        thread.start()
+
+    def _on_image_ready(self, generation: int, image: QImage) -> None:
+        if generation == self._skin_generation:
+            self._apply_image(image)
+
+    def _cleanup_skin_worker(self, thread: QThread, worker: _SkinFetchWorker) -> None:
+        if thread in self._skin_threads:
+            self._skin_threads.remove(thread)
+        if worker in self._skin_workers:
+            self._skin_workers.remove(worker)
+
+    def _apply_image(self, image: QImage) -> None:
         self.setStyleSheet(f"""
             background: transparent;
             border: 1px solid {C["border"]};
             border-radius: 8px;
         """)
         self.setText("")
-        self.setPixmap(px)
+        self.setPixmap(QPixmap.fromImage(image))
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +336,12 @@ class AccountsTab(QWidget):
         """)
         note.setWordWrap(True)
         self._root.addWidget(note)
+        warning = credential_storage_warning()
+        if warning:
+            warn = QLabel(warning)
+            warn.setWordWrap(True)
+            warn.setStyleSheet(f"color: {C['danger']}; font-size: {FONT['xs']};")
+            self._root.addWidget(warn)
 
     def _build_ms_card(self) -> QFrame:
         card = QFrame()
@@ -431,14 +480,10 @@ class AccountsTab(QWidget):
             self._refresh_state()
 
     def _add_ms_account(self) -> None:
-        dlg = LoginDialog(self)
+        dlg = LoginDialog(self, start_login_func=auth_manager.add_account)
         dlg.setWindowTitle("Add Microsoft Account")
-        # Use add_account so it doesn't replace the active session
-        original_start = auth_manager.start_login
-        auth_manager.start_login = auth_manager.add_account  # type: ignore[method-assign]
         dlg.login_succeeded.connect(lambda _: self._refresh_state())
-        result = dlg.exec()
-        auth_manager.start_login = original_start  # type: ignore[method-assign]
+        dlg.exec()
 
     def _switch_ms_account(self, username: str) -> None:
         if auth_manager.switch_account(username):
@@ -460,8 +505,14 @@ class AccountsTab(QWidget):
 
     def _add_offline(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Offline Account", "Username:")
-        name = name.strip()
-        if ok and name and name not in self._offline_accounts:
+        if not ok:
+            return
+        try:
+            name = validate_offline_username(name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Username", str(exc))
+            return
+        if name and name not in self._offline_accounts:
             self._offline_accounts.append(name)
             config.update({"offline_accounts": self._offline_accounts})
             self._refresh_state()

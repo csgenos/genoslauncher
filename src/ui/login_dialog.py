@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import webbrowser
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .styles import COLORS as C, FONT
 from .components.animated_button import OutlineButton, PrimaryButton
+from .qt_dispatch import run_on_ui_thread
 from ..core.auth import auth_manager
 
 
@@ -39,7 +40,7 @@ class LoginDialog(QDialog):
 
     login_succeeded = Signal(dict)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, start_login_func=None, cancel_login_func=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Sign in with Microsoft")
         self.setModal(True)
@@ -52,6 +53,8 @@ class LoginDialog(QDialog):
         """)
 
         self._auth_url: str = ""
+        self._start_login_func = start_login_func or auth_manager.start_login
+        self._cancel_login_func = cancel_login_func or auth_manager.cancel_login
 
         self._build_ui()
         self._set_state("idle")
@@ -226,13 +229,13 @@ class LoginDialog(QDialog):
             self.accept()
 
     def _on_cancel(self) -> None:
-        auth_manager.cancel_login()
+        self._cancel_login_func()
         self.reject()
 
     def _start_login(self) -> None:
         self._auth_url = ""
         self._set_state("requesting")
-        auth_manager.start_login(
+        self._start_login_func(
             on_browser_opened=self._on_browser_opened,
             on_success=self._on_success,
             on_error=self._on_error,
@@ -243,16 +246,19 @@ class LoginDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_browser_opened(self, auth_url: str) -> None:
+        run_on_ui_thread(lambda: self._apply_browser_opened(auth_url))
+
+    def _apply_browser_opened(self, auth_url: str) -> None:
         self._auth_url = auth_url
-        QTimer.singleShot(0, lambda: self._set_state("waiting"))
+        self._set_state("waiting")
 
     def _on_success(self, account: dict) -> None:
         name = account.get("name", "Unknown")
-        QTimer.singleShot(0, lambda: self._apply_success(name, account))
+        run_on_ui_thread(lambda: self._apply_success(name, account))
 
     def _apply_success(self, name: str, account: dict) -> None:
         self._set_state("success", name)
         self.login_succeeded.emit(account)
 
     def _on_error(self, message: str) -> None:
-        QTimer.singleShot(0, lambda: self._set_state("error", message))
+        run_on_ui_thread(lambda: self._set_state("error", message))

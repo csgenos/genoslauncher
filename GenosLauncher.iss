@@ -3,7 +3,9 @@
 ; Build from command line: iscc GenosLauncher.iss
 
 #define AppName        "GenosLauncher"
-#define AppVersion     "0.2.0"
+#ifndef AppVersion
+  #error AppVersion must be passed by the build script, e.g. iscc /DAppVersion=0.2.0 GenosLauncher.iss
+#endif
 #define AppPublisher   "GenosLauncher Contributors"
 #define AppURL         "https://github.com/csgenos/genoslauncher"
 #define AppExeName     "GenosLauncher.exe"

@@ -5,14 +5,18 @@ REM  Produces:  dist\GenosLauncher\  (onedir exe)
 REM  Optionally: installer_output\GenosLauncher-X.Y.Z-Setup.exe
 REM
 REM  Requirements:
-REM    pip install pyinstaller
+REM    pip install -r requirements-build.txt
 REM    Inno Setup 6 (optional, for installer)
 REM ============================================================
 
 setlocal EnableDelayedExpansion
 
 set APP_NAME=GenosLauncher
-set VERSION=0.2.0
+for /f "usebackq delims=" %%V in (`python -c "import pathlib,re; print(re.search(r'__version__\\s*=\\s*[\"\"'']([^\"\"'']+)', pathlib.Path('src/_version.py').read_text()).group(1))"`) do set VERSION=%%V
+if not defined VERSION (
+    echo ERROR: Could not read version from src\_version.py.
+    exit /b 1
+)
 
 echo.
 echo  ===============================================
@@ -38,21 +42,14 @@ if exist "requirements.lock" (
     echo  WARNING: requirements.lock not found, falling back to requirements.txt
     pip install -r requirements.txt --quiet
 )
-pip install pyinstaller --quiet
+pip install -r requirements-build.txt --quiet
 if errorlevel 1 (
     echo  ERROR: pip install failed. Check requirements.lock / requirements.txt.
     exit /b 1
 )
 
-REM ── 2. Inject built-in client ID (if GENOS_AZURE_CLIENT_ID is set) ────────
-echo [2/4] Injecting client ID...
-if defined GENOS_AZURE_CLIENT_ID (
-    python -c "import os,re; p='src/core/auth.py'; s=open(p,encoding='utf-8').read(); s=re.sub(r'(_BUILTIN_CLIENT_ID\s*=\s*)\"[^\"]*\"','\\g<1>\"%s\"'%%os.environ['GENOS_AZURE_CLIENT_ID'],s); open(p,'w',encoding='utf-8').write(s); print('  Client ID injected.')"
-    if errorlevel 1 echo  WARNING: Client ID injection failed — sign-in may not work.
-) else (
-    echo  GENOS_AZURE_CLIENT_ID not set — skipping injection.
-    echo  Microsoft sign-in will not work in this build.
-)
+REM Client IDs are read at runtime from GENOS_AZURE_CLIENT_ID, user settings,
+REM or the built-in public client ID. The build never mutates source files.
 
 REM ── 3. Clean previous builds ────────────────────────────────────────────
 echo [3/4] Cleaning previous builds...
@@ -82,7 +79,7 @@ if %ISCC%=="" (
     echo  Install from https://jrsoftware.org/isinfo.php to build .exe installers.
 ) else (
     mkdir installer_output 2>nul
-    %ISCC% GenosLauncher.iss
+    %ISCC% /DAppVersion=%VERSION% GenosLauncher.iss
     if errorlevel 1 (
         echo  WARNING: Inno Setup failed. The app build is still usable.
     ) else (
@@ -113,6 +110,15 @@ if errorlevel 1 (
     echo  WARNING: Failed to generate SHA256SUMS.txt.
 ) else (
     echo  Checksums: SHA256SUMS.txt
+)
+if /I "%GENOS_RELEASE%"=="1" (
+    where gpg >nul 2>nul
+    if errorlevel 1 (
+        echo  ERROR: GENOS_RELEASE=1 requires gpg on PATH to sign SHA256SUMS.txt.
+        exit /b 1
+    )
+    gpg --batch --yes --armor --detach-sign SHA256SUMS.txt
+    if errorlevel 1 exit /b 1
 )
 REM
 REM  To sign: obtain an EV or OV code-signing certificate (e.g. DigiCert,

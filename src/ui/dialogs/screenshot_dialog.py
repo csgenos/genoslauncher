@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, Signal, QObject, QThread, QUrl
+from PySide6.QtGui import QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -24,20 +23,29 @@ from ..styles import COLORS as C, FONT
 
 
 THUMB_SIZE = 180
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
+MAX_IMAGE_DIMENSION = 8192
 
 
 class _ThumbLoader(QObject):
-    loaded = Signal(str, QPixmap)
+    loaded = Signal(str, QImage)
+    finished = Signal()
 
     def __init__(self, path: str) -> None:
         super().__init__()
         self._path = path
 
     def run(self) -> None:
-        px = QPixmap(self._path)
-        if not px.isNull():
-            px = px.scaled(THUMB_SIZE, THUMB_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.loaded.emit(self._path, px)
+        try:
+            path = Path(self._path)
+            if path.stat().st_size > MAX_IMAGE_BYTES:
+                return
+            img = QImage(self._path)
+            if not img.isNull() and img.width() <= MAX_IMAGE_DIMENSION and img.height() <= MAX_IMAGE_DIMENSION:
+                img = img.scaled(THUMB_SIZE, THUMB_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.loaded.emit(self._path, img)
+        finally:
+            self.finished.emit()
 
 
 class ScreenshotTile(QFrame):
@@ -75,13 +83,7 @@ class ScreenshotTile(QFrame):
         self._img.setText("")
 
     def mouseDoubleClickEvent(self, _event) -> None:
-        import subprocess, sys
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer", str(self._path)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(self._path)])
-        else:
-            subprocess.Popen(["xdg-open", str(self._path)])
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._path)))
 
 
 class ScreenshotGalleryDialog(QDialog):
@@ -89,6 +91,9 @@ class ScreenshotGalleryDialog(QDialog):
         super().__init__(parent)
         self._instance = instance
         self._screenshots_dir = Path(instance.get("directory", "")) / "screenshots"
+        self._thumb_threads: list[QThread] = []
+        self._thumb_workers: list[_ThumbLoader] = []
+        self._tiles_by_path: dict[str, ScreenshotTile] = {}
         self.setWindowTitle(f"Screenshots — {instance.get('name', 'Instance')}")
         self.resize(860, 580)
         self._build_ui()
@@ -156,19 +161,33 @@ class ScreenshotGalleryDialog(QDialog):
             tile = ScreenshotTile(path, self._grid_widget)
             self._grid.addWidget(tile, i // cols, i % cols)
             self._tiles.append(tile)
+            self._tiles_by_path[str(path)] = tile
             self._load_thumb_async(tile, path)
 
-    def _load_thumb_async(self, tile: ScreenshotTile, path: Path) -> None:
+    def _load_thumb_async(self, _tile: ScreenshotTile, path: Path) -> None:
         loader = _ThumbLoader(str(path))
-        loader.loaded.connect(lambda p, px, t=tile: t.set_pixmap(px))
-        threading.Thread(target=loader.run, daemon=True).start()
+        thread = QThread(self)
+        loader.moveToThread(thread)
+        thread.started.connect(loader.run)
+        loader.loaded.connect(self._on_thumb_loaded)
+        loader.finished.connect(thread.quit)
+        loader.finished.connect(loader.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread, w=loader: self._cleanup_thumb_worker(t, w))
+        self._thumb_threads.append(thread)
+        self._thumb_workers.append(loader)
+        thread.start()
+
+    def _on_thumb_loaded(self, path: str, image: QImage) -> None:
+        tile = self._tiles_by_path.get(path)
+        if tile is not None:
+            tile.set_pixmap(QPixmap.fromImage(image))
+
+    def _cleanup_thumb_worker(self, thread: QThread, worker: _ThumbLoader) -> None:
+        if thread in self._thumb_threads:
+            self._thumb_threads.remove(thread)
+        if worker in self._thumb_workers:
+            self._thumb_workers.remove(worker)
 
     def _open_folder(self) -> None:
-        import subprocess, sys
-        folder = str(self._screenshots_dir)
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer", folder])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", folder])
-        else:
-            subprocess.Popen(["xdg-open", folder])
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._screenshots_dir)))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
+from ..qt_dispatch import run_on_ui_thread
 from ...core import modrinth as mr
 from ...core.config import APP_DIR, config
 from ...core.instances import list_instances, selected_instance, selected_instance_dir, set_selected_instance
@@ -43,21 +45,30 @@ def _load_index(instance_dir: Path) -> dict:
         try:
             return json.loads(p.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            backup = p.with_suffix(f".corrupt-{int(time.time())}.json")
+            try:
+                shutil.copy2(p, backup)
+            except OSError:
+                pass
     return {}
 
 
 def _save_index(instance_dir: Path, index: dict) -> None:
-    _index_path(instance_dir).write_text(
-        json.dumps(index, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    p = _index_path(instance_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
 
 
 def _register_mod(instance_dir: Path, project: dict, version: dict, filename: str) -> None:
     index = _load_index(instance_dir)
-    index[project["id"]] = {
-        "project_id":     project["id"],
+    project_id = str(project["id"])
+    index[project_id] = {
+        "project_id":     project_id,
+        "source":         project.get("source", "modrinth"),
+        "cf_id":          project.get("cf_id", ""),
+        "file_id":        version.get("file_id", version.get("id", "")),
         "version_id":     version.get("id", ""),
         "version_number": version.get("version_number", ""),
         "filename":       filename,
@@ -81,17 +92,23 @@ def _load_profiles(instance_dir: Path) -> dict:
         try:
             return json.loads(p.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            backup = p.with_suffix(f".corrupt-{int(time.time())}.json")
+            try:
+                shutil.copy2(p, backup)
+            except OSError:
+                pass
     # Auto-detect mods in mods/ as the Default profile
     mods_dir = instance_dir / "mods"
-    mods = [f.name for f in mods_dir.iterdir() if f.suffix == ".jar"] if mods_dir.exists() else []
+    mods = [f.name for f in mods_dir.iterdir() if f.suffix.lower() == ".jar"] if mods_dir.exists() else []
     return {"active": "Default", "profiles": {"Default": mods}}
 
 
 def _save_profiles(instance_dir: Path, data: dict) -> None:
-    _profile_path(instance_dir).write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    p = _profile_path(instance_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
 
 
 def _switch_profile(instance_dir: Path, new_profile: str) -> None:
@@ -107,12 +124,12 @@ def _switch_profile(instance_dir: Path, new_profile: str) -> None:
 
     # Disable mods not in new profile
     for f in list(mods_dir.iterdir()):
-        if f.suffix == ".jar" and f.name not in enabled_set:
+        if f.suffix.lower() == ".jar" and f.name not in enabled_set:
             shutil.move(str(f), str(disabled_dir / f.name))
 
     # Enable mods in new profile that are disabled
     for f in list(disabled_dir.iterdir()):
-        if f.suffix == ".jar" and f.name in enabled_set:
+        if f.suffix.lower() == ".jar" and f.name in enabled_set:
             shutil.move(str(f), str(mods_dir / f.name))
 
     data["active"] = new_profile
@@ -193,6 +210,7 @@ class ModInstallWorker(QObject):
                 cf.download_file(url, dest, expected_sha1=sha1, expected_sha512=sha512)
                 index_version = {
                     "id": str(file_id),
+                    "file_id": str(file_id),
                     "version_number": version.get("displayName", filename),
                 }
                 _register_mod(instance_dir, self.project, index_version, filename)
@@ -247,26 +265,50 @@ class ModUpdateWorker(QObject):
         for i, (project_id, entry) in enumerate(index.items()):
             self.status.emit(f"Checking {i + 1}/{len(index)}: {entry.get('title', project_id)}…")
             try:
-                versions = mr.get_project_versions(
-                    project_id,
-                    game_versions=[mc_version] if mc_version else None,
-                )
-                if not versions:
-                    continue
-                latest = versions[0]
-                if latest.get("id") != entry.get("version_id"):
-                    files = latest.get("files", [])
-                    primary = next((f for f in files if f.get("primary")), files[0] if files else None)
-                    updates.append({
-                        "project_id":      project_id,
-                        "title":           entry.get("title", project_id),
-                        "current_version": entry.get("version_number", "?"),
-                        "current_filename": entry.get("filename", ""),
-                        "latest_version_id":     latest.get("id", ""),
-                        "latest_version_number": latest.get("version_number", "?"),
-                        "latest_file":     primary,
-                        "instance_dir":    str(instance_dir),
-                    })
+                if entry.get("source") == "curseforge":
+                    cf_id = int(entry.get("cf_id") or entry.get("project_id") or 0)
+                    if not cf_id:
+                        continue
+                    files = cf.get_mod_files(cf_id, mc_version)
+                    if not files:
+                        continue
+                    latest = files[0]
+                    latest_file_id = str(latest.get("id", ""))
+                    if latest_file_id and latest_file_id != str(entry.get("file_id") or entry.get("version_id")):
+                        updates.append({
+                            "source":          "curseforge",
+                            "project_id":      project_id,
+                            "cf_id":           cf_id,
+                            "title":           entry.get("title", project_id),
+                            "current_version": entry.get("version_number", "?"),
+                            "current_filename": entry.get("filename", ""),
+                            "latest_version_id": latest_file_id,
+                            "latest_version_number": latest.get("displayName", latest.get("fileName", "?")),
+                            "latest_file":     latest,
+                            "instance_dir":    str(instance_dir),
+                        })
+                else:
+                    versions = mr.get_project_versions(
+                        project_id,
+                        game_versions=[mc_version] if mc_version else None,
+                    )
+                    if not versions:
+                        continue
+                    latest = versions[0]
+                    if latest.get("id") != entry.get("version_id"):
+                        files = latest.get("files", [])
+                        primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+                        updates.append({
+                            "source":          "modrinth",
+                            "project_id":      project_id,
+                            "title":           entry.get("title", project_id),
+                            "current_version": entry.get("version_number", "?"),
+                            "current_filename": entry.get("filename", ""),
+                            "latest_version_id":     latest.get("id", ""),
+                            "latest_version_number": latest.get("version_number", "?"),
+                            "latest_file":     primary,
+                            "instance_dir":    str(instance_dir),
+                        })
             except Exception:
                 continue
         msg = f"{len(updates)} update(s) available." if updates else "All tracked mods are up to date."
@@ -411,6 +453,7 @@ class ModsTab(QWidget):
         self._search_timer.timeout.connect(self._execute_search)
         self._threads: list[QThread] = []
         self._workers: list[QObject] = []
+        self._search_generation = 0
         self._build_ui()
         QTimer.singleShot(250, self.refresh_instances)
 
@@ -581,7 +624,7 @@ class ModsTab(QWidget):
         instance_dir = Path(instance.get("directory", ""))
         data = _load_profiles(instance_dir)
         mods_dir = instance_dir / "mods"
-        current_mods = [f.name for f in mods_dir.iterdir() if f.suffix == ".jar"] if mods_dir.exists() else []
+        current_mods = [f.name for f in mods_dir.iterdir() if f.suffix.lower() == ".jar"] if mods_dir.exists() else []
         data["profiles"][name.strip()] = list(current_mods)
         _save_profiles(instance_dir, data)
         self._refresh_profiles()
@@ -628,6 +671,8 @@ class ModsTab(QWidget):
         game_version = self._version_filter.currentData() if hasattr(self, "_version_filter") else ""
         source = self._source_combo.currentData() if hasattr(self, "_source_combo") else "modrinth"
         self._status.setText("Searching mods...")
+        self._search_generation += 1
+        generation = self._search_generation
         while self._results.count() > 1:
             item = self._results.takeAt(0)
             if item.widget():
@@ -640,8 +685,8 @@ class ModsTab(QWidget):
             worker = ModSearchWorker(query, game_version)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.results_ready.connect(self._on_results)
-        worker.error.connect(lambda e: self._status.setText(f"Error: {e}"))
+        worker.results_ready.connect(lambda hits, total, gen=generation: self._on_results(gen, hits, total))
+        worker.error.connect(lambda e, gen=generation: self._on_search_error(gen, e))
         worker.results_ready.connect(thread.quit)
         worker.error.connect(thread.quit)
         self._threads.append(thread)
@@ -652,12 +697,19 @@ class ModsTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    def _on_results(self, hits: list[dict], total: int) -> None:
+    def _on_results(self, generation: int, hits: list[dict], total: int) -> None:
+        if generation != self._search_generation:
+            return
         self._status.setText(f"{total:,} compatible mods found.")
         for project in hits:
             card = ModCard(project, self)
             card.install_requested.connect(self._install_mod)
             self._results.insertWidget(self._results.count() - 1, card)
+
+    def _on_search_error(self, generation: int, msg: str) -> None:
+        if generation != self._search_generation:
+            return
+        self._status.setText(f"Error: {msg}")
 
     def _run_update_check(self) -> None:
         instance = selected_instance()
@@ -716,14 +768,24 @@ class ModsTab(QWidget):
 
         def _do_update():
             try:
-                hashes  = latest_file.get("hashes", {})
-                filename = mr.safe_filename(latest_file["filename"])
-                dest    = mr.safe_download_path(mods_dir, filename)
-                mr.download_file(
-                    latest_file["url"], dest,
-                    expected_sha1=hashes.get("sha1", ""),
-                    expected_sha512=hashes.get("sha512", ""),
-                )
+                if info.get("source") == "curseforge":
+                    filename = mr.safe_filename(latest_file.get("fileName", "mod.jar"))
+                    dest = mr.safe_download_path(mods_dir, filename)
+                    sha1, sha512 = cf.hashes_for_file(latest_file)
+                    url = latest_file.get("downloadUrl") or cf.get_download_url(
+                        int(info.get("cf_id", 0)),
+                        int(info["latest_version_id"]),
+                    )
+                    cf.download_file(url, dest, expected_sha1=sha1, expected_sha512=sha512)
+                else:
+                    hashes  = latest_file.get("hashes", {})
+                    filename = mr.safe_filename(latest_file["filename"])
+                    dest    = mr.safe_download_path(mods_dir, filename)
+                    mr.download_file(
+                        latest_file["url"], dest,
+                        expected_sha1=hashes.get("sha1", ""),
+                        expected_sha512=hashes.get("sha512", ""),
+                    )
                 old_name = info.get("current_filename", "")
                 if old_name:
                     old = mr.safe_download_path(mods_dir, old_name)
@@ -733,12 +795,15 @@ class ModsTab(QWidget):
                 pid = info["project_id"]
                 if pid in index:
                     index[pid]["version_id"]     = info["latest_version_id"]
+                    index[pid]["file_id"]        = info["latest_version_id"]
+                    index[pid]["source"]         = info.get("source", index[pid].get("source", "modrinth"))
                     index[pid]["version_number"]  = info["latest_version_number"]
                     index[pid]["filename"]         = filename
                     _save_index(instance_dir, index)
-                QTimer.singleShot(0, lambda: self._status.setText(f"Updated {info['title']}."))
+                run_on_ui_thread(lambda: self._status.setText(f"Updated {info['title']}."))
             except Exception as exc:
-                QTimer.singleShot(0, lambda: self._status.setText(f"Update failed: {exc}"))
+                msg = str(exc)
+                run_on_ui_thread(lambda msg=msg: self._status.setText(f"Update failed: {msg}"))
 
         import threading as _th
         _th.Thread(target=_do_update, daemon=True).start()

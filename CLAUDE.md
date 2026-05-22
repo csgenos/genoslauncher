@@ -109,7 +109,7 @@ Saved servers in `config["servers"]` as `[{name, ip, port}]`. `ServerRow._ping()
 - **Fonts:** Use size tokens from `FONT` dict (`FONT["xs"]`, `FONT["sm"]`, etc.).
 - **Buttons:** Use `PrimaryButton` (dark, CTA) and `OutlineButton` (ghost) from `animated_button.py`.
 - **Inline styles:** f-strings baked at widget construction. They do not reflect theme changes after creation. Use `paintEvent` or QSS rules for theme-reactive rendering.
-- **Background work:** Always use `QThread` + `moveToThread`. Emit signals from worker threads; never touch Qt widgets from a non-UI thread. Use `QTimer.singleShot(0, lambda: ...)` for thread-safe UI callbacks from daemon threads.
+- **Background work:** Always use `QThread` + `moveToThread`. Emit signals from worker threads; never touch Qt widgets from a non-UI thread. For unavoidable plain Python threads, dispatch UI callbacks through `src.ui.qt_dispatch.run_on_ui_thread`.
 
 ---
 
@@ -130,7 +130,7 @@ Saved servers in `config["servers"]` as `[{name, ip, port}]`. `ServerRow._ping()
 | `jvm_args` | str | Extra JVM flags |
 | `java_path` | str | Manual Java path override |
 | `dark_mode` | bool | Theme preference |
-| `curseforge_api_key` | str | CurseForge API key |
+| `curseforge_api_key` | secret | Stored through keyring/encrypted fallback, not `config.json` |
 | `close_on_launch` | bool | Hide launcher when MC starts |
 | `show_snapshots` | bool | Include snapshot versions |
 | `show_old_versions` | bool | Include alpha/beta versions |
@@ -158,7 +158,7 @@ Saved servers in `config["servers"]` as `[{name, ip, port}]`. `ServerRow._ping()
 
 - **`--accessToken`** in the Minecraft launch command is visible in `/proc/<pid>/cmdline` on Linux and Task Manager on Windows. This is a known limitation of the MLL-based launch approach (documented in `SECURITY.md`).
 - Tokens are stored per-account in the system keyring where available. A Fernet-encrypted file in `APP_DIR` is used as a fallback.
-- The CurseForge API key is stored in `config.json` in plaintext. Treat it like a password.
+- The CurseForge API key is stored through the keyring/encrypted fallback secret store. Treat it like a password.
 - All mod downloads from Modrinth are verified with SHA-1 and SHA-512 hashes.
 - CurseForge downloads enforce HTTPS, maximum size caps, temporary-file atomic replace, and hash verification when metadata provides hashes.
 - Backup restore validates archive entries, applies extraction limits, blocks traversal, and restores via staged swap with rollback on failure.
@@ -168,10 +168,8 @@ Saved servers in `config["servers"]` as `[{name, ip, port}]`. `ServerRow._ping()
 ## Release Process
 
 1. Update `src/_version.py` — change `__version__`.
-2. Update `GenosLauncher.iss` — change `AppVersion`.
-3. Update `build.bat` — change `set VERSION=`.
-4. Tag the commit: `git tag v0.x.0`.
-5. Push the tag — GitHub Actions builds and attaches the release artifacts.
-6. The in-app updater compares the tag against `CURRENT_VERSION` on next launch.
+2. Tag the commit: `git tag v0.x.0`.
+3. Push the tag — GitHub Actions builds and attaches the release artifacts.
+4. The in-app updater compares the tag against `CURRENT_VERSION` on next launch.
 
-Release workflow now requires code-signing secrets for tag releases, signs artifacts in CI when configured, and publishes SHA256 checksum files with release artifacts.
+Release workflow requires code-signing secrets for tag releases, signs artifacts in CI, and publishes attested SHA256 checksum files with release artifacts.

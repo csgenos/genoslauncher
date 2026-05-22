@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import ipaddress
 import tempfile
 import urllib.parse
 from pathlib import Path
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import config
 
@@ -22,6 +25,17 @@ _GAME_ID = 432   # Minecraft game ID in CurseForge
 _CLASS_MOD      = 6
 _CLASS_MODPACK  = 4471
 _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_ALLOWED_DOWNLOAD_HOST_SUFFIXES = (
+    "curseforge.com",
+    "forgecdn.net",
+    "overwolf.com",
+)
+_SESSION = requests.Session()
+_SESSION.headers.update({"Accept": "application/json"})
+_SESSION.mount(
+    "https://",
+    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.4, status_forcelist=(429, 500, 502, 503, 504))),
+)
 
 
 class CurseForgeError(Exception):
@@ -33,12 +47,33 @@ def _key() -> str:
 
 
 def _session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update({
-        "x-api-key": _key(),
-        "Accept": "application/json",
-    })
-    return s
+    _SESSION.headers.update({"x-api-key": _key()})
+    return _SESSION
+
+
+def _is_blocked_host(hostname: str) -> bool:
+    host = hostname.strip().lower().strip("[]")
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+    except ValueError:
+        return False
+
+
+def _validate_download_url(url: str, allow_external_hosts: bool = False) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https":
+        raise CurseForgeError(f"Refusing non-HTTPS download URL: {url}")
+    hostname = parsed.hostname or ""
+    if not hostname or _is_blocked_host(hostname):
+        raise CurseForgeError(f"Refusing blocked download host: {hostname or url}")
+    if not allow_external_hosts and not any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _ALLOWED_DOWNLOAD_HOST_SUFFIXES
+    ):
+        raise CurseForgeError(f"Refusing unapproved download host: {hostname}")
 
 
 def is_configured() -> bool:
@@ -133,9 +168,7 @@ def download_file(
     max_bytes: int = _MAX_DOWNLOAD_BYTES,
 ) -> None:
     """Download a CurseForge file with HTTPS, size, and hash protections."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() != "https":
-        raise CurseForgeError(f"Refusing non-HTTPS download URL: {url}")
+    _validate_download_url(url, allow_external_hosts=allow_unverified)
     expected_sha1 = expected_sha1.strip().lower()
     expected_sha512 = expected_sha512.strip().lower()
     if not allow_unverified and not (expected_sha1 or expected_sha512):

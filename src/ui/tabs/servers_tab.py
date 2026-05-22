@@ -10,7 +10,7 @@ from __future__ import annotations
 import socket
 import threading
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton, PrimaryButton
+from ..qt_dispatch import run_on_ui_thread
 from ...core.config import config
 from ...core.instances import list_instances, selected_instance
 
@@ -95,7 +96,7 @@ class ServerRow(QFrame):
             except OSError:
                 ok = False
             color = C["success"] if ok else C["danger"]
-            QTimer.singleShot(0, lambda: self._dot.setStyleSheet(
+            run_on_ui_thread(lambda: self._dot.setStyleSheet(
                 f"color: {color}; font-size: 10px;"
             ))
 

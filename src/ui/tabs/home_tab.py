@@ -31,9 +31,8 @@ from ..components.version_card import VersionCard
 from ..components.progress_widget import LaunchProgressPanel
 from ...core.launcher import get_available_versions, get_installed_versions
 from ...core.config import config
-import urllib.request
-import json as _json
 import re as _re
+import requests
 from ..._version import __version__ as _VER
 
 _FALLBACK_VERSIONS = ["1.21.4", "1.20.1", "1.8.9"]
@@ -65,12 +64,16 @@ class _NewsLoader(QObject):
 
     def run(self) -> None:
         try:
-            req = urllib.request.Request(
+            resp = requests.get(
                 "https://api.github.com/repos/csgenos/genoslauncher/releases?per_page=3",
-                headers={"User-Agent": f"GenosLauncher/{_VER}", "Accept": "application/vnd.github+json"},
+                headers={
+                    "User-Agent": f"GenosLauncher/{_VER}",
+                    "Accept": "application/vnd.github+json",
+                },
+                timeout=5,
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                releases = _json.loads(resp.read().decode())
+            resp.raise_for_status()
+            releases = resp.json()
             items = []
             for r in releases[:3]:
                 title = r.get("name") or r.get("tag_name", "Release")
@@ -170,6 +173,8 @@ class HomeTab(QWidget):
         self._installed: list[str] = []
         self._available: list[dict] = []
         self._load_thread: QThread | None = None
+        self._threads: list[QThread] = []
+        self._workers: list[QObject] = []
         self._quick_play_layout: QHBoxLayout | None = None
         self._news_layout: QVBoxLayout | None = None
         self._build_ui()
@@ -339,6 +344,12 @@ class HomeTab(QWidget):
         thread.started.connect(worker.run)
         worker.done.connect(self._on_news_loaded)
         worker.done.connect(thread.quit)
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _on_news_loaded(self, items: list) -> None:
@@ -357,6 +368,12 @@ class HomeTab(QWidget):
         worker.done.connect(self._on_versions_loaded)
         worker.done.connect(thread.quit)
         self._load_thread = thread
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _on_versions_loaded(self, available: list[dict], installed: list[str]) -> None:

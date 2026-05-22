@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
+from ..qt_dispatch import run_on_ui_thread
 from ...core.config import APP_DIR
 
 
@@ -36,10 +37,18 @@ _MAX_BACKUP_FILES = 20_000
 _MAX_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
 
 
+def _zipinfo_is_symlink(info: zipfile.ZipInfo) -> bool:
+    return ((info.external_attr >> 16) & 0o170000) == 0o120000
+
+
 def _safe_child(base_dir: Path, relative: str) -> Path:
     target = (base_dir / relative).resolve()
     target.relative_to(base_dir.resolve())
     return target
+
+
+def _ensure_within(base_dir: Path, path: Path) -> None:
+    path.resolve().relative_to(base_dir.resolve())
 
 
 def _validate_backup_zip(zf: zipfile.ZipFile) -> None:
@@ -48,6 +57,8 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> None:
         raise ValueError("Backup contains too many files")
     total = 0
     for info in infos:
+        if _zipinfo_is_symlink(info):
+            raise ValueError("Backup contains symbolic links")
         total += info.file_size
         if total > _MAX_BACKUP_BYTES:
             raise ValueError("Backup is too large to restore safely")
@@ -244,16 +255,30 @@ class WorldBackupDialog(QDialog):
 
         def _do():
             try:
+                total_files = 0
+                total_bytes = 0
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for file in world_dir.rglob("*"):
+                        if file.is_symlink():
+                            _ensure_within(world_dir, file.resolve())
+                            continue
                         if file.is_file():
+                            _ensure_within(world_dir, file)
+                            total_files += 1
+                            if total_files > _MAX_BACKUP_FILES:
+                                raise ValueError("World contains too many files to back up safely")
+                            total_bytes += file.stat().st_size
+                            if total_bytes > _MAX_BACKUP_BYTES:
+                                raise ValueError("World is too large to back up safely")
                             zf.write(file, file.relative_to(world_dir))
-                QTimer.singleShot(0, lambda: (
+                run_on_ui_thread(lambda: (
                     self._status.setText(f"Backup saved: {zip_path.name}"),
                     self._refresh(),
                 ))
             except Exception as exc:
-                QTimer.singleShot(0, lambda: self._status.setText(f"Backup failed: {exc}"))
+                msg = str(exc)
+                zip_path.unlink(missing_ok=True)
+                run_on_ui_thread(lambda msg=msg: self._status.setText(f"Backup failed: {msg}"))
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -284,7 +309,7 @@ class WorldBackupDialog(QDialog):
                 staging.replace(dest)
                 if rollback.exists():
                     shutil.rmtree(rollback)
-                QTimer.singleShot(0, lambda: self._status.setText(f"Restored {world_name} successfully."))
+                run_on_ui_thread(lambda: self._status.setText(f"Restored {world_name} successfully."))
             except Exception as exc:
                 if rollback.exists() and not dest.exists():
                     try:
@@ -292,7 +317,8 @@ class WorldBackupDialog(QDialog):
                     except OSError:
                         pass
                 shutil.rmtree(staging, ignore_errors=True)
-                QTimer.singleShot(0, lambda: self._status.setText(f"Restore failed: {exc}"))
+                msg = str(exc)
+                run_on_ui_thread(lambda msg=msg: self._status.setText(f"Restore failed: {msg}"))
 
         threading.Thread(target=_do, daemon=True).start()
 

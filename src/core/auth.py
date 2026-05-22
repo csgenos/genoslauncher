@@ -59,6 +59,7 @@ except ImportError:
     _CRYPTO_OK = False
 
 from .config import APP_DIR, config
+from .secure_store import atomic_write_bytes, secure_delete as _secure_delete_file
 
 # ---------------------------------------------------------------------------
 # Publisher configuration
@@ -105,6 +106,17 @@ _FALLBACK_STORE  = APP_DIR / ".auth_store"
 _HTTP = _req.Session()
 from .._version import __version__ as _VERSION
 _HTTP.headers.update({"User-Agent": f"GenosLauncher/{_VERSION}"})
+_STORAGE_WARNING = ""
+
+
+def _set_storage_warning(message: str) -> None:
+    global _STORAGE_WARNING
+    _STORAGE_WARNING = message
+    log.warning(message)
+
+
+def credential_storage_warning() -> str:
+    return _STORAGE_WARNING
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +145,7 @@ def _derive_fallback_key() -> bytes:
             key_material = key_file.read_bytes()
         else:
             key_material = os.urandom(32)
-            key_file.write_bytes(key_material)
-            if os.name != "nt":
-                os.chmod(key_file, 0o600)
+            atomic_write_bytes(key_file, key_material)
     except OSError as exc:
         log.warning("Could not read/write fallback key file: %s", exc)
         key_material = hashlib.sha256(str(id(key_file)).encode()).digest()
@@ -167,16 +177,7 @@ def _decrypt(data: bytes) -> str:
 
 
 def _secure_delete(path: Path) -> None:
-    try:
-        size = path.stat().st_size
-        if size > 0:
-            with open(path, "r+b") as fh:
-                fh.write(os.urandom(size))
-                fh.flush()
-                os.fsync(fh.fileno())
-        path.unlink()
-    except OSError:
-        path.unlink(missing_ok=True)
+    _secure_delete_file(path)
 
 
 # ---------------------------------------------------------------------------
@@ -191,15 +192,12 @@ def _store_account(data: dict) -> None:
             if _FALLBACK_STORE.exists():
                 _secure_delete(_FALLBACK_STORE)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            _set_storage_warning(
+                f"System keyring write failed; using encrypted fallback credential file: {exc}"
+            )
     ciphertext = _encrypt(payload)
-    _FALLBACK_STORE.write_bytes(ciphertext)
-    if os.name != "nt":
-        try:
-            os.chmod(_FALLBACK_STORE, 0o600)
-        except OSError:
-            pass
+    atomic_write_bytes(_FALLBACK_STORE, ciphertext)
 
 
 def _load_account() -> Optional[dict]:
@@ -208,13 +206,15 @@ def _load_account() -> Optional[dict]:
             payload = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
             if payload:
                 return json.loads(payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            _set_storage_warning(
+                f"System keyring read failed; trying encrypted fallback credential file: {exc}"
+            )
     if _FALLBACK_STORE.exists():
         try:
             return json.loads(_decrypt(_FALLBACK_STORE.read_bytes()))
-        except Exception:
-            pass
+        except Exception as exc:
+            _set_storage_warning(f"Encrypted fallback credential file is unreadable: {exc}")
     return None
 
 
@@ -222,7 +222,8 @@ def _delete_account() -> None:
     if _KEYRING_OK:
         try:
             keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-        except Exception:
+        except Exception as exc:
+            log.warning("System keyring delete failed: %s", exc)
             pass
     if _FALLBACK_STORE.exists():
         _secure_delete(_FALLBACK_STORE)
@@ -251,17 +252,15 @@ def _store_account_for(data: dict) -> None:
     if _KEYRING_OK:
         try:
             keyring.set_password(_KEYRING_SERVICE, key, payload)
-            fallback.unlink(missing_ok=True)
+            if fallback.exists():
+                _secure_delete(fallback)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            _set_storage_warning(
+                f"System keyring write failed for {username}; using encrypted fallback: {exc}"
+            )
     ciphertext = _encrypt(payload)
-    fallback.write_bytes(ciphertext)
-    if os.name != "nt":
-        try:
-            os.chmod(fallback, 0o600)
-        except OSError:
-            pass
+    atomic_write_bytes(fallback, ciphertext)
 
 
 def _load_account_for(username: str) -> Optional[dict]:
@@ -272,13 +271,15 @@ def _load_account_for(username: str) -> Optional[dict]:
             payload = keyring.get_password(_KEYRING_SERVICE, key)
             if payload:
                 return json.loads(payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            _set_storage_warning(
+                f"System keyring read failed for {username}; trying encrypted fallback: {exc}"
+            )
     if fallback.exists():
         try:
             return json.loads(_decrypt(fallback.read_bytes()))
-        except Exception:
-            pass
+        except Exception as exc:
+            _set_storage_warning(f"Encrypted fallback for {username} is unreadable: {exc}")
     return None
 
 
@@ -288,7 +289,8 @@ def _delete_account_for(username: str) -> None:
     if _KEYRING_OK:
         try:
             keyring.delete_password(_KEYRING_SERVICE, key)
-        except Exception:
+        except Exception as exc:
+            log.warning("System keyring delete failed for %s: %s", username, exc)
             pass
     if fallback.exists():
         _secure_delete(fallback)
@@ -311,12 +313,6 @@ def _pkce_pair() -> tuple[str, str]:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return verifier, challenge
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def _build_auth_url(
@@ -360,15 +356,15 @@ def _exchange_code(
     return data
 
 
-def _wait_for_callback(
-    port: int,
+def _create_callback_server(
     expected_state: str,
     stop_event: threading.Event,
-    timeout: int = 300,
-) -> str:
+) -> tuple[http.server.HTTPServer, dict[str, str]]:
     """
-    Run a local HTTP server on 127.0.0.1:port until the OAuth callback arrives.
-    Returns the authorization code, or raises AuthError on cancel/error/timeout.
+    Bind the local OAuth callback server before opening the browser.
+
+    Binding with port 0 removes the find-free-port race and using 127.0.0.1
+    matches the redirect URI exactly on systems where localhost prefers IPv6.
     """
     result: dict[str, str] = {}
     server_ref: list[http.server.HTTPServer] = []
@@ -431,8 +427,21 @@ def _wait_for_callback(
         def log_message(self, fmt: str, *args: object) -> None:
             pass  # suppress HTTP access log noise
 
-    server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
     server_ref.append(server)
+    return server, result
+
+
+def _wait_for_callback(
+    server: http.server.HTTPServer,
+    result: dict[str, str],
+    stop_event: threading.Event,
+    timeout: int = 300,
+) -> str:
+    """
+    Run a local HTTP server until the OAuth callback arrives.
+    Returns the authorization code, or raises AuthError on cancel/error/timeout.
+    """
 
     def _watchdog() -> None:
         stop_event.wait(timeout)
@@ -558,7 +567,9 @@ class AuthManager:
         self._account: Optional[dict] = None
         self._lock = threading.Lock()
         self._cancel_event = threading.Event()
+        self._add_cancel_event = threading.Event()
         self._token_acquired_at: float = 0.0
+        self._generation = 0
 
     # ------------------------------------------------------------------
     # Properties  (all reads hold _lock to prevent torn reads on logout/refresh)
@@ -635,51 +646,59 @@ class AuthManager:
             return
 
         self._cancel_event.clear()
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
         threading.Thread(
             target=self._login_thread_pkce,
-            args=(client_id, on_browser_opened, on_success, on_error),
+            args=(client_id, generation, on_browser_opened, on_success, on_error),
             daemon=True,
         ).start()
 
     def cancel_login(self) -> None:
         """Cancel an in-progress login flow."""
         self._cancel_event.set()
+        self._add_cancel_event.set()
 
     def _login_thread_pkce(
         self,
         client_id:         str,
+        generation:        int,
         on_browser_opened: Callable,
         on_success:        Callable,
         on_error:          Callable,
     ) -> None:
         try:
-            port = _find_free_port()
+            verifier, challenge = _pkce_pair()
+            state = secrets.token_urlsafe(16)
+            server, result = _create_callback_server(state, self._cancel_event)
         except OSError as exc:
             on_error(f"Could not start local sign-in server: {exc}")
             return
 
-        redirect_uri = f"http://localhost:{port}{_REDIRECT_PATH}"
-        verifier, challenge = _pkce_pair()
-        state    = secrets.token_urlsafe(16)
+        port = server.server_address[1]
+        redirect_uri = f"http://127.0.0.1:{port}{_REDIRECT_PATH}"
         auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
 
         webbrowser.open(auth_url)
         on_browser_opened(auth_url)
 
         try:
-            code      = _wait_for_callback(port, state, self._cancel_event)
+            code      = _wait_for_callback(server, result, self._cancel_event)
             ms_tokens = _exchange_code(client_id, code, redirect_uri, verifier)
             account   = _ms_token_to_minecraft(
                 ms_tokens["access_token"],
                 ms_tokens.get("refresh_token", ""),
             )
             with self._lock:
+                if generation != self._generation or self._cancel_event.is_set():
+                    raise AuthError("Sign-in cancelled.")
                 self._account = account
                 self._token_acquired_at = time.monotonic()
-            _store_account(account)
-            _store_account_for(account)
-            _register_username(account["name"])
-            config.update({"active_ms_username": account["name"], "last_account": account["name"]})
+                _store_account(account)
+                _store_account_for(account)
+                _register_username(account["name"])
+                config.update({"active_ms_username": account["name"], "last_account": account["name"]})
             on_success(account)
         except AuthError as exc:
             on_error(str(exc))
@@ -712,10 +731,10 @@ class AuthManager:
                 "client ID in Settings → Microsoft Authentication."
             )
             return
-        add_cancel = threading.Event()
+        self._add_cancel_event.clear()
         threading.Thread(
             target=self._add_account_thread,
-            args=(client_id, on_browser_opened, on_success, on_error, add_cancel),
+            args=(client_id, on_browser_opened, on_success, on_error, self._add_cancel_event),
             daemon=True,
         ).start()
 
@@ -728,18 +747,19 @@ class AuthManager:
         stop_event:        threading.Event,
     ) -> None:
         try:
-            port = _find_free_port()
+            verifier, challenge = _pkce_pair()
+            state = secrets.token_urlsafe(16)
+            server, result = _create_callback_server(state, stop_event)
         except OSError as exc:
             on_error(f"Could not start local sign-in server: {exc}")
             return
-        redirect_uri = f"http://localhost:{port}{_REDIRECT_PATH}"
-        verifier, challenge = _pkce_pair()
-        state    = secrets.token_urlsafe(16)
+        port = server.server_address[1]
+        redirect_uri = f"http://127.0.0.1:{port}{_REDIRECT_PATH}"
         auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
         webbrowser.open(auth_url)
         on_browser_opened(auth_url)
         try:
-            code      = _wait_for_callback(port, state, stop_event)
+            code      = _wait_for_callback(server, result, stop_event)
             ms_tokens = _exchange_code(client_id, code, redirect_uri, verifier)
             account   = _ms_token_to_minecraft(
                 ms_tokens["access_token"],
@@ -782,22 +802,28 @@ class AuthManager:
     # ------------------------------------------------------------------
 
     def refresh(self) -> bool:
-        if not self.refresh_token:
+        with self._lock:
+            account_snapshot = dict(self._account or {})
+            generation = self._generation
+            refresh_token = account_snapshot.get("refresh_token", "")
+        if not refresh_token:
             return False
         client_id = _resolve_client_id()
         if not client_id:
             return False
         try:
-            ms_tokens = _refresh_ms_token(client_id, self.refresh_token)
+            ms_tokens = _refresh_ms_token(client_id, refresh_token)
             account   = _ms_token_to_minecraft(
                 ms_tokens["access_token"],
-                ms_tokens.get("refresh_token", self.refresh_token),
+                ms_tokens.get("refresh_token", refresh_token),
             )
             with self._lock:
+                if generation != self._generation:
+                    return False
                 self._account = account
                 self._token_acquired_at = time.monotonic()
-            _store_account(account)
-            _store_account_for(account)
+                _store_account(account)
+                _store_account_for(account)
             return True
         except Exception as exc:
             log.warning("Token refresh failed: %s", exc)
@@ -806,7 +832,7 @@ class AuthManager:
     def refresh_async(self) -> None:
         threading.Thread(target=self.refresh, daemon=True).start()
 
-    def ensure_token_fresh(self) -> bool:
+    def ensure_token_fresh(self, force: bool = False) -> bool:
         """Synchronously refresh the access token if it is approaching expiry.
 
         Called on the LaunchWorker thread just before launch so Minecraft
@@ -818,7 +844,7 @@ class AuthManager:
             if not self._account:
                 return True
             age = time.monotonic() - self._token_acquired_at
-        if age >= self._TOKEN_MAX_AGE:
+        if force or age >= self._TOKEN_MAX_AGE:
             return self.refresh()
         return True
 
@@ -828,7 +854,9 @@ class AuthManager:
 
     def logout(self) -> None:
         self._cancel_event.set()
+        self._add_cancel_event.set()
         with self._lock:
+            self._generation += 1
             self._account = None
         _delete_account()
 
@@ -846,10 +874,21 @@ class AuthManager:
         if not url:
             return False
         try:
-            resp = _HTTP.get(url, timeout=10)
-            if resp.ok:
-                dest.write_bytes(resp.content)
-                return True
+            resp = _HTTP.get(url, timeout=10, stream=True)
+            if not resp.ok:
+                return False
+            max_bytes = 2 * 1024 * 1024
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    return False
+                chunks.append(chunk)
+            atomic_write_bytes(dest, b"".join(chunks))
+            return True
         except Exception:
             pass
         return False

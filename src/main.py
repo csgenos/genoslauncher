@@ -62,6 +62,8 @@ def main() -> int:
     app.setApplicationDisplayName("GenosLauncher")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("GenosLauncher")
+    from src.ui.qt_dispatch import init_dispatcher
+    init_dispatcher()
 
     font = QFont("Segoe UI", 10)
     font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
@@ -88,8 +90,8 @@ def main() -> int:
     def _open_main() -> None:
         try:
             from src.ui.main_window import MainWindow
-            w = MainWindow()
-            w.show()
+            app.main_window = MainWindow()  # type: ignore[attr-defined]
+            app.main_window.show()         # type: ignore[attr-defined]
         except Exception:
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
             crash_log = LOGS_DIR / "startup-crash.log"

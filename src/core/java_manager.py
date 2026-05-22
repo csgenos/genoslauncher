@@ -21,19 +21,7 @@ from typing import Optional
 from .config import APP_DIR, config
 
 # Minecraft version → minimum required Java major version
-MC_JAVA_REQUIREMENTS: dict[str, int] = {
-    "1.21": 21,
-    "1.20": 21,
-    "1.19": 17,
-    "1.18": 17,
-    "1.17": 16,
-    "1.16": 8,
-    "1.15": 8,
-    "1.14": 8,
-    "1.13": 8,
-    "1.12": 8,
-    "1.8":  8,
-}
+_NEWEST_KNOWN_JAVA = 21
 
 JAVA_INSTALLS_DIR = APP_DIR / "java"
 
@@ -80,9 +68,28 @@ def get_java_major(version_str: str) -> int:
 
 def required_java_for_mc(mc_version: str) -> int:
     """Return the minimum Java major version needed for a Minecraft version."""
-    for prefix in sorted(MC_JAVA_REQUIREMENTS.keys(), reverse=True):
-        if mc_version.startswith(prefix):
-            return MC_JAVA_REQUIREMENTS[prefix]
+    version = str(mc_version or "").strip()
+    if version.startswith(("fabric-loader-", "quilt-loader-")):
+        version = version.rsplit("-", 1)[-1]
+    if "-forge-" in version:
+        version = version.split("-forge-", 1)[0]
+    parts = version.split(".")
+    try:
+        if parts[0] != "1":
+            return _NEWEST_KNOWN_JAVA
+        minor = int(parts[1])
+        patch = int(parts[2].split("-")[0]) if len(parts) > 2 and parts[2] else 0
+    except (IndexError, ValueError):
+        return _NEWEST_KNOWN_JAVA
+
+    if minor >= 21:
+        return 21
+    if minor == 20:
+        return 21 if patch >= 5 else 17
+    if minor in (18, 19):
+        return 17
+    if minor == 17:
+        return 16
     return 8
 
 
