@@ -17,9 +17,9 @@ import traceback
 # Ensure src/ is on sys.path when running directly (not needed in bundled build)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt, QCoreApplication, QDialog, QTimer
+from PySide6.QtCore import Qt, QCoreApplication, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from src._version import __version__
 from src.core.config import LOGS_DIR, config
@@ -57,10 +57,6 @@ def _fallback_icon() -> QIcon:
 
 def main() -> int:
     setup_logging()
-    # High-DPI support
-    QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
     app = QApplication(sys.argv)
     app.setApplicationName("GenosLauncher")
     app.setApplicationDisplayName("GenosLauncher")

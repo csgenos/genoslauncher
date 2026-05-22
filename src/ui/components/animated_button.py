@@ -176,7 +176,7 @@ class PrimaryButton(CleanButton):
         painter.fillPath(path, bg)
 
         painter.setPen(QColor(self._TEXT_COLOR))
-        font = QFont("Segoe UI", 10, QFont.Weight.SemiBold)
+        font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         painter.setFont(font)
         label = f"{self._icon_char} {self.text()}" if self._icon_char else self.text()
         painter.drawText(0, 0, w, h, Qt.AlignCenter, label)

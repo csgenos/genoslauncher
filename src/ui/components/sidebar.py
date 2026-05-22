@@ -152,7 +152,7 @@ class SidebarItem(QWidget):
         painter.setPen(label_color)
         label_font = QFont("Segoe UI", 9)
         label_font.setWeight(
-            QFont.Weight.SemiBold if self._active else QFont.Weight.Medium
+            QFont.Weight.DemiBold if self._active else QFont.Weight.Medium
         )
         painter.setFont(label_font)
         painter.drawText(44, 0, w - 44 - 8, h, Qt.AlignVCenter | Qt.AlignLeft, self._label)

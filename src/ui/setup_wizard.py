@@ -67,7 +67,7 @@ def _make_icon_box(size: int, bg: str = C["accent"], letter: str = "G") -> QLabe
     radius = max(6, size // 5)
     painter.drawRoundedRect(0, 0, size, size, radius, radius)
     painter.setPen(QColor(C["text_inverse"]))
-    font = QFont("Segoe UI", int(size * 0.52), QFont.Weight.Bold)
+    font = QFont("Segoe UI", max(1, int(size * 0.52)), QFont.Weight.Bold)
     painter.setFont(font)
     painter.drawText(pix.rect(), Qt.AlignCenter, letter)
     painter.end()

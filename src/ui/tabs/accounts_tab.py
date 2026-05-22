@@ -126,7 +126,7 @@ class AccountAvatar(QWidget):
         painter.setPen(QColor(C["border_strong"]))
         painter.drawEllipse(1, 1, w - 2, h - 2)
         painter.setPen(QColor(C["text_secondary"]))
-        font = QFont("Segoe UI", w // 3, QFont.Weight.SemiBold)
+        font = QFont("Segoe UI", max(1, w // 3), QFont.Weight.DemiBold)
         painter.setFont(font)
         painter.drawText(0, 0, w, h, Qt.AlignCenter, self._initials)
         painter.end()

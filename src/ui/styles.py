@@ -101,7 +101,6 @@ def get_stylesheet() -> str:
     font-size: 13px;
     color: {c['text_primary']};
     outline: none;
-    box-sizing: border-box;
 }}
 
 QMainWindow, QDialog {{

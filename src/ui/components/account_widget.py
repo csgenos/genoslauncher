@@ -32,7 +32,7 @@ class _AvatarCircle(QWidget):
         painter.setPen(QColor("#93C5FD"))
         painter.drawEllipse(1, 1, w - 2, h - 2)
         painter.setPen(QColor(C["accent_blue"]))
-        font = QFont("Segoe UI", w // 3, QFont.Weight.Bold)
+        font = QFont("Segoe UI", max(1, w // 3), QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(0, 0, w, h, Qt.AlignCenter, self._initials)
         painter.end()
@@ -66,8 +66,8 @@ class AccountWidget(QWidget):
         """)
 
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(12, 0, 12, 0)
-        outer.setSpacing(10)
+        outer.setContentsMargins(10, 0, 10, 0)
+        outer.setSpacing(8)
 
         self._avatar = _AvatarCircle("?", 32, self)
         outer.addWidget(self._avatar)
@@ -88,7 +88,7 @@ class AccountWidget(QWidget):
         outer.addLayout(info, 1)
 
         self._action_btn = OutlineButton("Sign In")
-        self._action_btn.setFixedSize(60, 26)
+        self._action_btn.setFixedSize(56, 26)
         self._action_btn.clicked.connect(self._on_action)
         outer.addWidget(self._action_btn)
 

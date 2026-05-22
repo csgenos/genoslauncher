@@ -144,7 +144,7 @@ class SplashScreen(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(0, 0, size, size, 10, 10)
         painter.setPen(QColor(C["text_inverse"]))
-        font = QFont("Segoe UI", int(size * 0.52), QFont.Weight.Bold)
+        font = QFont("Segoe UI", max(1, int(size * 0.52)), QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(pix.rect(), Qt.AlignCenter, "G")
         painter.end()
