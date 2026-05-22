@@ -38,6 +38,39 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Installed-versions cache (OX-001)
+# Avoids repeated filesystem scans when launching or checking multiple versions.
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+_INSTALLED_CACHE_TTL = 30.0  # seconds
+_installed_cache: dict[str, tuple[float, frozenset]] = {}
+_installed_cache_lock = threading.Lock()
+
+
+def _get_installed_versions_cached(mc_dir: str) -> frozenset:
+    now = _time.monotonic()
+    with _installed_cache_lock:
+        if mc_dir in _installed_cache:
+            ts, versions = _installed_cache[mc_dir]
+            if now - ts < _INSTALLED_CACHE_TTL:
+                return versions
+    versions = frozenset(v.get("id") for v in mll.utils.get_installed_versions(mc_dir))
+    with _installed_cache_lock:
+        _installed_cache[mc_dir] = (now, versions)
+    return versions
+
+
+def invalidate_installed_cache(mc_dir: str | None = None) -> None:
+    with _installed_cache_lock:
+        if mc_dir is None:
+            _installed_cache.clear()
+        else:
+            _installed_cache.pop(mc_dir, None)
+
+
+# ---------------------------------------------------------------------------
 # Version helpers
 # ---------------------------------------------------------------------------
 
@@ -282,6 +315,7 @@ class InstallWorker(QObject):
                 minecraft_directory=mc_dir,
                 callback=callbacks,
             )
+            invalidate_installed_cache(mc_dir)
             self.finished.emit(True, f"Version {self.version_id} installed successfully.")
         except Exception as exc:
             log.exception("Minecraft version install failed for %s", self.version_id)
@@ -333,7 +367,7 @@ class LaunchWorker(QObject):
             self.error.emit(f"Version {self.version_id} is not installed. Install it from Instances first.")
             return
         try:
-            installed = {v.get("id") for v in mll.utils.get_installed_versions(mc_dir)}
+            installed = _get_installed_versions_cached(mc_dir)
         except Exception as exc:
             log.warning("Installed-version scan failed for %s: %s", mc_dir, exc)
             self.error.emit(f"Could not verify installed versions in {mc_dir}.")
@@ -392,6 +426,9 @@ class LaunchWorker(QObject):
             self.status_changed.emit("Starting Minecraft...")
             log_path = LOGS_DIR / f"minecraft-{self.version_id}.log"
             log_fh = open(log_path, "a", encoding="utf-8", errors="replace")
+            # SX-001: --accessToken is visible in /proc/<pid>/cmdline on Linux and
+            # Task Manager / WMI on Windows.  This is a known Minecraft launcher
+            # limitation; there is no API to pass credentials out-of-band.
             self._process = subprocess.Popen(
                 command,
                 stdout=log_fh,

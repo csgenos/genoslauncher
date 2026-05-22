@@ -31,10 +31,16 @@ if exist "venv\Scripts\activate.bat" (
 
 REM ── 1. Install / upgrade dependencies ──────────────────────────────────
 echo [1/4] Installing dependencies...
-pip install -r requirements.txt --quiet
+if exist "requirements.lock" (
+    echo  Using hash-pinned requirements.lock
+    pip install --require-hashes -r requirements.lock --quiet
+) else (
+    echo  WARNING: requirements.lock not found, falling back to requirements.txt
+    pip install -r requirements.txt --quiet
+)
 pip install pyinstaller --quiet
 if errorlevel 1 (
-    echo  ERROR: pip install failed. Check requirements.txt.
+    echo  ERROR: pip install failed. Check requirements.lock / requirements.txt.
     exit /b 1
 )
 
