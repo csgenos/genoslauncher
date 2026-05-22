@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,7 +26,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
-from ..qt_dispatch import run_on_ui_thread
 from ...core import modrinth as mr
 from ...core.config import APP_DIR, config
 from ...core.instances import list_instances, selected_instance, selected_instance_dir, set_selected_instance
@@ -289,20 +289,22 @@ class ModUpdateWorker(QObject):
             self.updates_found.emit([])
             return
         updates: list[dict] = []
-        for i, (project_id, entry) in enumerate(index.items()):
-            self.status.emit(f"Checking {i + 1}/{len(index)}: {entry.get('title', project_id)}…")
+        items = list(index.items())
+
+        def _check_one(item: tuple[str, dict], pos: int) -> dict | None:
+            project_id, entry = item
             try:
                 if entry.get("source") == "curseforge":
                     cf_id = int(entry.get("cf_id") or entry.get("project_id") or 0)
                     if not cf_id:
-                        continue
+                        return None
                     files = cf.get_mod_files(cf_id, mc_version)
                     if not files:
-                        continue
+                        return None
                     latest = files[0]
                     latest_file_id = str(latest.get("id", ""))
                     if latest_file_id and latest_file_id != str(entry.get("file_id") or entry.get("version_id")):
-                        updates.append({
+                        return {
                             "source":                "curseforge",
                             "project_id":            project_id,
                             "cf_id":                 cf_id,
@@ -313,19 +315,19 @@ class ModUpdateWorker(QObject):
                             "latest_version_number": latest.get("displayName", latest.get("fileName", "?")),
                             "latest_file":           latest,
                             "instance_dir":          str(instance_dir),
-                        })
+                        }
                 else:
                     versions = mr.get_project_versions(
                         project_id,
                         game_versions=[mc_version] if mc_version else None,
                     )
                     if not versions:
-                        continue
+                        return None
                     latest = versions[0]
                     if latest.get("id") != entry.get("version_id"):
                         files   = latest.get("files", [])
                         primary = next((f for f in files if f.get("primary")), files[0] if files else None)
-                        updates.append({
+                        return {
                             "source":                "modrinth",
                             "project_id":            project_id,
                             "title":                 entry.get("title", project_id),
@@ -335,12 +337,76 @@ class ModUpdateWorker(QObject):
                             "latest_version_number": latest.get("version_number", "?"),
                             "latest_file":           primary,
                             "instance_dir":          str(instance_dir),
-                        })
+                        }
             except Exception:
-                continue
+                return None
+            return None
+
+        with ThreadPoolExecutor(max_workers=min(8, max(2, len(items)))) as pool:
+            future_map = {pool.submit(_check_one, item, idx): (idx, item) for idx, item in enumerate(items, start=1)}
+            for fut in as_completed(future_map):
+                idx, item = future_map[fut]
+                project_id, entry = item
+                self.status.emit(f"Checking {idx}/{len(items)}: {entry.get('title', project_id)}…")
+                result = fut.result()
+                if result:
+                    updates.append(result)
         msg = f"{len(updates)} update(s) available." if updates else "All mods are up to date."
         self.status.emit(msg)
         self.updates_found.emit(updates)
+
+
+class ModApplyUpdateWorker(QObject):
+    finished = Signal(bool, str, dict)
+
+    def __init__(self, info: dict) -> None:
+        super().__init__()
+        self._info = info
+
+    def run(self) -> None:
+        info = self._info
+        latest_file = info.get("latest_file")
+        if not latest_file:
+            self.finished.emit(False, "No update payload found.", info)
+            return
+        try:
+            instance_dir = Path(info["instance_dir"])
+            mods_dir = instance_dir / "mods"
+            if info.get("source") == "curseforge":
+                filename = mr.safe_filename(latest_file.get("fileName", "mod.jar"))
+                dest = mr.safe_download_path(mods_dir, filename)
+                sha1, sha512 = cf.hashes_for_file(latest_file)
+                url = latest_file.get("downloadUrl") or cf.get_download_url(
+                    int(info.get("cf_id", 0)),
+                    int(info["latest_version_id"]),
+                )
+                cf.download_file(url, dest, expected_sha1=sha1, expected_sha512=sha512)
+            else:
+                hashes = latest_file.get("hashes", {})
+                filename = mr.safe_filename(latest_file["filename"])
+                dest = mr.safe_download_path(mods_dir, filename)
+                mr.download_file(
+                    latest_file["url"], dest,
+                    expected_sha1=hashes.get("sha1", ""),
+                    expected_sha512=hashes.get("sha512", ""),
+                )
+            old_name = info.get("current_filename", "")
+            if old_name:
+                old = mr.safe_download_path(mods_dir, old_name)
+                if old.exists() and old != dest:
+                    old.unlink(missing_ok=True)
+            index = _load_index(instance_dir)
+            pid = info["project_id"]
+            if pid in index:
+                index[pid]["version_id"] = info["latest_version_id"]
+                index[pid]["file_id"] = info["latest_version_id"]
+                index[pid]["source"] = info.get("source", index[pid].get("source", "modrinth"))
+                index[pid]["version_number"] = info["latest_version_number"]
+                index[pid]["filename"] = filename
+                _save_index(instance_dir, index)
+            self.finished.emit(True, f"Updated {info['title']}.", info)
+        except Exception as exc:
+            self.finished.emit(False, f"Update failed: {exc}", info)
 
 
 class _IconLoader(QObject):
@@ -908,12 +974,6 @@ class ModsTab(QWidget):
             self._updates_list.addWidget(card)
 
     def _execute_mod_update(self, info: dict) -> None:
-        latest_file = info.get("latest_file")
-        if not latest_file:
-            return
-        instance_dir = Path(info["instance_dir"])
-        mods_dir     = instance_dir / "mods"
-
         for i in range(self._updates_list.count()):
             item = self._updates_list.itemAt(i)
             if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
@@ -921,48 +981,19 @@ class ModsTab(QWidget):
                 if card._info.get("project_id") == info.get("project_id"):
                     card.set_updated()
                     break
-
-        def _do_update():
-            try:
-                if info.get("source") == "curseforge":
-                    filename = mr.safe_filename(latest_file.get("fileName", "mod.jar"))
-                    dest = mr.safe_download_path(mods_dir, filename)
-                    sha1, sha512 = cf.hashes_for_file(latest_file)
-                    url = latest_file.get("downloadUrl") or cf.get_download_url(
-                        int(info.get("cf_id", 0)),
-                        int(info["latest_version_id"]),
-                    )
-                    cf.download_file(url, dest, expected_sha1=sha1, expected_sha512=sha512)
-                else:
-                    hashes   = latest_file.get("hashes", {})
-                    filename = mr.safe_filename(latest_file["filename"])
-                    dest     = mr.safe_download_path(mods_dir, filename)
-                    mr.download_file(
-                        latest_file["url"], dest,
-                        expected_sha1=hashes.get("sha1", ""),
-                        expected_sha512=hashes.get("sha512", ""),
-                    )
-                old_name = info.get("current_filename", "")
-                if old_name:
-                    old = mr.safe_download_path(mods_dir, old_name)
-                    if old.exists() and old != dest:
-                        old.unlink(missing_ok=True)
-                index = _load_index(instance_dir)
-                pid = info["project_id"]
-                if pid in index:
-                    index[pid]["version_id"]     = info["latest_version_id"]
-                    index[pid]["file_id"]         = info["latest_version_id"]
-                    index[pid]["source"]          = info.get("source", index[pid].get("source", "modrinth"))
-                    index[pid]["version_number"]  = info["latest_version_number"]
-                    index[pid]["filename"]         = filename
-                    _save_index(instance_dir, index)
-                run_on_ui_thread(lambda: self._status.setText(f"Updated {info['title']}."))
-            except Exception as exc:
-                msg = str(exc)
-                run_on_ui_thread(lambda msg=msg: self._status.setText(f"Update failed: {msg}"))
-
-        import threading as _th
-        _th.Thread(target=_do_update, daemon=True).start()
+        thread = QThread(self)
+        worker = ModApplyUpdateWorker(info)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda ok, msg, _info: self._status.setText(msg))
+        worker.finished.connect(thread.quit)
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
     # ------------------------------------------------------------------
     # Install

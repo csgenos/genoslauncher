@@ -170,7 +170,7 @@ def _offline_uuid(username: str) -> str:
 # JVM argument builder (B-Y-007)
 # ---------------------------------------------------------------------------
 
-_XMX_PREFIXES = ("-Xmx", "-Xms", "-Xss")
+_XMX_PREFIXES = ("-Xmx", "-Xms")
 
 
 def _build_jvm_args(ram_mb: int, preset_args: str, custom_args: str) -> list[str]:

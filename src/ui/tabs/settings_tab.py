@@ -7,7 +7,7 @@ All settings auto-save to config.json via the config singleton.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
@@ -74,6 +74,14 @@ class SectionTitle(QLabel):
     def __init__(self, text: str, parent=None) -> None:
         super().__init__(text, parent)
         self.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']}; margin-top: 4px;")
+
+
+class _JavaDetectWorker(QObject):
+    finished = Signal(list)
+
+    def run(self) -> None:
+        installs = find_java_installations()
+        self.finished.emit(installs)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +266,8 @@ class SettingsTab(QWidget):
         self._preset_cards: dict[str, JvmPresetCard] = {}
         self._debounce_timers: dict[str, QTimer] = {}
         self._pending_values: dict[str, object] = {}
+        self._threads: list[QThread] = []
+        self._workers: list[QObject] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -369,19 +379,15 @@ class SettingsTab(QWidget):
         ))
 
         # Auto-detected installations
-        installs = find_java_installations()
-        if installs:
-            detect_lbl = QLabel(f"Detected {len(installs)} Java installation(s):")
-            detect_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
-            java_layout.addWidget(detect_lbl)
+        self._java_detect_lbl = QLabel("Detecting Java installations…")
+        self._java_detect_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        java_layout.addWidget(self._java_detect_lbl)
 
-            self._java_combo = QComboBox()
-            self._java_combo.setFixedHeight(36)
-            for j in installs[:8]:
-                label = f"Java {j['major']}  ({j['path']})"
-                self._java_combo.addItem(label, j["path"])
-            self._java_combo.currentIndexChanged.connect(self._on_java_selected)
-            java_layout.addWidget(self._java_combo)
+        self._java_combo = QComboBox()
+        self._java_combo.setFixedHeight(36)
+        self._java_combo.setEnabled(False)
+        self._java_combo.currentIndexChanged.connect(self._on_java_selected)
+        java_layout.addWidget(self._java_combo)
 
         manage_java_btn = OutlineButton("Manage Java Installations…")
         manage_java_btn.setFixedHeight(36)
@@ -537,6 +543,7 @@ class SettingsTab(QWidget):
         cl.addStretch()
         scroll.setWidget(content)
         root.addWidget(scroll)
+        self._load_java_installs_async()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -591,6 +598,7 @@ class SettingsTab(QWidget):
         from ..dialogs.java_manager_dialog import JavaManagerDialog
         dlg = JavaManagerDialog(self)
         dlg.exec()
+        self._load_java_installs_async()
 
     def _on_dark_mode_toggled(self, dark: bool) -> None:
         config.set("dark_mode", dark)
@@ -600,3 +608,30 @@ class SettingsTab(QWidget):
         if app:
             for widget in app.allWidgets():
                 widget.update()
+
+    def _load_java_installs_async(self) -> None:
+        thread = QThread(self)
+        worker = _JavaDetectWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_java_installs_loaded)
+        worker.finished.connect(thread.quit)
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_java_installs_loaded(self, installs: list[dict]) -> None:
+        self._java_combo.blockSignals(True)
+        self._java_combo.clear()
+        for j in installs[:8]:
+            label = f"Java {j['major']}  ({j['path']})"
+            self._java_combo.addItem(label, j["path"])
+        self._java_combo.blockSignals(False)
+        self._java_combo.setEnabled(bool(installs))
+        self._java_detect_lbl.setText(
+            f"Detected {len(installs)} Java installation(s):" if installs else "No Java installations detected."
+        )

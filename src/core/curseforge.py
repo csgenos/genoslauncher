@@ -47,8 +47,11 @@ def _key() -> str:
 
 
 def _session() -> requests.Session:
-    _SESSION.headers.update({"x-api-key": _key()})
     return _SESSION
+
+
+def _headers() -> dict[str, str]:
+    return {"x-api-key": _key()}
 
 
 def _is_blocked_host(hostname: str) -> bool:
@@ -102,7 +105,7 @@ def search(
     if game_version:
         params["gameVersion"] = game_version
     try:
-        resp = _session().get(f"{_BASE}/mods/search", params=params, timeout=12)
+        resp = _session().get(f"{_BASE}/mods/search", params=params, headers=_headers(), timeout=12)
         resp.raise_for_status()
         data = resp.json()
         hits_raw = data.get("data", [])
@@ -127,7 +130,11 @@ def search_modpacks(query: str, game_version: str = "", page_size: int = 20) -> 
 def get_download_url(mod_id: int, file_id: int) -> str:
     """Return the CDN download URL for a specific mod file."""
     try:
-        resp = _session().get(f"{_BASE}/mods/{mod_id}/files/{file_id}/download-url", timeout=10)
+        resp = _session().get(
+            f"{_BASE}/mods/{mod_id}/files/{file_id}/download-url",
+            headers=_headers(),
+            timeout=10,
+        )
         resp.raise_for_status()
         return resp.json().get("data", "")
     except requests.RequestException as exc:
@@ -137,7 +144,7 @@ def get_download_url(mod_id: int, file_id: int) -> str:
 def get_mod_files(mod_id: int, game_version: str = "") -> list[dict]:
     params: dict = {"gameVersion": game_version} if game_version else {}
     try:
-        resp = _session().get(f"{_BASE}/mods/{mod_id}/files", params=params, timeout=10)
+        resp = _session().get(f"{_BASE}/mods/{mod_id}/files", params=params, headers=_headers(), timeout=10)
         resp.raise_for_status()
         return resp.json().get("data", [])
     except requests.RequestException as exc:
@@ -180,7 +187,7 @@ def download_file(
     sha512_h = hashlib.sha512() if expected_sha512 else None
 
     try:
-        resp = _session().get(url, stream=True, timeout=60)
+        resp = _session().get(url, stream=True, headers=_headers(), timeout=60)
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
         if total > max_bytes:

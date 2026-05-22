@@ -14,6 +14,7 @@ import secrets
 import shutil
 import threading
 import time
+import atexit
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,8 @@ class Config:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
         self._lock = threading.RLock()
+        self._save_timer: threading.Timer | None = None
+        self._save_delay_s = 0.35
         self._ensure_dirs()
         self._load()
 
@@ -139,7 +142,7 @@ class Config:
             return
         with self._lock:
             self._data[key] = self._validate_value(key, value)
-            self._save_locked()
+            self._schedule_save_locked()
 
     def update(self, mapping: dict[str, Any]) -> None:
         with self._lock:
@@ -157,11 +160,13 @@ class Config:
                     )
                 else:
                     self._data[k] = self._validate_value(k, v)
-            self._save_locked()
+            self._schedule_save_locked()
 
     def __getitem__(self, key: str) -> Any:
+        if key in _SECRET_CONFIG_KEYS:
+            return get_secret(APP_DIR, key) or ""
         with self._lock:
-            return self._data.get(key, DEFAULT_CONFIG[key])
+            return self._data.get(key, DEFAULT_CONFIG.get(key))
 
     def __setitem__(self, key: str, value: Any) -> None:
         self.set(key, value)
@@ -281,6 +286,18 @@ class Config:
         with self._lock:
             self._save_locked()
 
+    def _schedule_save_locked(self) -> None:
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+        self._save_timer = threading.Timer(self._save_delay_s, self._save_from_timer)
+        self._save_timer.daemon = True
+        self._save_timer.start()
+
+    def _save_from_timer(self) -> None:
+        with self._lock:
+            self._save_timer = None
+            self._save_locked()
+
     def _save_locked(self) -> None:
         """Atomic write: write to .tmp then os.replace() to avoid partial reads."""
         safe_data = {
@@ -302,3 +319,4 @@ class Config:
 
 # Module-level singleton - import and use directly
 config = Config()
+atexit.register(config._save)

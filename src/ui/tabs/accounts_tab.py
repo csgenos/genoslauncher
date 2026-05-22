@@ -5,7 +5,10 @@ Accounts tab - Microsoft login plus offline account management.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
+import time
+import urllib.parse
 
 import requests
 from PySide6.QtCore import QObject, QThread, Qt, Signal
@@ -29,7 +32,7 @@ from ..styles import COLORS as C, FONT
 
 
 class _SkinFetchWorker(QObject):
-    image_ready = Signal(int, QImage)
+    image_ready = Signal(int, str, QImage)
     finished = Signal()
 
     def __init__(self, username: str, generation: int, face_size: int) -> None:
@@ -60,7 +63,14 @@ class _SkinFetchWorker(QObject):
             skin_url = decoded.get("textures", {}).get("SKIN", {}).get("url", "")
             if not skin_url:
                 return
-            skin_resp = requests.get(skin_url, timeout=5)
+            if _is_blocked_host(skin_url):
+                return
+            skin_resp = requests.get(skin_url, timeout=5, allow_redirects=False)
+            if 300 <= skin_resp.status_code < 400:
+                redir = skin_resp.headers.get("location", "")
+                if not redir or _is_blocked_host(redir):
+                    return
+                skin_resp = requests.get(redir, timeout=5, allow_redirects=False)
             if int(skin_resp.headers.get("content-length", 0)) > 2 * 1024 * 1024:
                 return
             img_data = skin_resp.content
@@ -75,7 +85,7 @@ class _SkinFetchWorker(QObject):
                 Qt.KeepAspectRatio,
                 Qt.FastTransformation,
             )
-            self.image_ready.emit(self._generation, face)
+            self.image_ready.emit(self._generation, self._username, face)
         except Exception:
             pass
         finally:
@@ -84,6 +94,8 @@ class _SkinFetchWorker(QObject):
 
 class SkinWidget(QLabel):
     _FACE_SIZE = 56
+    _CACHE_TTL = 600.0
+    _CACHE: dict[str, tuple[float, QImage]] = {}
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -108,6 +120,10 @@ class SkinWidget(QLabel):
 
     def load_for(self, username: str) -> None:
         self._set_placeholder()
+        cached = self._CACHE.get(username.lower())
+        if cached and (time.monotonic() - cached[0]) < self._CACHE_TTL:
+            self._on_image_ready(self._skin_generation, username, cached[1])
+            return
         self._skin_generation += 1
         generation = self._skin_generation
         worker = _SkinFetchWorker(username, generation, self._FACE_SIZE)
@@ -123,7 +139,7 @@ class SkinWidget(QLabel):
         self._skin_workers.append(worker)
         thread.start()
 
-    def _on_image_ready(self, generation: int, image: QImage) -> None:
+    def _on_image_ready(self, generation: int, username: str, image: QImage) -> None:
         if generation == self._skin_generation:
             self.setStyleSheet(
                 f"""
@@ -134,6 +150,7 @@ class SkinWidget(QLabel):
             )
             self.setText("")
             self.setPixmap(QPixmap.fromImage(image))
+            self._CACHE[username.lower()] = (time.monotonic(), image.copy())
 
     def _cleanup_skin_worker(self, thread: QThread, worker: _SkinFetchWorker) -> None:
         if thread in self._skin_threads:
@@ -141,6 +158,24 @@ class SkinWidget(QLabel):
         if worker in self._skin_workers:
             self._skin_workers.remove(worker)
 
+
+def _is_blocked_host(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme.lower() != "https":
+            return True
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return True
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+        except ValueError:
+            return False
+    except Exception:
+        return True
 
 class AccountAvatar(QWidget):
     def __init__(self, initials: str, size: int = 44, parent=None) -> None:

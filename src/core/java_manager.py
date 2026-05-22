@@ -370,6 +370,9 @@ def download_java(
     if not url:
         _s("No download URL in release metadata.")
         return None
+    if not checksum:
+        _s("Release metadata did not include SHA256 checksum.")
+        return None
 
     _parsed_url = urllib.parse.urlparse(url)
     _hostname = (_parsed_url.hostname or "").lower()
@@ -410,10 +413,6 @@ def download_java(
         _s(f"Download failed: {exc}")
         return None
 
-    if not checksum:
-        archive_path.unlink(missing_ok=True)
-        _s("Adoptium did not provide a SHA256 checksum — aborting download.")
-        return None
     _s("Verifying download…")
     sha256 = hashlib.sha256()
     with open(archive_path, "rb") as fh:

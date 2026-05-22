@@ -182,7 +182,10 @@ def _decrypt(data: bytes) -> str:
     # path that no longer exists in _encrypt).  Attempt plain base64 decode
     # so that old installations are handled gracefully on upgrade.
     import base64 as _b64_legacy
-    return _b64_legacy.b64decode(data).decode()
+    if not data or len(data) > 32 * 1024:
+        raise AuthError("Legacy credential payload is invalid.")
+    decoded = _b64_legacy.b64decode(data, validate=True)
+    return decoded.decode("utf-8")
 
 
 def _secure_delete(path: Path) -> None:
@@ -522,7 +525,25 @@ def _ms_token_to_minecraft(ms_access_token: str, ms_refresh_token: str) -> dict:
         "RelyingParty": "rp://api.minecraftservices.com/",
         "TokenType":    "JWT",
     }, headers={"Accept": "application/json"}, timeout=15)
-    xsts.raise_for_status()
+    if not xsts.ok:
+        detail = ""
+        try:
+            payload = xsts.json()
+            xerr = int(payload.get("XErr", 0))
+            xerr_messages = {
+                2148916227: "This Xbox account is banned.",
+                2148916233: "This Microsoft account does not have an Xbox profile yet.",
+                2148916235: "Xbox Live is not available in this account's region.",
+                2148916236: "This account requires adult verification.",
+                2148916237: "This account requires adult verification.",
+                2148916238: "Child account restriction: add this account to a Microsoft Family.",
+            }
+            detail = xerr_messages.get(xerr) or payload.get("Message", "")
+        except Exception:
+            detail = ""
+        if detail:
+            raise AuthError(f"Xbox sign-in failed: {detail}")
+        raise AuthError(f"Xbox sign-in failed ({xsts.status_code}).")
     xsts_token = xsts.json()["Token"]
 
     # Minecraft token

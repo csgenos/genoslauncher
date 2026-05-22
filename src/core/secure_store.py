@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 SERVICE_NAME = "GenosLauncher"
 _FALLBACK_FILE = ".secrets_store"
 _FALLBACK_KEY_FILE = ".secrets_key"
-_FALLBACK_SALT = b"GenosLauncher local secret fallback v1"
+_FALLBACK_SALT_FILE = ".secrets_salt"
 
 
 def _restrict_file(path: Path) -> None:
@@ -95,6 +95,17 @@ def _fallback_paths(app_dir: Path) -> tuple[Path, Path]:
     return app_dir / _FALLBACK_FILE, app_dir / _FALLBACK_KEY_FILE
 
 
+def _fallback_salt(app_dir: Path) -> bytes:
+    salt_path = app_dir / _FALLBACK_SALT_FILE
+    if salt_path.exists():
+        salt = salt_path.read_bytes()
+        if len(salt) >= 16:
+            return salt[:32]
+    salt = secrets.token_bytes(16)
+    atomic_write_bytes(salt_path, salt)
+    return salt
+
+
 def _fallback_cipher(app_dir: Path) -> Any:
     if Fernet is None or PBKDF2HMAC is None or hashes is None:
         raise RuntimeError("cryptography is not available for encrypted fallback storage")
@@ -109,7 +120,7 @@ def _fallback_cipher(app_dir: Path) -> Any:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=_FALLBACK_SALT,
+        salt=_fallback_salt(app_dir),
         iterations=390000,
     )
     return Fernet(base64.urlsafe_b64encode(kdf.derive(secret)))

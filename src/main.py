@@ -60,7 +60,10 @@ def _show_startup_error(message: str) -> None:
     try:
         ctypes.windll.user32.MessageBoxW(None, message, "GenosLauncher startup error", 0x10)
     except Exception:
-        pass
+        try:
+            print(f"GenosLauncher startup error:\n{message}", file=sys.stderr)
+        except Exception:
+            pass
 
 
 def _pyside_import_diagnostic(exc: Exception) -> str:
