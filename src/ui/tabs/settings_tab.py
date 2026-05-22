@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -27,10 +28,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..styles import COLORS as C, FONT
+from ..styles import COLORS as C, FONT, apply_theme
 from ..components.animated_button import OutlineButton, PrimaryButton
 from ...core.config import config
 from ...core.java_manager import JVM_PRESETS, find_java_installations
+from ..._version import __version__
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +456,27 @@ class SettingsTab(QWidget):
         self._show_old.toggled.connect(lambda v: config.set("show_old_versions", v))
         behav_layout.addWidget(self._show_old)
 
+        self._dark_mode = QCheckBox("Dark mode")
+        self._dark_mode.setChecked(config.get("dark_mode", False))
+        self._dark_mode.toggled.connect(self._on_dark_mode_toggled)
+        behav_layout.addWidget(self._dark_mode)
+
+        # CurseForge API key
+        cf_lbl = QLabel("CurseForge API Key")
+        cf_lbl.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 600; color: {C['text_primary']}; margin-top: 8px;")
+        behav_layout.addWidget(cf_lbl)
+        cf_hint = QLabel("Required for CurseForge mod/modpack search. Get a key at console.curseforge.com.")
+        cf_hint.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        cf_hint.setWordWrap(True)
+        behav_layout.addWidget(cf_hint)
+        self._cf_key_input = QLineEdit()
+        self._cf_key_input.setPlaceholderText("Enter CurseForge API key…")
+        self._cf_key_input.setText(config.get("curseforge_api_key", ""))
+        self._cf_key_input.setEchoMode(QLineEdit.Password)
+        self._cf_key_input.setFixedHeight(38)
+        self._cf_key_input.textChanged.connect(lambda t: config.set("curseforge_api_key", t))
+        behav_layout.addWidget(self._cf_key_input)
+
         cl.addWidget(behav_card)
         cl.addSpacing(24)
 
@@ -466,7 +489,7 @@ class SettingsTab(QWidget):
         about_layout.setContentsMargins(20, 16, 20, 16)
         about_layout.setSpacing(8)
 
-        ver_lbl = QLabel("GenosLauncher v0.2.0  ·  Open Source  ·  MIT License")
+        ver_lbl = QLabel(f"GenosLauncher v{__version__}  ·  Open Source  ·  MIT License")
         ver_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
         about_layout.addWidget(ver_lbl)
 
@@ -527,3 +550,12 @@ class SettingsTab(QWidget):
         if p:
             self._w_spin.setValue(p[0])
             self._h_spin.setValue(p[1])
+
+    def _on_dark_mode_toggled(self, dark: bool) -> None:
+        config.set("dark_mode", dark)
+        apply_theme(dark)
+        # Force repaint of all widgets to pick up paintEvent color changes
+        app = QApplication.instance()
+        if app:
+            for widget in app.allWidgets():
+                widget.update()

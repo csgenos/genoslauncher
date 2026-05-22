@@ -1,6 +1,6 @@
 """
 GenosLauncher — Master stylesheet and design tokens.
-Light / white premium theme.
+Light / white premium theme, with optional dark mode.
 """
 
 from __future__ import annotations
@@ -34,6 +34,47 @@ COLORS: dict[str, str] = {
     'warning':          '#D97706',
     'success':          '#059669',
 }
+
+_LIGHT_COLORS: dict[str, str] = dict(COLORS)
+
+_DARK_COLORS: dict[str, str] = {
+    'bg_window':        '#0F1117',
+    'bg_primary':       '#1A1D27',
+    'bg_secondary':     '#13151F',
+    'bg_tertiary':      '#21253A',
+    'bg_sidebar':       '#12141E',
+    'bg_card':          '#1A1D27',
+    'bg_hover':         '#252940',
+    'bg_pressed':       '#2E334E',
+    'bg_input':         '#1A1D27',
+    'accent':           '#E2E8F0',
+    'accent_blue':      '#3B82F6',
+    'accent_blue_soft': '#1E293B',
+    'accent_green':     '#10B981',
+    'accent_green_soft':'#052E21',
+    'accent_red':       '#EF4444',
+    'accent_orange':    '#F59E0B',
+    'text_primary':     '#F1F5F9',
+    'text_secondary':   '#94A3B8',
+    'text_tertiary':    '#64748B',
+    'text_disabled':    '#334155',
+    'text_inverse':     '#0F172A',
+    'border':           '#252940',
+    'border_strong':    '#374060',
+    'border_focus':     '#3B82F6',
+    'danger':           '#EF4444',
+    'warning':          '#F59E0B',
+    'success':          '#10B981',
+}
+
+
+def apply_theme(dark: bool) -> None:
+    """Switch COLORS in-place and re-apply the global QSS stylesheet."""
+    from PySide6.QtWidgets import QApplication
+    COLORS.update(_DARK_COLORS if dark else _LIGHT_COLORS)
+    app = QApplication.instance()
+    if app:
+        app.setStyleSheet(get_stylesheet())
 
 FONT: dict[str, str] = {
     'xs':  '11px',

@@ -355,14 +355,18 @@ class LaunchWorker(QObject):
     def __init__(
         self,
         version_id: str,
-        username:   str = "Player",
-        parent:     Optional[QObject] = None,
+        username:    str = "Player",
+        parent:      Optional[QObject] = None,
         instance_id: str = "",
+        server_ip:   str = "",
+        server_port: str = "",
     ) -> None:
         super().__init__(parent)
-        self.version_id = version_id
-        self.username   = username
+        self.version_id  = version_id
+        self.username    = username
         self.instance_id = instance_id
+        self.server_ip   = server_ip
+        self.server_port = server_port
         self._thread:  Optional[threading.Thread]  = None
         self._process: Optional[subprocess.Popen]  = None
 
@@ -441,6 +445,9 @@ class LaunchWorker(QObject):
                 minecraft_directory=mc_dir,
                 options=options,
             )
+            if self.server_ip:
+                command.extend(["--server", self.server_ip,
+                                 "--port", self.server_port or "25565"])
             self.status_changed.emit("Starting Minecraft...")
             log_path = LOGS_DIR / f"minecraft-{self.version_id}.log"
             log_fh = open(log_path, "a", encoding="utf-8", errors="replace")

@@ -23,11 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QMenu
 
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton
 from ..components.version_card import VersionCard
+from ..dialogs.crash_dialog import CrashReportDialog
+from ..dialogs.screenshot_dialog import ScreenshotGalleryDialog
+from ..dialogs.backup_dialog import WorldBackupDialog
 from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
 from ...core.config import config
 from ...core.instances import (
@@ -255,23 +258,36 @@ class InstancesTab(QWidget):
                 )
             )
             layout.addWidget(launch)
-            edit = OutlineButton("Edit")
-            edit.setFixedWidth(64)
-            edit.clicked.connect(lambda _=False, i=instance: self._edit_instance(i))
-            layout.addWidget(edit)
-            clone = OutlineButton("Clone")
-            clone.setFixedWidth(68)
-            clone.clicked.connect(lambda _=False, i=instance: self._clone_instance(i))
-            layout.addWidget(clone)
-            repair = OutlineButton("Repair")
-            repair.setFixedWidth(72)
-            repair.clicked.connect(lambda _=False, i=instance: self._repair_instance(i))
-            layout.addWidget(repair)
-            remove = OutlineButton("Remove")
-            remove.setFixedWidth(84)
-            remove.clicked.connect(lambda _=False, i=instance: self._remove_instance(i))
-            layout.addWidget(remove)
+            more_btn = OutlineButton("⋯")
+            more_btn.setFixedWidth(38)
+            more_btn.clicked.connect(lambda _=False, i=instance, b=more_btn: self._show_instance_menu(i, b))
+            layout.addWidget(more_btn)
             self._instances_layout.addWidget(row)
+
+    def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
+        menu = QMenu(self)
+        menu.addAction("Edit", lambda: self._edit_instance(instance))
+        menu.addAction("Clone", lambda: self._clone_instance(instance))
+        menu.addAction("Repair", lambda: self._repair_instance(instance))
+        menu.addSeparator()
+        menu.addAction("View Crash Reports", lambda: self._view_crashes(instance))
+        menu.addAction("Screenshots", lambda: self._view_screenshots(instance))
+        menu.addAction("Backup Worlds", lambda: self._backup_worlds(instance))
+        menu.addSeparator()
+        menu.addAction("Remove", lambda: self._remove_instance(instance))
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _view_crashes(self, instance: dict) -> None:
+        dlg = CrashReportDialog(instance, self)
+        dlg.exec()
+
+    def _view_screenshots(self, instance: dict) -> None:
+        dlg = ScreenshotGalleryDialog(instance, self)
+        dlg.exec()
+
+    def _backup_worlds(self, instance: dict) -> None:
+        dlg = WorldBackupDialog(instance, self)
+        dlg.exec()
 
     def _create_instance(self) -> None:
         default_version = config.get("selected_version", "1.21.4") or "1.21.4"

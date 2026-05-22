@@ -1,8 +1,9 @@
-"""Modrinth mods browser, per-instance mod installer, and mod update checker."""
+"""Modrinth + CurseForge mods browser, per-instance mod installer, update checker, and mod profiles."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,8 +12,10 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -23,6 +26,7 @@ from ..styles import COLORS as C, FONT
 from ...core import modrinth as mr
 from ...core.config import APP_DIR, config
 from ...core.instances import list_instances, selected_instance, selected_instance_dir, set_selected_instance
+from ...core import curseforge as cf
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +65,79 @@ def _register_mod(instance_dir: Path, project: dict, version: dict, filename: st
         "installed_at":   datetime.now(timezone.utc).isoformat(),
     }
     _save_index(instance_dir, index)
+
+
+# ---------------------------------------------------------------------------
+# Mod profile helpers
+# ---------------------------------------------------------------------------
+
+def _profile_path(instance_dir: Path) -> Path:
+    return instance_dir / "mod_profiles.json"
+
+
+def _load_profiles(instance_dir: Path) -> dict:
+    p = _profile_path(instance_dir)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # Auto-detect mods in mods/ as the Default profile
+    mods_dir = instance_dir / "mods"
+    mods = [f.name for f in mods_dir.iterdir() if f.suffix == ".jar"] if mods_dir.exists() else []
+    return {"active": "Default", "profiles": {"Default": mods}}
+
+
+def _save_profiles(instance_dir: Path, data: dict) -> None:
+    _profile_path(instance_dir).write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _switch_profile(instance_dir: Path, new_profile: str) -> None:
+    data = _load_profiles(instance_dir)
+    if new_profile not in data["profiles"]:
+        return
+    mods_dir     = instance_dir / "mods"
+    disabled_dir = instance_dir / ".disabled_mods"
+    mods_dir.mkdir(exist_ok=True)
+    disabled_dir.mkdir(exist_ok=True)
+
+    enabled_set = set(data["profiles"][new_profile])
+
+    # Disable mods not in new profile
+    for f in list(mods_dir.iterdir()):
+        if f.suffix == ".jar" and f.name not in enabled_set:
+            shutil.move(str(f), str(disabled_dir / f.name))
+
+    # Enable mods in new profile that are disabled
+    for f in list(disabled_dir.iterdir()):
+        if f.suffix == ".jar" and f.name in enabled_set:
+            shutil.move(str(f), str(mods_dir / f.name))
+
+    data["active"] = new_profile
+    _save_profiles(instance_dir, data)
+
+
+# ---------------------------------------------------------------------------
+# CurseForge search worker
+# ---------------------------------------------------------------------------
+
+class CFSearchWorker(QObject):
+    results_ready = Signal(list, int)
+    error = Signal(str)
+
+    def __init__(self, query: str, game_version: str) -> None:
+        super().__init__()
+        self.query = query
+        self.game_version = game_version
+
+    def run(self) -> None:
+        try:
+            hits, total = cf.search_mods(self.query, self.game_version)
+            self.results_ready.emit(hits, total)
+        except cf.CurseForgeError as exc:
+            self.error.emit(str(exc))
 
 
 class ModSearchWorker(QObject):
@@ -318,7 +395,7 @@ class ModsTab(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(40, 28, 40, 28)
-        root.setSpacing(18)
+        root.setSpacing(14)
 
         header = QHBoxLayout()
         title = QLabel("Mods")
@@ -349,9 +426,40 @@ class ModsTab(QWidget):
         header.addWidget(self._instance_combo)
         root.addLayout(header)
 
+        # Source toggle (Modrinth | CurseForge)
+        src_row = QHBoxLayout()
+        src_lbl = QLabel("Source:")
+        src_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        src_row.addWidget(src_lbl)
+        self._source_combo = QComboBox()
+        self._source_combo.addItem("Modrinth", "modrinth")
+        self._source_combo.addItem("CurseForge", "curseforge")
+        self._source_combo.setFixedSize(140, 30)
+        self._source_combo.currentIndexChanged.connect(lambda _: self._search_timer.start(200))
+        src_row.addWidget(self._source_combo)
+        src_row.addStretch()
+
+        # Mod profile row
+        prof_lbl = QLabel("Profile:")
+        prof_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        src_row.addWidget(prof_lbl)
+        self._profile_combo = QComboBox()
+        self._profile_combo.setFixedSize(160, 30)
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        src_row.addWidget(self._profile_combo)
+        new_prof_btn = QPushButton("+ New")
+        new_prof_btn.setFixedSize(56, 28)
+        new_prof_btn.clicked.connect(self._new_profile)
+        src_row.addWidget(new_prof_btn)
+        del_prof_btn = QPushButton("✕")
+        del_prof_btn.setFixedSize(28, 28)
+        del_prof_btn.clicked.connect(self._delete_profile)
+        src_row.addWidget(del_prof_btn)
+        root.addLayout(src_row)
+
         search_row = QHBoxLayout()
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Search mods on Modrinth...")
+        self._search_box.setPlaceholderText("Search mods…")
         self._search_box.setFixedHeight(38)
         self._search_box.textChanged.connect(lambda _: self._search_timer.start(400))
         search_row.addWidget(self._search_box)
@@ -407,7 +515,72 @@ class ModsTab(QWidget):
             self._instance_combo.addItem("Default Minecraft folder", "")
         self._instance_combo.blockSignals(False)
         self._populate_versions()
+        self._refresh_profiles()
         self._execute_search()
+
+    def _refresh_profiles(self) -> None:
+        instance = selected_instance()
+        if not instance:
+            self._profile_combo.setEnabled(False)
+            return
+        instance_dir = Path(instance.get("directory", ""))
+        data = _load_profiles(instance_dir)
+        self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        for name in data.get("profiles", {}).keys():
+            self._profile_combo.addItem(name)
+        active = data.get("active", "Default")
+        idx = self._profile_combo.findText(active)
+        if idx >= 0:
+            self._profile_combo.setCurrentIndex(idx)
+        self._profile_combo.setEnabled(True)
+        self._profile_combo.blockSignals(False)
+
+    def _on_profile_changed(self, _index: int) -> None:
+        instance = selected_instance()
+        if not instance:
+            return
+        new_profile = self._profile_combo.currentText()
+        if not new_profile:
+            return
+        try:
+            _switch_profile(Path(instance.get("directory", "")), new_profile)
+            self._status.setText(f"Switched to profile: {new_profile}")
+        except Exception as exc:
+            self._status.setText(f"Profile switch failed: {exc}")
+
+    def _new_profile(self) -> None:
+        instance = selected_instance()
+        if not instance:
+            return
+        name, ok = QInputDialog.getText(None, "New Mod Profile", "Profile name:")
+        if not ok or not name.strip():
+            return
+        instance_dir = Path(instance.get("directory", ""))
+        data = _load_profiles(instance_dir)
+        mods_dir = instance_dir / "mods"
+        current_mods = [f.name for f in mods_dir.iterdir() if f.suffix == ".jar"] if mods_dir.exists() else []
+        data["profiles"][name.strip()] = list(current_mods)
+        _save_profiles(instance_dir, data)
+        self._refresh_profiles()
+        self._status.setText(f"Created profile: {name.strip()}")
+
+    def _delete_profile(self) -> None:
+        instance = selected_instance()
+        if not instance:
+            return
+        name = self._profile_combo.currentText()
+        if name == "Default":
+            QMessageBox.warning(None, "Cannot Delete", "The Default profile cannot be deleted.")
+            return
+        instance_dir = Path(instance.get("directory", ""))
+        data = _load_profiles(instance_dir)
+        data["profiles"].pop(name, None)
+        if data.get("active") == name:
+            data["active"] = "Default"
+        _save_profiles(instance_dir, data)
+        self._refresh_profiles()
+        self._status.setText(f"Deleted profile: {name}")
 
     def _populate_versions(self) -> None:
         current = selected_instance()
@@ -425,11 +598,13 @@ class ModsTab(QWidget):
     def _on_instance_changed(self, index: int) -> None:
         set_selected_instance(self._instance_combo.itemData(index) or "")
         self._populate_versions()
+        self._refresh_profiles()
         self._execute_search()
 
     def _execute_search(self) -> None:
         query = self._search_box.text().strip() if hasattr(self, "_search_box") else ""
         game_version = self._version_filter.currentData() if hasattr(self, "_version_filter") else ""
+        source = self._source_combo.currentData() if hasattr(self, "_source_combo") else "modrinth"
         self._status.setText("Searching mods...")
         while self._results.count() > 1:
             item = self._results.takeAt(0)
@@ -437,7 +612,10 @@ class ModsTab(QWidget):
                 item.widget().deleteLater()
 
         thread = QThread(self)
-        worker = ModSearchWorker(query, game_version)
+        if source == "curseforge":
+            worker = CFSearchWorker(query, game_version)
+        else:
+            worker = ModSearchWorker(query, game_version)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.results_ready.connect(self._on_results)

@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, QCoreApplication, QDialog, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from src._version import __version__
 from src.core.config import LOGS_DIR, config
 from src.core.logging_setup import setup_logging
 
@@ -63,7 +64,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("GenosLauncher")
     app.setApplicationDisplayName("GenosLauncher")
-    app.setApplicationVersion("0.2.0")
+    app.setApplicationVersion(__version__)
     app.setOrganizationName("GenosLauncher")
 
     font = QFont("Segoe UI", 10)
@@ -75,6 +76,10 @@ def main() -> int:
         app.setWindowIcon(QIcon(icon_path))
     else:
         app.setWindowIcon(_fallback_icon())
+
+    # Apply saved theme before any windows open
+    from src.ui.styles import apply_theme
+    apply_theme(config.get("dark_mode", False))
 
     # ── Splash screen ────────────────────────────────────────────────────
     from src.ui.splash_screen import SplashScreen

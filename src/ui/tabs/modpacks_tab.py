@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
 from ...core import modrinth as mr
+from ...core import curseforge as cf
 from ...core.instances import create_modpack_instance
 from ...core.launcher import install_minecraft_base, install_loader
 
@@ -46,24 +47,30 @@ class SearchWorker(QObject):
     results_ready = Signal(list, int)   # hits, total
     error = Signal(str)
 
-    def __init__(self, query: str, project_type: str, game_version: str, offset: int = 0) -> None:
+    def __init__(self, query: str, project_type: str, game_version: str, offset: int = 0,
+                 source: str = "modrinth") -> None:
         super().__init__()
         self.query = query
         self.project_type = project_type
         self.game_version = game_version
         self.offset = offset
+        self.source = source
 
     def run(self) -> None:
         try:
-            hits, total = mr.search_projects(
-                query=self.query,
-                project_type=self.project_type,
-                game_version=self.game_version,
-                limit=18,
-                offset=self.offset,
-            )
-            self.results_ready.emit(hits, total)
-        except mr.ModrinthError as exc:
+            if self.source == "curseforge":
+                hits, total = cf.search_modpacks(self.query, self.game_version)
+                self.results_ready.emit(hits, total)
+            else:
+                hits, total = mr.search_projects(
+                    query=self.query,
+                    project_type=self.project_type,
+                    game_version=self.game_version,
+                    limit=18,
+                    offset=self.offset,
+                )
+                self.results_ready.emit(hits, total)
+        except (mr.ModrinthError, cf.CurseForgeError) as exc:
             self.error.emit(str(exc))
 
 
@@ -351,17 +358,15 @@ class ModpacksTab(QWidget):
         title.setStyleSheet(f"font-size: {FONT['2xl']}; font-weight: 800; color: {C['text_primary']};")
         header_row.addWidget(title)
         header_row.addStretch()
-        source_badge = QLabel("Powered by Modrinth")
-        source_badge.setStyleSheet(f"""
-            color: {C["success"]};
-            background: {C["accent_green_soft"]};
-            border: 1px solid #6EE7B7;
-            border-radius: 6px;
-            padding: 4px 10px;
-            font-size: {FONT["xs"]};
-            font-weight: 600;
-        """)
-        header_row.addWidget(source_badge)
+        src_lbl = QLabel("Source:")
+        src_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        header_row.addWidget(src_lbl)
+        self._source_combo = QComboBox()
+        self._source_combo.addItem("Modrinth", "modrinth")
+        self._source_combo.addItem("CurseForge", "curseforge")
+        self._source_combo.setFixedSize(140, 32)
+        self._source_combo.currentIndexChanged.connect(self._on_search_changed)
+        header_row.addWidget(self._source_combo)
         root.addLayout(header_row)
 
         sub = QLabel("Browse and install Minecraft modpacks in one click.")
@@ -442,12 +447,13 @@ class ModpacksTab(QWidget):
         query = self._search_box.text().strip()
         ver_text = self._version_filter.currentText()
         game_version = "" if ver_text.startswith("Any") else ver_text
+        source = self._source_combo.currentData() if hasattr(self, "_source_combo") else "modrinth"
 
         self._status_label.setText("Searching…")
         self._clear_results()
 
         thread = QThread(self)
-        worker = SearchWorker(query, "modpack", game_version)
+        worker = SearchWorker(query, "modpack", game_version, source=source)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.results_ready.connect(self._on_results)

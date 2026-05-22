@@ -87,7 +87,8 @@ _KEYRING_ACCOUNT = "ms_account_json"
 _FALLBACK_STORE  = APP_DIR / ".auth_store"
 
 _HTTP = _req.Session()
-_HTTP.headers.update({"User-Agent": "GenosLauncher/0.2.0"})
+from .._version import __version__ as _VERSION
+_HTTP.headers.update({"User-Agent": f"GenosLauncher/{_VERSION}"})
 
 
 # ---------------------------------------------------------------------------

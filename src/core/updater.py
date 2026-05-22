@@ -8,9 +8,10 @@ from typing import Callable, Optional
 
 import requests
 
-REPO            = "csgenos/genoslauncher"
-CURRENT_VERSION = "0.2.0"
-_API_URL        = f"https://api.github.com/repos/{REPO}/releases/latest"
+from .._version import __version__ as CURRENT_VERSION
+
+REPO     = "csgenos/genoslauncher"
+_API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 
 
 def _parse_semver(tag: str) -> tuple[int, ...]:

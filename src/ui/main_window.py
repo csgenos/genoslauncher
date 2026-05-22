@@ -34,6 +34,7 @@ from .tabs.modpacks_tab import ModpacksTab
 from .tabs.shaders_tab import ShadersTab
 from .tabs.settings_tab import SettingsTab
 from .tabs.accounts_tab import AccountsTab
+from .tabs.servers_tab import ServersTab
 from .login_dialog import LoginDialog
 from ..core.auth import auth_manager
 from ..core.config import config
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
         self._shaders_tab   = ShadersTab()
         self._accounts_tab  = AccountsTab()
         self._settings_tab  = SettingsTab()
+        self._servers_tab   = ServersTab()
 
         self._tabs: dict[str, QWidget] = {
             "home":      self._home_tab,
@@ -152,6 +154,7 @@ class MainWindow(QMainWindow):
             "mods":      self._mods_tab,
             "modpacks":  self._modpacks_tab,
             "shaders":   self._shaders_tab,
+            "servers":   self._servers_tab,
             "accounts":  self._accounts_tab,
             "settings":  self._settings_tab,
         }
@@ -245,6 +248,7 @@ class MainWindow(QMainWindow):
         self._instances_tab.launch_requested.connect(self._on_launch_requested)
         self._instances_tab.instance_launch_requested.connect(self._on_instance_launch_requested)
         self._instances_tab.install_requested.connect(self._on_install_requested)
+        self._servers_tab.server_launch_requested.connect(self._on_server_launch_requested)
 
     # ------------------------------------------------------------------
     # Auth helpers
@@ -309,7 +313,10 @@ class MainWindow(QMainWindow):
     def _on_instance_launch_requested(self, version_id: str, instance_id: str) -> None:
         self._start_launch(version_id, instance_id)
 
-    def _start_launch(self, version_id: str, instance_id: str) -> None:
+    def _on_server_launch_requested(self, version_id: str, instance_id: str, server_ip: str, server_port: str) -> None:
+        self._start_launch(version_id, instance_id, server_ip=server_ip, server_port=server_port)
+
+    def _start_launch(self, version_id: str, instance_id: str, server_ip: str = "", server_port: str = "") -> None:
         if self._launch_worker is not None:
             return
 
@@ -320,7 +327,12 @@ class MainWindow(QMainWindow):
             username = auth_manager.username
         else:
             username = config.get("last_account") or "Player"
-        self._launch_worker = LaunchWorker(version_id, username, self, instance_id=instance_id)
+        self._launch_worker = LaunchWorker(
+            version_id, username, self,
+            instance_id=instance_id,
+            server_ip=server_ip,
+            server_port=server_port,
+        )
         self._launch_worker.status_changed.connect(self._on_launch_status)
         self._launch_worker.process_started.connect(self._on_process_started)
         self._launch_worker.process_ended.connect(self._on_process_ended)

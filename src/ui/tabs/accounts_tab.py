@@ -5,8 +5,12 @@ Integrated with auth_manager for real PKCE login flow.
 
 from __future__ import annotations
 
+import base64
+import json
+import threading
+
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QImage
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,11 +21,89 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import requests
+
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton, PrimaryButton
 from ..login_dialog import LoginDialog
 from ...core.auth import auth_manager
 from ...core.config import config
+
+
+# ---------------------------------------------------------------------------
+# Skin face widget — fetches face from Mojang skin API asynchronously
+# ---------------------------------------------------------------------------
+
+class SkinWidget(QLabel):
+    """Displays the 8×8 face crop from the player's Minecraft skin, scaled up."""
+
+    _FACE_SIZE = 56
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._FACE_SIZE, self._FACE_SIZE)
+        self.setAlignment(Qt.AlignCenter)
+        self._set_placeholder()
+
+    def _set_placeholder(self) -> None:
+        self.setStyleSheet(f"""
+            background: {C["bg_tertiary"]};
+            border: 1px solid {C["border"]};
+            border-radius: 8px;
+            font-size: 20px;
+        """)
+        self.setText("?")
+        self.setPixmap(QPixmap())
+
+    def load_for(self, username: str) -> None:
+        """Start async fetch. Safe to call from UI thread."""
+        self._set_placeholder()
+        threading.Thread(target=self._fetch, args=(username,), daemon=True).start()
+
+    def _fetch(self, username: str) -> None:
+        try:
+            resp = requests.get(
+                f"https://api.mojang.com/users/profiles/minecraft/{username}",
+                timeout=5,
+            )
+            if not resp.ok:
+                return
+            uid = resp.json().get("id", "")
+            if not uid:
+                return
+            prof = requests.get(
+                f"https://sessionserver.mojang.com/session/minecraft/profile/{uid}",
+                timeout=5,
+            ).json()
+            props = prof.get("properties", [])
+            if not props:
+                return
+            decoded = json.loads(base64.b64decode(props[0]["value"]).decode())
+            skin_url = decoded.get("textures", {}).get("SKIN", {}).get("url", "")
+            if not skin_url:
+                return
+            img_data = requests.get(skin_url, timeout=5).content
+            img = QImage.fromData(img_data)
+            if img.isNull():
+                return
+            # Crop 8×8 face (head layer) starting at (8, 8)
+            face = img.copy(8, 8, 8, 8)
+            px = QPixmap.fromImage(face).scaled(
+                self._FACE_SIZE, self._FACE_SIZE,
+                Qt.KeepAspectRatio, Qt.FastTransformation,
+            )
+            QTimer.singleShot(0, lambda: self._apply_pixmap(px))
+        except Exception:
+            pass
+
+    def _apply_pixmap(self, px: QPixmap) -> None:
+        self.setStyleSheet(f"""
+            background: transparent;
+            border: 1px solid {C["border"]};
+            border-radius: 8px;
+        """)
+        self.setText("")
+        self.setPixmap(px)
 
 
 # ---------------------------------------------------------------------------
@@ -227,17 +309,21 @@ class AccountsTab(QWidget):
         ms_h.setContentsMargins(20, 0, 20, 0)
         ms_h.setSpacing(18)
 
-        m_icon = QLabel("M")
-        m_icon.setFixedSize(52, 52)
-        m_icon.setAlignment(Qt.AlignCenter)
-        m_icon.setStyleSheet("""
+        self._ms_icon = QLabel("M")
+        self._ms_icon.setFixedSize(52, 52)
+        self._ms_icon.setAlignment(Qt.AlignCenter)
+        self._ms_icon.setStyleSheet("""
             background: #0078D4;
             color: white;
             border-radius: 10px;
             font-size: 22px;
             font-weight: 900;
         """)
-        ms_h.addWidget(m_icon)
+        ms_h.addWidget(self._ms_icon)
+
+        self._skin_widget = SkinWidget(card)
+        self._skin_widget.setVisible(False)
+        ms_h.addWidget(self._skin_widget)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(3)
@@ -267,10 +353,15 @@ class AccountsTab(QWidget):
             self._ms_title.setText(f"Active: {auth_manager.username}")
             self._ms_sub.setText("Microsoft account linked · Minecraft online play enabled")
             self._ms_btn.setText("Sign Out")
+            self._ms_icon.setVisible(False)
+            self._skin_widget.setVisible(True)
+            self._skin_widget.load_for(auth_manager.username)
         else:
             self._ms_title.setText("Sign in with Microsoft")
             self._ms_sub.setText("Required for online multiplayer. Links your Xbox / Minecraft account.")
             self._ms_btn.setText("Sign In")
+            self._ms_icon.setVisible(True)
+            self._skin_widget.setVisible(False)
         self._add_ms_btn.setVisible(auth_manager.is_logged_in)
 
         # Rebuild accounts list

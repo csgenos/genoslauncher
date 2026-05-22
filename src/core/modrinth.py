@@ -29,7 +29,8 @@ from typing import Any, Callable, Optional
 import requests
 
 BASE_URL   = "https://api.modrinth.com/v2"
-USER_AGENT = "GenosLauncher/0.2.0 (github.com/csgenos/genoslauncher)"
+from .._version import __version__ as _VERSION
+USER_AGENT = f"GenosLauncher/{_VERSION} (github.com/csgenos/genoslauncher)"
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT})

@@ -34,6 +34,7 @@ from ...core.config import config
 import urllib.request
 import json as _json
 import re as _re
+from ..._version import __version__ as _VER
 
 _FALLBACK_VERSIONS = ["1.21.4", "1.20.1", "1.8.9"]
 
@@ -66,7 +67,7 @@ class _NewsLoader(QObject):
         try:
             req = urllib.request.Request(
                 "https://api.github.com/repos/csgenos/genoslauncher/releases?per_page=3",
-                headers={"User-Agent": "GenosLauncher/0.2.0", "Accept": "application/vnd.github+json"},
+                headers={"User-Agent": f"GenosLauncher/{_VER}", "Accept": "application/vnd.github+json"},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 releases = _json.loads(resp.read().decode())
