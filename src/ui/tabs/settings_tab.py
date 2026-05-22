@@ -461,6 +461,24 @@ class SettingsTab(QWidget):
         self._dark_mode.toggled.connect(self._on_dark_mode_toggled)
         behav_layout.addWidget(self._dark_mode)
 
+        # Azure Client ID (Microsoft sign-in)
+        az_lbl = QLabel("Microsoft Authentication — Azure Client ID")
+        az_lbl.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 600; color: {C['text_primary']}; margin-top: 8px;")
+        behav_layout.addWidget(az_lbl)
+        az_hint = QLabel(
+            "Paste your Azure App's Application (client) ID here to enable Microsoft sign-in. "
+            "Register a free app at portal.azure.com — see README for the full walkthrough."
+        )
+        az_hint.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        az_hint.setWordWrap(True)
+        behav_layout.addWidget(az_hint)
+        self._az_client_input = QLineEdit()
+        self._az_client_input.setPlaceholderText("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+        self._az_client_input.setText(config.get("azure_client_id", ""))
+        self._az_client_input.setFixedHeight(38)
+        self._az_client_input.textChanged.connect(lambda t: config.set("azure_client_id", t.strip()))
+        behav_layout.addWidget(self._az_client_input)
+
         # CurseForge API key
         cf_lbl = QLabel("CurseForge API Key")
         cf_lbl.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 600; color: {C['text_primary']}; margin-top: 8px;")

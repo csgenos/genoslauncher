@@ -727,8 +727,10 @@ class AuthManager:
                 ms_tokens["access_token"],
                 ms_tokens.get("refresh_token", ""),
             )
+            _store_account(account)
             _store_account_for(account)
             _register_username(account["name"])
+            config.update({"active_ms_username": account["name"]})
             on_success(account)
         except AuthError as exc:
             on_error(str(exc))
