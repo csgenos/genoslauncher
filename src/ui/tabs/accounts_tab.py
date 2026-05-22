@@ -1,6 +1,5 @@
 """
-Accounts tab — Microsoft login + offline account management.
-Integrated with auth_manager for real PKCE login flow.
+Accounts tab - Microsoft login plus offline account management.
 """
 
 from __future__ import annotations
@@ -8,8 +7,9 @@ from __future__ import annotations
 import base64
 import json
 
+import requests
 from PySide6.QtCore import QObject, QThread, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QImage
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -20,19 +20,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import requests
-
-from ..styles import COLORS as C, FONT
-from ..components.animated_button import OutlineButton, PrimaryButton
-from ..login_dialog import LoginDialog
 from ...core.auth import auth_manager, credential_storage_warning
 from ...core.config import config
 from ...core.validators import validate_offline_username
+from ..components.animated_button import OutlineButton, PrimaryButton
+from ..login_dialog import LoginDialog
+from ..styles import COLORS as C, FONT
 
-
-# ---------------------------------------------------------------------------
-# Skin face widget — fetches face from Mojang skin API asynchronously
-# ---------------------------------------------------------------------------
 
 class _SkinFetchWorker(QObject):
     image_ready = Signal(int, QImage)
@@ -75,10 +69,11 @@ class _SkinFetchWorker(QObject):
             img = QImage.fromData(img_data)
             if img.isNull() or img.width() > 4096 or img.height() > 4096:
                 return
-            face = img.copy(8, 8, 8, 8)
-            face = face.scaled(
-                self._face_size, self._face_size,
-                Qt.KeepAspectRatio, Qt.FastTransformation,
+            face = img.copy(8, 8, 8, 8).scaled(
+                self._face_size,
+                self._face_size,
+                Qt.KeepAspectRatio,
+                Qt.FastTransformation,
             )
             self.image_ready.emit(self._generation, face)
         except Exception:
@@ -88,8 +83,6 @@ class _SkinFetchWorker(QObject):
 
 
 class SkinWidget(QLabel):
-    """Displays the 8×8 face crop from the player's Minecraft skin, scaled up."""
-
     _FACE_SIZE = 56
 
     def __init__(self, parent=None) -> None:
@@ -102,17 +95,18 @@ class SkinWidget(QLabel):
         self._set_placeholder()
 
     def _set_placeholder(self) -> None:
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             background: {C["bg_tertiary"]};
             border: 1px solid {C["border"]};
             border-radius: 8px;
             font-size: 20px;
-        """)
+            """
+        )
         self.setText("?")
         self.setPixmap(QPixmap())
 
     def load_for(self, username: str) -> None:
-        """Start async fetch. Safe to call from UI thread."""
         self._set_placeholder()
         self._skin_generation += 1
         generation = self._skin_generation
@@ -131,7 +125,15 @@ class SkinWidget(QLabel):
 
     def _on_image_ready(self, generation: int, image: QImage) -> None:
         if generation == self._skin_generation:
-            self._apply_image(image)
+            self.setStyleSheet(
+                f"""
+                background: transparent;
+                border: 1px solid {C["border"]};
+                border-radius: 8px;
+                """
+            )
+            self.setText("")
+            self.setPixmap(QPixmap.fromImage(image))
 
     def _cleanup_skin_worker(self, thread: QThread, worker: _SkinFetchWorker) -> None:
         if thread in self._skin_threads:
@@ -139,23 +141,8 @@ class SkinWidget(QLabel):
         if worker in self._skin_workers:
             self._skin_workers.remove(worker)
 
-    def _apply_image(self, image: QImage) -> None:
-        self.setStyleSheet(f"""
-            background: transparent;
-            border: 1px solid {C["border"]};
-            border-radius: 8px;
-        """)
-        self.setText("")
-        self.setPixmap(QPixmap.fromImage(image))
-
-
-# ---------------------------------------------------------------------------
-# Account avatar (circular initials badge)
-# ---------------------------------------------------------------------------
 
 class AccountAvatar(QWidget):
-    """Circular avatar with user initials."""
-
     def __init__(self, initials: str, size: int = 44, parent=None) -> None:
         super().__init__(parent)
         self._initials = initials[:2].upper()
@@ -169,19 +156,12 @@ class AccountAvatar(QWidget):
         painter.setPen(QColor(C["border_strong"]))
         painter.drawEllipse(1, 1, w - 2, h - 2)
         painter.setPen(QColor(C["text_secondary"]))
-        font = QFont("Segoe UI", max(1, w // 3), QFont.Weight.DemiBold)
-        painter.setFont(font)
+        painter.setFont(QFont("Segoe UI", max(1, w // 3), QFont.Weight.DemiBold))
         painter.drawText(0, 0, w, h, Qt.AlignCenter, self._initials)
         painter.end()
 
 
-# ---------------------------------------------------------------------------
-# Account row card
-# ---------------------------------------------------------------------------
-
 class AccountRow(QFrame):
-    """A single account entry card."""
-
     def __init__(
         self,
         username: str,
@@ -195,21 +175,21 @@ class AccountRow(QFrame):
         self.setObjectName("AccountRow")
         self.setFixedHeight(72)
         border_color = C["accent_blue"] if is_active else C["border"]
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             #AccountRow {{
                 background: {C["bg_primary"]};
                 border: 1px solid {border_color};
                 border-radius: 10px;
             }}
-        """)
+            """
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(14)
-
         initials = "".join(w[0] for w in username.split()[:2]) or "?"
-        avatar = AccountAvatar(initials, 40, self)
-        layout.addWidget(avatar)
+        layout.addWidget(AccountAvatar(initials, 40, self))
 
         info = QVBoxLayout()
         info.setSpacing(2)
@@ -223,8 +203,9 @@ class AccountRow(QFrame):
         layout.addStretch()
 
         if is_active:
-            badge = QLabel("● Active")
-            badge.setStyleSheet(f"""
+            badge = QLabel("Active")
+            badge.setStyleSheet(
+                f"""
                 color: {C["success"]};
                 background: {C["accent_green_soft"]};
                 border: 1px solid #6EE7B7;
@@ -232,7 +213,8 @@ class AccountRow(QFrame):
                 padding: 2px 10px;
                 font-size: {FONT["xs"]};
                 font-weight: 700;
-            """)
+                """
+            )
             layout.addWidget(badge)
         else:
             select_btn = OutlineButton("Select")
@@ -241,20 +223,14 @@ class AccountRow(QFrame):
                 select_btn.clicked.connect(on_select)
             layout.addWidget(select_btn)
 
-        remove_btn = OutlineButton("✕")
+        remove_btn = OutlineButton("X")
         remove_btn.setFixedSize(32, 30)
         if on_remove:
             remove_btn.clicked.connect(on_remove)
         layout.addWidget(remove_btn)
 
 
-# ---------------------------------------------------------------------------
-# Accounts Tab
-# ---------------------------------------------------------------------------
-
 class AccountsTab(QWidget):
-    """Accounts management tab with live auth state."""
-
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._offline_accounts: list[str] = list(config.get("offline_accounts", []))
@@ -266,7 +242,6 @@ class AccountsTab(QWidget):
         self._root.setContentsMargins(40, 28, 40, 28)
         self._root.setSpacing(20)
 
-        # Page header
         title = QLabel("Accounts")
         title.setStyleSheet(f"font-size: {FONT['2xl']}; font-weight: 800; color: {C['text_primary']};")
         self._root.addWidget(title)
@@ -274,11 +249,9 @@ class AccountsTab(QWidget):
         sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-top: -12px;")
         self._root.addWidget(sub)
 
-        # Microsoft login card
         self._ms_card = self._build_ms_card()
         self._root.addWidget(self._ms_card)
 
-        # Add another MS account
         add_ms_row = QHBoxLayout()
         add_ms_lbl = QLabel("Have multiple Minecraft accounts?")
         add_ms_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
@@ -290,7 +263,6 @@ class AccountsTab(QWidget):
         add_ms_row.addWidget(self._add_ms_btn)
         self._root.addLayout(add_ms_row)
 
-        # Offline account row
         offline_row = QHBoxLayout()
         offline_lbl = QLabel("Or add an offline account:")
         offline_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
@@ -302,40 +274,36 @@ class AccountsTab(QWidget):
         offline_row.addWidget(add_offline)
         self._root.addLayout(offline_row)
 
-        # Divider
         div = QFrame()
         div.setFrameShape(QFrame.HLine)
         div.setFixedHeight(1)
         div.setStyleSheet(f"background: {C['border']}; border: none;")
         self._root.addWidget(div)
 
-        # Accounts list title
         self._root.addWidget(_lbl("Your Accounts", FONT["lg"], C["text_primary"], bold=True))
-
-        # Dynamic accounts area
         self._accounts_container = QWidget()
         self._accounts_layout = QVBoxLayout(self._accounts_container)
         self._accounts_layout.setContentsMargins(0, 0, 0, 0)
         self._accounts_layout.setSpacing(10)
         self._root.addWidget(self._accounts_container)
-
         self._root.addStretch()
 
-        # Privacy note
         note = QLabel(
-            "GenosLauncher stores account tokens locally on your device "
-            "and never shares them with third parties."
+            "GenosLauncher stores account tokens locally on your device and never shares them with third parties."
         )
-        note.setStyleSheet(f"""
+        note.setStyleSheet(
+            f"""
             color: {C["text_tertiary"]};
             font-size: {FONT["xs"]};
             background: {C["bg_secondary"]};
             border: 1px solid {C["border"]};
             border-radius: 8px;
             padding: 10px 14px;
-        """)
+            """
+        )
         note.setWordWrap(True)
         self._root.addWidget(note)
+
         warning = credential_storage_warning()
         if warning:
             warn = QLabel(warning)
@@ -347,13 +315,15 @@ class AccountsTab(QWidget):
         card = QFrame()
         card.setObjectName("MsCard")
         card.setFixedHeight(96)
-        card.setStyleSheet(f"""
+        card.setStyleSheet(
+            f"""
             #MsCard {{
                 background: {C["bg_primary"]};
                 border: 1px solid {C["border"]};
                 border-radius: 12px;
             }}
-        """)
+            """
+        )
         ms_h = QHBoxLayout(card)
         ms_h.setContentsMargins(20, 0, 20, 0)
         ms_h.setSpacing(18)
@@ -361,13 +331,15 @@ class AccountsTab(QWidget):
         self._ms_icon = QLabel("M")
         self._ms_icon.setFixedSize(52, 52)
         self._ms_icon.setAlignment(Qt.AlignCenter)
-        self._ms_icon.setStyleSheet("""
+        self._ms_icon.setStyleSheet(
+            """
             background: #0078D4;
             color: white;
             border-radius: 10px;
             font-size: 22px;
             font-weight: 900;
-        """)
+            """
+        )
         ms_h.addWidget(self._ms_icon)
 
         self._skin_widget = SkinWidget(card)
@@ -389,18 +361,12 @@ class AccountsTab(QWidget):
         self._ms_btn.setFixedSize(110, 38)
         self._ms_btn.clicked.connect(self._on_ms_action)
         ms_h.addWidget(self._ms_btn)
-
         return card
 
-    # ------------------------------------------------------------------
-    # State refresh
-    # ------------------------------------------------------------------
-
     def _refresh_state(self) -> None:
-        # Update Microsoft card
         if auth_manager.is_logged_in:
             self._ms_title.setText(f"Active: {auth_manager.username}")
-            self._ms_sub.setText("Microsoft account linked · Minecraft online play enabled")
+            self._ms_sub.setText("Microsoft account linked | Minecraft online play enabled")
             self._ms_btn.setText("Sign Out")
             self._ms_icon.setVisible(False)
             self._skin_widget.setVisible(True)
@@ -413,21 +379,19 @@ class AccountsTab(QWidget):
             self._skin_widget.setVisible(False)
         self._add_ms_btn.setVisible(auth_manager.is_logged_in)
 
-        # Rebuild accounts list
         while self._accounts_layout.count():
             item = self._accounts_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         active = config.get("last_account", "")
-
         active_ms = auth_manager.username if auth_manager.is_logged_in else ""
         for ms_name in auth_manager.list_ms_accounts():
-            is_active = (ms_name == active_ms)
+            is_active = ms_name == active_ms
             row = AccountRow(
                 ms_name,
-                "Microsoft · Online" if is_active else "Microsoft · Saved",
-                is_active=(ms_name == active and is_active) or (is_active and not active),
+                "Microsoft | Online" if is_active else "Microsoft | Saved",
+                is_active=is_active,
                 on_select=lambda n=ms_name: self._switch_ms_account(n),
                 on_remove=lambda n=ms_name: self._remove_ms_account(n),
             )
@@ -436,7 +400,7 @@ class AccountsTab(QWidget):
         for name in self._offline_accounts:
             row = AccountRow(
                 name,
-                "Offline · Unverified",
+                "Offline | Unverified",
                 is_active=(name == active and not auth_manager.is_logged_in),
                 on_select=lambda n=name: self._select_account(n),
                 on_remove=lambda n=name: self._remove_offline(n),
@@ -447,10 +411,6 @@ class AccountsTab(QWidget):
             empty = _lbl("No accounts added yet.", FONT["sm"], C["text_tertiary"])
             empty.setAlignment(Qt.AlignCenter)
             self._accounts_layout.addWidget(empty)
-
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
 
     def _on_ms_action(self) -> None:
         if auth_manager.is_logged_in:
@@ -487,15 +447,19 @@ class AccountsTab(QWidget):
 
     def _switch_ms_account(self, username: str) -> None:
         if auth_manager.switch_account(username):
+            config.update({"last_account": username})
             self._refresh_state()
         else:
-            QMessageBox.warning(self, "Switch Account",
-                                f"Could not load saved credentials for {username}.\n"
-                                "Please sign in again.")
+            QMessageBox.warning(
+                self,
+                "Switch Account",
+                f"Could not load saved credentials for {username}.\nPlease sign in again.",
+            )
 
     def _remove_ms_account(self, username: str) -> None:
         reply = QMessageBox.question(
-            self, "Remove Account",
+            self,
+            "Remove Account",
             f"Remove {username} from saved accounts?",
             QMessageBox.Yes | QMessageBox.No,
         )

@@ -1032,6 +1032,8 @@ class SetupWizard(QDialog):
                 existing.insert(0, name)
             updates["offline_accounts"] = existing
             updates["last_account"] = name
+        elif account.get("type") == "microsoft" and account.get("name"):
+            updates["last_account"] = account["name"]
         # Microsoft account is already stored in the keyring by auth_manager.
 
         config.update(updates)

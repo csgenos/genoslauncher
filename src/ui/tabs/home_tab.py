@@ -1,21 +1,15 @@
 """
-Home tab — launcher home screen.
-
-Fixes applied:
-  #1: Version picker populated from get_installed_versions() + get_available_versions()
-      off a background thread; installed versions shown first.
-  #1: Selected version persisted to config["selected_version"].
-  #1: Quick Play cards show real installed versions (fallback to popular stable releases).
+Home tab - launcher home screen.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import re as _re
 
-from PySide6.QtCore import Qt, QObject, QThread, Signal, QTimer
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QLinearGradient
-from PySide6.QtCore import QUrl
+import requests
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QLinearGradient, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -23,32 +17,35 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from ..styles import COLORS as C, FONT
-from ..components.animated_button import LaunchButton, OutlineButton
-from ..components.version_card import VersionCard
-from ..components.progress_widget import LaunchProgressPanel
-from ...core.launcher import get_available_versions, get_installed_versions
-from ...core.config import APP_DIR, config
-import re as _re
-import requests
 from ..._version import __version__ as _VER
+from ...core.config import APP_DIR, config
+from ...core.launcher import get_available_versions, get_installed_versions
+from ..components.animated_button import LaunchButton, OutlineButton
+from ..components.progress_widget import LaunchProgressPanel
+from ..components.version_card import VersionCard
+from ..styles import COLORS as C, FONT
 
 _STATIC_FALLBACK_VERSIONS = ["1.21.4", "1.20.1", "1.8.9"]
 _STATIC_FALLBACK_NEWS = [
-    ("GenosLauncher v0.2 Released",
-     "Modpack browser, shader management, and a complete premium UI redesign are now live.",
-     "2025-05-01"),
-    ("Modrinth Integration",
-     "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
-     "2025-04-20"),
-    ("Java Auto-Detection",
-     "The launcher now automatically detects installed Java versions and picks the best one.",
-     "2025-04-10"),
+    (
+        "GenosLauncher v0.2 Released",
+        "Modpack browser, shader management, and a complete premium UI redesign are now live.",
+        "2025-05-01",
+    ),
+    (
+        "Modrinth Integration",
+        "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
+        "2025-04-20",
+    ),
+    (
+        "Java Auto-Detection",
+        "The launcher now automatically detects installed Java versions and picks the best one.",
+        "2025-04-10",
+    ),
 ]
 _HOME_CACHE_FILE = APP_DIR / "cache" / "home_cache.json"
 
@@ -90,19 +87,19 @@ _FALLBACK_VERSIONS = _CACHED_VERSIONS or _STATIC_FALLBACK_VERSIONS
 _FALLBACK_NEWS = _CACHED_NEWS or _STATIC_FALLBACK_NEWS
 
 
-# ---------------------------------------------------------------------------
-# Background version loader
-# ---------------------------------------------------------------------------
-
 class _VersionLoader(QObject):
-    done = Signal(list, list)   # available_versions, installed_ids
+    done = Signal(list, list)
 
     def run(self) -> None:
         snapshots = config.get("show_snapshots", False)
         old = config.get("show_old_versions", False)
         try:
             available = get_available_versions(include_snapshots=snapshots, include_old=old)
-            release_ids = [v.get("id", "") for v in available if isinstance(v, dict) and v.get("type") == "release"]
+            release_ids = [
+                v.get("id", "")
+                for v in available
+                if isinstance(v, dict) and v.get("type") == "release"
+            ]
             release_ids = [v for v in release_ids if v][:6]
             if release_ids:
                 _write_home_cache(versions=release_ids)
@@ -116,16 +113,13 @@ class _VersionLoader(QObject):
 
 
 class _NewsLoader(QObject):
-    done = Signal(list)   # list of (title, body, date) tuples
+    done = Signal(list)
 
     def run(self) -> None:
         try:
             resp = requests.get(
                 "https://api.github.com/repos/csgenos/genoslauncher/releases?per_page=3",
-                headers={
-                    "User-Agent": f"GenosLauncher/{_VER}",
-                    "Accept": "application/vnd.github+json",
-                },
+                headers={"User-Agent": f"GenosLauncher/{_VER}", "Accept": "application/vnd.github+json"},
                 timeout=5,
             )
             resp.raise_for_status()
@@ -146,10 +140,6 @@ class _NewsLoader(QObject):
             self.done.emit(_FALLBACK_NEWS)
 
 
-# ---------------------------------------------------------------------------
-# Hero background
-# ---------------------------------------------------------------------------
-
 class HeroWidget(QWidget):
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
@@ -160,21 +150,19 @@ class HeroWidget(QWidget):
         painter.end()
 
 
-# ---------------------------------------------------------------------------
-# News card
-# ---------------------------------------------------------------------------
-
 class NewsItem(QFrame):
     def __init__(self, title: str, body: str, date: str, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("NewsItem")
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             #NewsItem {{
                 background: {C["bg_primary"]};
                 border: 1px solid {C["border"]};
                 border-radius: 10px;
             }}
-        """)
+            """
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(6)
@@ -195,19 +183,7 @@ class NewsItem(QFrame):
         layout.addWidget(body_lbl)
 
 
-# ---------------------------------------------------------------------------
-# Home Tab
-# ---------------------------------------------------------------------------
-
 class HomeTab(QWidget):
-    """
-    Home screen of GenosLauncher.
-
-    Signals:
-        launch_requested(str)  — version ID to launch
-        install_requested(str) — version ID to install
-    """
-
     launch_requested = Signal(str)
     install_requested = Signal(str)
     view_all_requested = Signal()
@@ -217,7 +193,6 @@ class HomeTab(QWidget):
         self._selected_version: str = config.get("selected_version", "1.21.4") or "1.21.4"
         self._installed: list[str] = []
         self._available: list[dict] = []
-        self._load_thread: QThread | None = None
         self._threads: list[QThread] = []
         self._workers: list[QObject] = []
         self._quick_play_layout: QHBoxLayout | None = None
@@ -225,10 +200,6 @@ class HomeTab(QWidget):
         self._build_ui()
         QTimer.singleShot(0, self._load_versions)
         QTimer.singleShot(0, self._load_news)
-
-    # ------------------------------------------------------------------
-    # UI
-    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -246,38 +217,36 @@ class HomeTab(QWidget):
         cl.setContentsMargins(0, 0, 0, 40)
         cl.setSpacing(0)
 
-        # ── Hero ──────────────────────────────────────────────────────
         hero = HeroWidget()
         hero.setMinimumHeight(300)
         hero_layout = QVBoxLayout(hero)
         hero_layout.setContentsMargins(48, 40, 48, 40)
         hero_layout.setSpacing(0)
-
         hero_layout.addStretch(1)
 
         headline = QLabel("GenosLauncher")
-        headline.setStyleSheet(f"""
+        headline.setStyleSheet(
+            f"""
             font-size: {FONT["4xl"]};
             font-weight: 800;
             color: {C["text_primary"]};
             letter-spacing: -1.5px;
-        """)
+            """
+        )
         hero_layout.addWidget(headline)
 
-        subhead = QLabel("Open-source · Fast · Elegant")
+        subhead = QLabel("Open-source | Fast | Elegant")
         subhead.setStyleSheet(f"font-size: {FONT['lg']}; color: {C['text_secondary']}; margin-top: 4px;")
         hero_layout.addWidget(subhead)
-
         hero_layout.addSpacing(32)
 
-        # Version picker + Play button
         launch_row = QHBoxLayout()
         launch_row.setSpacing(10)
-
         self._version_combo = QComboBox()
         self._version_combo.setFixedHeight(52)
         self._version_combo.setMinimumWidth(150)
-        self._version_combo.setStyleSheet(f"""
+        self._version_combo.setStyleSheet(
+            f"""
             QComboBox {{
                 background: {C["bg_primary"]};
                 border: 1px solid {C["border"]};
@@ -290,12 +259,12 @@ class HomeTab(QWidget):
             QComboBox:hover {{ border-color: {C["border_strong"]}; }}
             QComboBox:focus {{ border-color: {C["border_focus"]}; }}
             QComboBox::drop-down {{ border: none; width: 24px; }}
-        """)
-        # Seed with fallback while real list loads
+            """
+        )
         self._version_combo.addItems(_FALLBACK_VERSIONS)
-        self._version_combo.setCurrentText(self._selected_version
-                                           if self._selected_version in _FALLBACK_VERSIONS
-                                           else _FALLBACK_VERSIONS[0])
+        self._version_combo.setCurrentText(
+            self._selected_version if self._selected_version in _FALLBACK_VERSIONS else _FALLBACK_VERSIONS[0]
+        )
         self._version_combo.currentTextChanged.connect(self._on_version_changed)
         launch_row.addWidget(self._version_combo)
 
@@ -313,74 +282,64 @@ class HomeTab(QWidget):
 
         self._progress = LaunchProgressPanel()
         hero_layout.addWidget(self._progress)
-
         hero_layout.addStretch(1)
         cl.addWidget(hero)
 
-        # ── Below hero ────────────────────────────────────────────────
         inner = QWidget()
         inner.setStyleSheet("background: transparent;")
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(48, 28, 48, 0)
         inner_layout.setSpacing(24)
 
-        # Quick Play
         qp_header = QHBoxLayout()
         qp_title = QLabel("Quick Play")
         qp_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']};")
         qp_header.addWidget(qp_title)
         qp_header.addStretch()
-        view_all = OutlineButton("View all versions →")
+        view_all = OutlineButton("View all versions ->")
         view_all.setFixedHeight(32)
         view_all.setMinimumWidth(160)
         view_all.clicked.connect(self.view_all_requested)
         qp_header.addWidget(view_all)
         inner_layout.addLayout(qp_header)
 
-        # Placeholder quick play row — updated by _populate_quick_play()
         self._quick_play_layout = QHBoxLayout()
         self._quick_play_layout.setSpacing(12)
-        self._qp_placeholder = QLabel("Loading installed versions…")
+        self._qp_placeholder = QLabel("Loading installed versions...")
         self._qp_placeholder.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
         self._quick_play_layout.addWidget(self._qp_placeholder)
         self._quick_play_layout.addStretch()
         inner_layout.addLayout(self._quick_play_layout)
 
-        # Divider
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setFixedHeight(1)
         divider.setStyleSheet(f"background: {C['border']}; border: none;")
         inner_layout.addWidget(divider)
 
-        # News
         news_header = QHBoxLayout()
         news_title = QLabel("What's New")
         news_title.setStyleSheet(f"font-size: {FONT['xl']}; font-weight: 700; color: {C['text_primary']};")
         news_header.addWidget(news_title)
         news_header.addStretch()
-        all_releases = OutlineButton("All releases →")
+        all_releases = OutlineButton("All releases ->")
         all_releases.setFixedHeight(32)
-        all_releases.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://github.com/csgenos/genoslauncher/releases")
-        ))
+        all_releases.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/csgenos/genoslauncher/releases"))
+        )
         news_header.addWidget(all_releases)
         inner_layout.addLayout(news_header)
 
         self._news_layout = QVBoxLayout()
         self._news_layout.setSpacing(10)
-        _loading = QLabel("Loading news…")
-        _loading.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
-        self._news_layout.addWidget(_loading)
+        loading = QLabel("Loading news...")
+        loading.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
+        self._news_layout.addWidget(loading)
         inner_layout.addLayout(self._news_layout)
 
         cl.addWidget(inner)
         scroll.setWidget(content)
         root.addWidget(scroll)
-
-    # ------------------------------------------------------------------
-    # Version loading (#1)
-    # ------------------------------------------------------------------
 
     def _load_news(self) -> None:
         thread = QThread(self)
@@ -412,7 +371,6 @@ class HomeTab(QWidget):
         thread.started.connect(worker.run)
         worker.done.connect(self._on_versions_loaded)
         worker.done.connect(thread.quit)
-        self._load_thread = thread
         self._threads.append(thread)
         self._workers.append(worker)
         thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
@@ -428,25 +386,26 @@ class HomeTab(QWidget):
         self._populate_quick_play(available, installed)
 
     def _populate_combo(self, available: list[dict], installed: list[str]) -> None:
-        """Fill combo: installed versions first (marked), then rest."""
         self._version_combo.blockSignals(True)
         self._version_combo.clear()
 
         installed_set = set(installed)
-        shown: list[str] = []
+        normalized = [v for v in available if isinstance(v, dict) and isinstance(v.get("id"), str) and v.get("id")]
+        if not normalized:
+            normalized = [{"id": v, "type": "release"} for v in _FALLBACK_VERSIONS]
 
-        # Installed first
-        for v in available:
-            if v["id"] in installed_set:
-                self._version_combo.addItem(f"★ {v['id']}", v["id"])
-                shown.append(v["id"])
+        for v in normalized:
+            vid = v.get("id", "")
+            if vid in installed_set:
+                self._version_combo.addItem(f"* {vid}", vid)
+        for v in normalized:
+            vid = v.get("id", "")
+            if vid and vid not in installed_set:
+                self._version_combo.addItem(vid, vid)
+        if self._version_combo.count() == 0:
+            for fallback in _FALLBACK_VERSIONS:
+                self._version_combo.addItem(fallback, fallback)
 
-        # Rest (releases only in home for brevity)
-        for v in available:
-            if v["id"] not in installed_set:
-                self._version_combo.addItem(v["id"], v["id"])
-
-        # Restore previous selection
         target = self._selected_version
         for i in range(self._version_combo.count()):
             if self._version_combo.itemData(i) == target:
@@ -454,30 +413,27 @@ class HomeTab(QWidget):
                 break
         else:
             self._version_combo.setCurrentIndex(0)
-            self._selected_version = self._version_combo.currentData() or ""
-
+            self._selected_version = self._version_combo.currentData() or self._version_combo.currentText() or ""
         self._version_combo.blockSignals(False)
 
     def _populate_quick_play(self, available: list[dict], installed: list[str]) -> None:
-        """Show up to 3 installed versions; fall back to popular stable releases."""
-        # Remove placeholder
         while self._quick_play_layout.count():
             item = self._quick_play_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         installed_set = set(installed)
-        # Prefer installed versions; if fewer than 3, fill with popular ones
-        show_installed = [v for v in available if v["id"] in installed_set][:3]
+        show_installed = [
+            v for v in available
+            if isinstance(v, dict) and isinstance(v.get("id"), str) and v.get("id") in installed_set
+        ][:3]
         fallbacks = [
             {"id": "1.21.4", "type": "release"},
             {"id": "1.20.1", "type": "release"},
-            {"id": "1.8.9",  "type": "release"},
+            {"id": "1.8.9", "type": "release"},
         ]
-        show = show_installed or fallbacks
-        show = show[:3]
+        show = (show_installed or fallbacks)[:3]
 
-        available_ids = {v["id"] for v in available}
         for v in show:
             vid = v["id"]
             card = VersionCard(
@@ -490,12 +446,7 @@ class HomeTab(QWidget):
             card.launch_requested.connect(self.launch_requested)
             card.install_requested.connect(self.install_requested)
             self._quick_play_layout.addWidget(card)
-
         self._quick_play_layout.addStretch()
-
-    # ------------------------------------------------------------------
-    # Public API (called by main_window)
-    # ------------------------------------------------------------------
 
     def set_launch_state(self, launching: bool) -> None:
         self._play_btn.set_launching(launching)
@@ -511,12 +462,7 @@ class HomeTab(QWidget):
             self._progress.set_progress(current, maximum)
 
     def refresh_versions(self) -> None:
-        """Called by main_window after a successful install to refresh the picker."""
         self._load_versions()
-
-    # ------------------------------------------------------------------
-    # Slots
-    # ------------------------------------------------------------------
 
     def _on_version_changed(self, _text: str) -> None:
         vid = self._version_combo.currentData() or self._version_combo.currentText()
@@ -525,6 +471,8 @@ class HomeTab(QWidget):
 
     def _on_play_clicked(self) -> None:
         vid = self._version_combo.currentData() or self._version_combo.currentText()
-        if vid.startswith("★ "):
+        if vid.startswith("* "):
             vid = vid[2:]
+        if not vid:
+            return
         self.launch_requested.emit(vid)

@@ -1,55 +1,55 @@
 """
-Instances tab — browse, install, and manage Minecraft versions.
-Fixes:
-  - Reads show_snapshots/show_old_versions from config on startup (#7)
-  - Install button on VersionCard triggers real InstallWorker (#2)
+Instances tab - browse, install, and manage Minecraft versions.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QObject, QThread, Signal, QTimer
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
-    QInputDialog,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from PySide6.QtWidgets import QFileDialog, QMenu
-
-from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton
 from ..components.version_card import VersionCard
+from ..dialogs.backup_dialog import WorldBackupDialog
 from ..dialogs.crash_dialog import CrashReportDialog
 from ..dialogs.screenshot_dialog import ScreenshotGalleryDialog
-from ..dialogs.backup_dialog import WorldBackupDialog
-from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
+from ..styles import COLORS as C, FONT
 from ...core.config import config
 from ...core.instances import (
     clone_instance,
     create_custom_instance,
     import_prism_instances,
+    list_instance_groups,
     list_instances,
     remove_instance,
+    set_instance_group,
     set_selected_instance,
     update_instance,
 )
+from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
 from ...core.validators import validate_version_id
 
 log = logging.getLogger(__name__)
 
 
 class _VersionLoader(QObject):
-    """Loads version list off the UI thread."""
-    done = Signal(list, list)   # all_versions, installed_ids
+    done = Signal(list, list)  # all_versions, installed_ids
 
     def __init__(self, include_snapshots: bool, include_old: bool) -> None:
         super().__init__()
@@ -57,10 +57,7 @@ class _VersionLoader(QObject):
         self._old = include_old
 
     def run(self) -> None:
-        versions = get_available_versions(
-            include_snapshots=self._snapshots,
-            include_old=self._old,
-        )
+        versions = get_available_versions(include_snapshots=self._snapshots, include_old=self._old)
         try:
             installed = get_installed_versions()
         except Exception as exc:
@@ -90,31 +87,26 @@ class _RepairWorker(QObject):
 
 
 class InstancesTab(QWidget):
-    """Browse all available Minecraft versions with filtering."""
-
     launch_requested = Signal(str)
     instance_launch_requested = Signal(str, str)
     install_requested = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        # Restore persisted filter state (#7)
         self._show_snapshots = config.get("show_snapshots", False)
-        self._show_old       = config.get("show_old_versions", False)
-        self._all_versions:   list[dict]  = []
-        self._installed:      set[str]    = set()
-        self._search_text     = ""
-        self._load_threads:   list[QThread] = []
-        self._load_workers:   list[QObject] = []
+        self._show_old = config.get("show_old_versions", False)
+        self._all_versions: list[dict] = []
+        self._installed: set[str] = set()
+        self._search_text = ""
+        self._instance_search_text = ""
+        self._group_filter = "All groups"
+        self._load_threads: list[QThread] = []
+        self._load_workers: list[QObject] = []
         self._install_workers: dict[str, InstallWorker] = {}
         self._repair_threads: list[QThread] = []
         self._repair_workers: list[_RepairWorker] = []
         self._build_ui()
         QTimer.singleShot(100, self._load_versions)
-
-    # ------------------------------------------------------------------
-    # UI
-    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -127,18 +119,19 @@ class InstancesTab(QWidget):
         header_row.addWidget(title)
         header_row.addStretch()
 
-        refresh_btn = OutlineButton("↻  Refresh")
+        refresh_btn = OutlineButton("Refresh")
         refresh_btn.setFixedHeight(34)
         refresh_btn.setFixedWidth(110)
         refresh_btn.clicked.connect(self._load_versions)
         header_row.addWidget(refresh_btn)
+
         new_btn = OutlineButton("New Instance")
         new_btn.setFixedHeight(34)
         new_btn.setFixedWidth(132)
         new_btn.clicked.connect(self._create_instance)
         header_row.addWidget(new_btn)
 
-        import_btn = OutlineButton("Import…")
+        import_btn = OutlineButton("Import...")
         import_btn.setFixedHeight(34)
         import_btn.setFixedWidth(100)
         import_btn.clicked.connect(self._import_instances)
@@ -149,6 +142,20 @@ class InstancesTab(QWidget):
         self._instances_title = QLabel("Installed Instances")
         self._instances_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
         root.addWidget(self._instances_title)
+
+        instance_filter_row = QHBoxLayout()
+        instance_filter_row.setSpacing(10)
+        self._instance_search_box = QLineEdit()
+        self._instance_search_box.setPlaceholderText("Search instances...")
+        self._instance_search_box.setFixedHeight(34)
+        self._instance_search_box.textChanged.connect(self._on_instance_search_changed)
+        instance_filter_row.addWidget(self._instance_search_box, 1)
+        self._group_filter_combo = QComboBox()
+        self._group_filter_combo.setFixedHeight(34)
+        self._group_filter_combo.setMinimumWidth(180)
+        self._group_filter_combo.currentTextChanged.connect(self._on_group_filter_changed)
+        instance_filter_row.addWidget(self._group_filter_combo)
+        root.addLayout(instance_filter_row)
 
         self._instances_container = QWidget()
         self._instances_container.setStyleSheet("background: transparent;")
@@ -165,7 +172,7 @@ class InstancesTab(QWidget):
         filter_row.setSpacing(10)
 
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Search versions…")
+        self._search_box.setPlaceholderText("Search versions...")
         self._search_box.setFixedHeight(38)
         self._search_box.textChanged.connect(self._on_search)
         filter_row.addWidget(self._search_box)
@@ -179,10 +186,8 @@ class InstancesTab(QWidget):
         self._old_check.setChecked(self._show_old)
         self._old_check.toggled.connect(self._on_filter_changed)
         filter_row.addWidget(self._old_check)
-
         root.addLayout(filter_row)
 
-        # Status doubles as install progress display
         self._count_label = QLabel("Loading versions...")
         self._count_label.setStyleSheet(f"color: {C['text_secondary']}; font-size: {FONT['sm']};")
         root.addWidget(self._count_label)
@@ -202,22 +207,15 @@ class InstancesTab(QWidget):
         self._scroll.setWidget(self._versions_container)
         root.addWidget(self._scroll)
 
-    # ------------------------------------------------------------------
-    # Loading
-    # ------------------------------------------------------------------
-
     def _load_versions(self) -> None:
-        self._count_label.setText("Loading versions…")
+        self._count_label.setText("Loading versions...")
         thread = QThread(self)
         worker = _VersionLoader(self._show_snapshots, self._show_old)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_versions_loaded)
         worker.done.connect(thread.quit)
-        thread.finished.connect(
-            lambda: self._load_threads.remove(thread)
-            if thread in self._load_threads else None
-        )
+        thread.finished.connect(lambda: self._load_threads.remove(thread) if thread in self._load_threads else None)
         thread.finished.connect(lambda: self._load_workers.remove(worker) if worker in self._load_workers else None)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
@@ -231,48 +229,105 @@ class InstancesTab(QWidget):
         self._render_versions()
         self._render_instances()
 
+    def _refresh_group_filter_options(self) -> None:
+        options = ["All groups", *list_instance_groups()]
+        current = self._group_filter_combo.currentText() if self._group_filter_combo.count() else self._group_filter
+        self._group_filter_combo.blockSignals(True)
+        self._group_filter_combo.clear()
+        self._group_filter_combo.addItems(options)
+        if current in options:
+            self._group_filter_combo.setCurrentText(current)
+            self._group_filter = current
+        else:
+            self._group_filter_combo.setCurrentText("All groups")
+            self._group_filter = "All groups"
+        self._group_filter_combo.blockSignals(False)
+
+    def _filter_instances(self, instances: list[dict]) -> list[dict]:
+        text = self._instance_search_text.lower().strip()
+        out: list[dict] = []
+        for instance in instances:
+            group = str(instance.get("group", "Other")).strip() or "Other"
+            if self._group_filter != "All groups" and group != self._group_filter:
+                continue
+            if text:
+                blob = " ".join(
+                    [
+                        str(instance.get("name", "")),
+                        str(instance.get("mc_version", "")),
+                        str(instance.get("type", "")),
+                        group,
+                    ]
+                ).lower()
+                if text not in blob:
+                    continue
+            out.append(instance)
+        return out
+
     def _render_instances(self) -> None:
         while self._instances_layout.count():
             item = self._instances_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        instances = list_instances()
-        active_id = config.get("selected_instance_id", "")
-        if not instances:
+
+        all_instances = list_instances()
+        self._refresh_group_filter_options()
+        instances = self._filter_instances(all_instances)
+        if not all_instances:
             empty = QLabel("No instances installed yet. Install a version below to create one.")
             empty.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['sm']};")
             self._instances_layout.addWidget(empty)
             return
+        if not instances:
+            empty = QLabel("No instances match your filters.")
+            empty.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['sm']};")
+            self._instances_layout.addWidget(empty)
+            return
+
+        active_id = config.get("selected_instance_id", "")
+        grouped: dict[str, list[dict]] = {}
         for instance in instances:
-            row = QWidget()
-            row.setStyleSheet(f"background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px;")
-            layout = QHBoxLayout(row)
-            layout.setContentsMargins(14, 10, 14, 10)
-            active = "Active  -  " if instance.get("id") == active_id else ""
-            name = QLabel(f"{active}{instance.get('name', 'Instance')}  -  {instance.get('mc_version', '?')}")
-            name.setStyleSheet(f"color: {C['text_primary']}; font-size: {FONT['md']}; font-weight: 600;")
-            layout.addWidget(name, 1)
-            select = QPushButton("Use")
-            select.setFixedWidth(58)
-            select.clicked.connect(lambda _=False, i=instance: self._select_instance(i))
-            layout.addWidget(select)
-            launch = QPushButton("Launch")
-            launch.setFixedWidth(80)
-            launch.clicked.connect(
-                lambda _=False, i=instance: self.instance_launch_requested.emit(
-                    i.get("mc_version", ""), i.get("id", "")
+            group = str(instance.get("group", "Other")).strip() or "Other"
+            grouped.setdefault(group, []).append(instance)
+
+        for group_name in sorted(grouped.keys(), key=str.lower):
+            section = QLabel(f"{group_name} ({len(grouped[group_name])})")
+            section.setStyleSheet(f"color: {C['text_secondary']}; font-size: {FONT['sm']}; font-weight: 700;")
+            self._instances_layout.addWidget(section)
+            rows = sorted(grouped[group_name], key=lambda i: str(i.get("name", "")).lower())
+            for instance in rows:
+                row = QWidget()
+                row.setStyleSheet(f"background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px;")
+                layout = QHBoxLayout(row)
+                layout.setContentsMargins(14, 10, 14, 10)
+                active = "Active - " if instance.get("id") == active_id else ""
+                detail = (
+                    f"{active}{instance.get('name', 'Instance')} - {instance.get('mc_version', '?')} - "
+                    f"{str(instance.get('type', 'custom')).title()}"
                 )
-            )
-            layout.addWidget(launch)
-            more_btn = OutlineButton("⋯")
-            more_btn.setFixedWidth(38)
-            more_btn.clicked.connect(lambda _=False, i=instance, b=more_btn: self._show_instance_menu(i, b))
-            layout.addWidget(more_btn)
-            self._instances_layout.addWidget(row)
+                name = QLabel(detail)
+                name.setStyleSheet(f"color: {C['text_primary']}; font-size: {FONT['md']}; font-weight: 600;")
+                layout.addWidget(name, 1)
+                select = QPushButton("Use")
+                select.setFixedWidth(58)
+                select.clicked.connect(lambda _=False, i=instance: self._select_instance(i))
+                layout.addWidget(select)
+                launch = QPushButton("Launch")
+                launch.setFixedWidth(80)
+                launch.clicked.connect(
+                    lambda _=False, i=instance: self.instance_launch_requested.emit(i.get("mc_version", ""), i.get("id", ""))
+                )
+                layout.addWidget(launch)
+                more_btn = OutlineButton("...")
+                more_btn.setFixedWidth(38)
+                more_btn.clicked.connect(lambda _=False, i=instance, b=more_btn: self._show_instance_menu(i, b))
+                layout.addWidget(more_btn)
+                self._instances_layout.addWidget(row)
 
     def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
         menu = QMenu(self)
         menu.addAction("Edit", lambda: self._edit_instance(instance))
+        menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
         menu.addAction("Clone", lambda: self._clone_instance(instance))
         menu.addAction("Repair", lambda: self._repair_instance(instance))
         menu.addSeparator()
@@ -284,16 +339,22 @@ class InstancesTab(QWidget):
         menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _view_crashes(self, instance: dict) -> None:
-        dlg = CrashReportDialog(instance, self)
-        dlg.exec()
+        CrashReportDialog(instance, self).exec()
 
     def _view_screenshots(self, instance: dict) -> None:
-        dlg = ScreenshotGalleryDialog(instance, self)
-        dlg.exec()
+        ScreenshotGalleryDialog(instance, self).exec()
 
     def _backup_worlds(self, instance: dict) -> None:
-        dlg = WorldBackupDialog(instance, self)
-        dlg.exec()
+        WorldBackupDialog(instance, self).exec()
+
+    def _move_instance_group(self, instance: dict) -> None:
+        current = str(instance.get("group", "Other")).strip() or "Other"
+        group_name, ok = QInputDialog.getText(self, "Move Instance", "Group name:", text=current)
+        if not ok:
+            return
+        set_instance_group(instance.get("id", ""), group_name.strip())
+        self._render_instances()
+        self._count_label.setText(f"Moved {instance.get('name', 'instance')} to group '{group_name.strip() or current}'.")
 
     def _create_instance(self) -> None:
         default_version = config.get("selected_version", "1.21.4") or "1.21.4"
@@ -319,20 +380,10 @@ class InstancesTab(QWidget):
         self._count_label.setText(f"Active instance: {instance.get('name', 'Instance')}")
 
     def _edit_instance(self, instance: dict) -> None:
-        name, ok = QInputDialog.getText(
-            self,
-            "Edit Instance",
-            "Instance name:",
-            text=instance.get("name", "Instance"),
-        )
+        name, ok = QInputDialog.getText(self, "Edit Instance", "Instance name:", text=instance.get("name", "Instance"))
         if not ok or not name.strip():
             return
-        jvm_args, ok = QInputDialog.getText(
-            self,
-            "Edit Instance",
-            "Instance JVM args:",
-            text=instance.get("jvm_args", ""),
-        )
+        jvm_args, ok = QInputDialog.getText(self, "Edit Instance", "Instance JVM args:", text=instance.get("jvm_args", ""))
         if ok:
             update_instance(instance.get("id", ""), name=name.strip(), jvm_args=jvm_args.strip())
             self._render_instances()
@@ -367,24 +418,18 @@ class InstancesTab(QWidget):
         self._load_versions()
 
     def _import_instances(self) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select MultiMC / Prism Launcher instances folder",
-        )
+        folder = QFileDialog.getExistingDirectory(self, "Select MultiMC / Prism Launcher instances folder")
         if not folder:
             return
-        from pathlib import Path
         imported = import_prism_instances(Path(folder))
         if imported:
             self._render_instances()
             self._count_label.setText(
-                f"Imported {len(imported)} instance(s) from {folder}. "
-                "Use Repair if game files are missing."
+                f"Imported {len(imported)} instance(s) from {folder}. Use Repair if game files are missing."
             )
         else:
             self._count_label.setText(
-                "No importable instances found. "
-                "Make sure you selected the folder that contains the instance subfolders."
+                "No importable instances found. Make sure you selected the folder that contains the instance subfolders."
             )
 
     def _remove_instance(self, instance: dict) -> None:
@@ -404,18 +449,19 @@ class InstancesTab(QWidget):
         self._search_text = text.lower()
         self._render_versions()
 
+    def _on_instance_search_changed(self, text: str) -> None:
+        self._instance_search_text = text
+        self._render_instances()
+
+    def _on_group_filter_changed(self, group_name: str) -> None:
+        self._group_filter = group_name or "All groups"
+        self._render_instances()
+
     def _on_filter_changed(self) -> None:
         self._show_snapshots = self._snap_check.isChecked()
-        self._show_old       = self._old_check.isChecked()
-        config.update({
-            "show_snapshots":    self._show_snapshots,
-            "show_old_versions": self._show_old,
-        })
+        self._show_old = self._old_check.isChecked()
+        config.update({"show_snapshots": self._show_snapshots, "show_old_versions": self._show_old})
         self._load_versions()
-
-    # ------------------------------------------------------------------
-    # Rendering
-    # ------------------------------------------------------------------
 
     def _render_versions(self) -> None:
         while self._versions_layout.count() > 1:
@@ -423,10 +469,7 @@ class InstancesTab(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        filtered = [
-            v for v in self._all_versions
-            if self._search_text in v["id"].lower()
-        ]
+        filtered = [v for v in self._all_versions if self._search_text in v["id"].lower()]
         self._count_label.setText(f"{len(filtered)} versions found")
 
         for v in filtered[:60]:
@@ -442,25 +485,16 @@ class InstancesTab(QWidget):
             card.install_requested.connect(self._on_install_requested)
             self._versions_layout.insertWidget(self._versions_layout.count() - 1, card)
 
-    # ------------------------------------------------------------------
-    # Install (#2)
-    # ------------------------------------------------------------------
-
     def _on_install_requested(self, version_id: str) -> None:
         if version_id in self._install_workers:
-            return  # already in progress
-
+            return
         card = self._find_card(version_id)
         if card:
-            card.set_installing("Preparing…")
+            card.set_installing("Preparing...")
 
         worker = InstallWorker(version_id)
-        worker.progress_changed.connect(
-            lambda cur, tot, status: self._on_install_progress(version_id, cur, tot, status)
-        )
-        worker.finished.connect(
-            lambda ok, msg: self._on_install_finished(version_id, ok, msg)
-        )
+        worker.progress_changed.connect(lambda cur, tot, status: self._on_install_progress(version_id, cur, tot, status))
+        worker.finished.connect(lambda ok, msg: self._on_install_finished(version_id, ok, msg))
         self._install_workers[version_id] = worker
         worker.start()
 
@@ -475,7 +509,6 @@ class InstancesTab(QWidget):
     def _on_install_finished(self, version_id: str, success: bool, message: str) -> None:
         self._install_workers.pop(version_id, None)
         card = self._find_card(version_id)
-
         if success:
             self._installed.add(version_id)
             self._count_label.setText(f"Installed {version_id} successfully.")
@@ -492,7 +525,7 @@ class InstancesTab(QWidget):
         for i in range(self._versions_layout.count()):
             item = self._versions_layout.itemAt(i)
             if item and item.widget():
-                w = item.widget()
-                if isinstance(w, VersionCard) and w._version_id == version_id:
-                    return w
+                widget = item.widget()
+                if isinstance(widget, VersionCard) and widget._version_id == version_id:
+                    return widget
         return None

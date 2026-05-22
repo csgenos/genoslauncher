@@ -147,7 +147,7 @@ def get_installed_versions() -> list[str]:
     if not MLL_AVAILABLE or not mc_dir:
         return sorted(v for v in installed if v)
     try:
-        installed.update(v["id"] for v in mll.utils.get_installed_versions(mc_dir))
+        installed.update(v for v in _get_installed_versions_cached(mc_dir) if v)
     except Exception as exc:
         log.warning("Installed version scan failed: %s", exc)
     return sorted(v for v in installed if v)

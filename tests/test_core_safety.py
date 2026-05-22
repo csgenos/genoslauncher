@@ -4,7 +4,9 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from src.core import instances as instances_core
 from src.core.java_manager import required_java_for_mc
 from src.core.modrinth import ModrinthError, safe_download_path, verify_file_hash
 from src.core.validators import (
@@ -54,6 +56,18 @@ class DownloadIntegrityTests(unittest.TestCase):
             path.write_bytes(data)
             self.assertTrue(verify_file_hash(path, hashlib.sha1(data).hexdigest(), hashlib.sha512(data).hexdigest()))
             self.assertFalse(verify_file_hash(path, "0" * 40, ""))
+
+
+class InstanceGroupingTests(unittest.TestCase):
+    def test_group_defaults_and_sanitization(self) -> None:
+        self.assertEqual(instances_core.normalize_instance_group("", "vanilla"), "Vanilla")
+        self.assertEqual(instances_core.normalize_instance_group("  My Group!!  ", "custom"), "My Group_")
+
+    def test_list_instances_normalizes_group(self) -> None:
+        sample = [{"id": "a", "name": "A", "directory": "C:/tmp/a", "type": "custom"}]
+        with patch.object(instances_core.config, "get", return_value=sample):
+            items = instances_core.list_instances()
+        self.assertEqual(items[0]["group"], "Custom")
 
 
 if __name__ == "__main__":

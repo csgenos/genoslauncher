@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+_SAFE_GROUP_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
 def safe_instance_name(name: str) -> str:
@@ -23,20 +24,54 @@ def safe_instance_name(name: str) -> str:
     return clean[:64] or "Instance"
 
 
+def _default_group_for_type(instance_type: str) -> str:
+    mapping = {
+        "vanilla": "Vanilla",
+        "modpack": "Modpacks",
+        "imported": "Imported",
+        "custom": "Custom",
+    }
+    return mapping.get(instance_type, "Other")
+
+
+def normalize_instance_group(group_name: str | None, instance_type: str = "") -> str:
+    raw = (group_name or "").strip()
+    if not raw:
+        return _default_group_for_type(instance_type)
+    clean = _SAFE_GROUP_RE.sub("_", raw).strip(" .")
+    clean = " ".join(clean.split())
+    return clean[:32] or _default_group_for_type(instance_type)
+
+
+def _normalize_instance(instance: dict) -> dict:
+    cleaned = dict(instance)
+    cleaned["group"] = normalize_instance_group(
+        cleaned.get("group"),
+        str(cleaned.get("type", "")).strip().lower(),
+    )
+    return cleaned
+
+
 def list_instances() -> list[dict]:
     items = config.get("instances", [])
-    return [i for i in items if isinstance(i, dict) and i.get("id") and i.get("directory")]
+    instances = [i for i in items if isinstance(i, dict) and i.get("id") and i.get("directory")]
+    return [_normalize_instance(i) for i in instances]
 
 
 def save_instances(instances: list[dict]) -> None:
-    config.set("instances", instances[:200])
+    config.set("instances", [_normalize_instance(i) for i in instances[:200] if isinstance(i, dict)])
 
 
 def upsert_instance(instance: dict) -> dict:
     instances = [i for i in list_instances() if i.get("id") != instance.get("id")]
-    instances.append(instance)
+    instances.append(_normalize_instance(instance))
     save_instances(instances)
-    return instance
+    return _normalize_instance(instance)
+
+
+def list_instance_groups() -> list[str]:
+    groups = {normalize_instance_group(i.get("group"), i.get("type", "")) for i in list_instances()}
+    return sorted(groups)
 
 
 def selected_instance() -> dict | None:
@@ -74,6 +109,7 @@ def create_vanilla_instance(version_id: str, name: str | None = None) -> dict:
         "directory": str(directory),
         "type": "vanilla",
         "source": "vanilla",
+        "group": "Vanilla",
         "jvm_args": "",
     })
 
@@ -97,6 +133,7 @@ def create_custom_instance(
         "directory": str(instance_dir),
         "type": "custom",
         "source": "custom",
+        "group": "Custom",
         "jvm_args": jvm_args,
     })
 
@@ -110,11 +147,20 @@ def update_instance(instance_id: str, **updates) -> dict | None:
             if "name" in updates:
                 instance["name"] = safe_instance_name(str(updates["name"]))
                 instance["title"] = instance["name"]
+            if "group" in updates:
+                instance["group"] = normalize_instance_group(
+                    str(updates["group"]) if updates["group"] is not None else "",
+                    str(instance.get("type", "")),
+                )
             updated = instance
             break
     if updated is not None:
         save_instances(instances)
     return updated
+
+
+def set_instance_group(instance_id: str, group_name: str) -> dict | None:
+    return update_instance(instance_id, group=group_name)
 
 
 def clone_instance(instance_id: str) -> dict | None:
@@ -164,6 +210,7 @@ def create_modpack_instance(
         "directory": str(directory),
         "type": "modpack",
         "source": project_id,
+        "group": "Modpacks",
         "jvm_args": "",
     })
 
@@ -250,6 +297,7 @@ def import_prism_instances(prism_dir: Path) -> list[dict]:
                 "directory": str(game_dir),
                 "type":      "imported",
                 "source":    "prism",
+                "group":     "Imported",
                 "jvm_args":  cfg.get("JvmArgs", ""),
             })
             imported.append(instance)
