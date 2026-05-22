@@ -87,7 +87,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,          # no console window
     windowed=True,
     icon="assets/icon.ico" if Path("assets/icon.ico").exists() else None,
@@ -100,7 +100,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="GenosLauncher",
 )
