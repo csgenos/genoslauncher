@@ -48,7 +48,8 @@ class DownloadIntegrityTests(unittest.TestCase):
     def test_safe_download_path_blocks_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            self.assertEqual(safe_download_path(base, "mod.jar").parent, base)
+            # resolve() normalises Windows 8.3 short paths so both sides match
+            self.assertEqual(safe_download_path(base, "mod.jar").parent, base.resolve())
             with self.assertRaises(ModrinthError):
                 safe_download_path(base, "../mod.jar")
 
