@@ -2,8 +2,6 @@ app-id: com.github.csgenos.GenosLauncher
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
-sdk-extensions:
-  - org.freedesktop.Sdk.Extension.python312
 
 command: genoslauncher
 
@@ -23,27 +21,12 @@ finish-args:
   - --allow=devel
 
 modules:
-  - name: python3-deps
-    buildsystem: simple
-    build-commands:
-      - pip3 install --prefix=/app --no-deps --no-build-isolation
-          PySide6==6.6.0
-          minecraft-launcher-lib==6.4
-          requests==2.33.0
-          cryptography==46.0.7
-          keyring==24.0.0
-          Pillow==12.2.0
-          psutil==7.2.2
-          certifi==2026.5.20
-    sources: []
-
   - name: genoslauncher
     buildsystem: simple
     build-commands:
-      # Install application source
+      # Install the PyInstaller-bundled app (built before flatpak-builder runs)
       - install -d /app/lib/genoslauncher
-      - cp -r src/ /app/lib/genoslauncher/
-      - cp requirements.lock /app/lib/genoslauncher/
+      - cp -r dist/GenosLauncher/. /app/lib/genoslauncher/
       # Entry-point wrapper
       - install -Dm755 packaging/flatpak/genoslauncher.sh /app/bin/genoslauncher
       # Desktop integration
@@ -59,7 +42,6 @@ modules:
           - venv
           - __pycache__
           - "*.pyc"
-          - dist
           - build
           - AppDir
           - "*.AppImage"
