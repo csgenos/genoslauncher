@@ -41,7 +41,7 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         run: |
           pip install pip-audit
-          pip-audit -r requirements.lock
+          pip-audit --disable-pip -r requirements.lock
 
       - name: Warn if code-signing secrets are absent
         if: startsWith(github.ref, 'refs/tags/')
