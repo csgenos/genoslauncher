@@ -43,12 +43,12 @@ jobs:
           pip install pip-audit
           pip-audit -r requirements.lock
 
-      - name: Require code-signing secrets for tag releases
+      - name: Warn if code-signing secrets are absent
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           if (-not $env:GENOS_WINDOWS_SIGNING_CERT_BASE64 -or -not $env:GENOS_WINDOWS_SIGNING_CERT_PASSWORD) {
-            throw "Tag releases require GENOS_WINDOWS_SIGNING_CERT_BASE64 and GENOS_WINDOWS_SIGNING_CERT_PASSWORD secrets."
+            Write-Warning "GENOS_WINDOWS_SIGNING_CERT_BASE64 / GENOS_WINDOWS_SIGNING_CERT_PASSWORD not set — release will be unsigned. Windows SmartScreen may warn users on first run."
           }
 
       - name: Inject built-in client ID into source

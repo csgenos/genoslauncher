@@ -7,10 +7,19 @@ Clean light theme (with optional dark mode), no bloat, no subscriptions.
 
 ---
 
+## Download
+
+**End users:** grab the Windows installer from the [Releases page](https://github.com/csgenos/genoslauncher/releases).  
+Run the installer and launch `GenosLauncher.exe` — no Python, no dependencies, nothing else to install.
+
+**Run from source:** see [Quick Start](#quick-start) below.
+
+---
+
 ## Features
 
 ### Core Launch
-- Microsoft Account login via **OAuth 2.0 PKCE** (browser-based, no code copy-paste)
+- Microsoft Account login via **OAuth 2.0 PKCE** — click Sign In, your browser opens, done. No Azure registration required.
 - Offline accounts for solo and LAN play
 - Per-instance Minecraft directories — instances are completely isolated
 - Custom JVM arguments with per-preset deduplication and RAM slider (512 MB – 32 GB)
@@ -50,7 +59,7 @@ Clean light theme (with optional dark mode), no bloat, no subscriptions.
 - Restore uses a staged extraction flow with path validation and rollback on failures
 
 ### Appearance & Settings
-- **Dark mode** toggle — full palette swap applied live without a restart (QSS-based rules update immediately)
+- **Dark mode** toggle — full palette swap applied live without a restart
 - Shaders and resource packs browser
 - Auto-update notification bar checks for new GitHub releases on startup
 
@@ -80,24 +89,16 @@ python src/main.py
 
 ---
 
-## Microsoft Account Setup
+## Microsoft Sign-In
 
-GenosLauncher uses OAuth 2.0 PKCE (RFC 8252). You need a free Azure App registration to obtain a client ID.
+GenosLauncher includes a built-in client ID — Microsoft sign-in works out of the box with no setup:
 
-1. Go to [portal.azure.com](https://portal.azure.com) and sign in.
-2. **Azure Active Directory → App registrations → New registration.**
-3. Supported account types: *Accounts in any organizational directory and personal Microsoft accounts.*
-4. Add a **Mobile and desktop applications** redirect URI:
-   ```
-   http://localhost
-   ```
-5. Copy the **Application (client) ID**.
-6. Under **Authentication**, enable **Allow public client flows**.
-7. Add API permissions: `XboxLive.signin`, `offline_access`.
-8. Set `GENOS_AZURE_CLIENT_ID` as a GitHub Actions secret (for CI builds) or paste it into the launcher's Settings → Microsoft Authentication field.
-9. Open **Accounts → Sign In** — your browser opens automatically.
+1. Open **Accounts** tab and click **Sign In**.
+2. Your browser opens to Microsoft's login page.
+3. Sign in with the Microsoft account linked to your Minecraft purchase.
+4. Done — your account is stored securely and refreshed automatically.
 
-> The launcher picks a random loopback port at runtime; registering `http://localhost` (without a port) covers all ports on all Microsoft-supported browsers.
+> **Advanced / self-hosted builds:** If you want to use your own Azure App registration, set the `GENOS_AZURE_CLIENT_ID` environment variable or paste your client ID into **Settings → Microsoft Authentication — Client ID Override**. The built-in ID is used when neither is set.
 
 ---
 
@@ -125,11 +126,18 @@ The build script also emits `SHA256SUMS.txt` for artifact verification.
 | Windows installer | `installer_output\GenosLauncher-0.2.0-Setup.exe` |
 | SHA256 checksums | `SHA256SUMS.txt` |
 
-## Release Hardening
+### Publishing a Release
 
-- Tag release workflow requires code-signing secrets.
-- CI signs both app and installer artifacts when signing secrets are configured.
-- CI publishes `installer_output\SHA256SUMS.txt` with release artifacts.
+Push a version tag to trigger the CI build and create a GitHub Release automatically:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+GitHub Actions builds the Windows installer, generates SHA256 checksums, and attaches everything to the release. The installer is then available on the Releases page for users to download.
+
+> **Code signing:** The release workflow signs artifacts when `GENOS_WINDOWS_SIGNING_CERT_BASE64` and `GENOS_WINDOWS_SIGNING_CERT_PASSWORD` GitHub secrets are configured. Without them the installer is unsigned — Windows SmartScreen will show a warning on first run, but the app still works.
 
 Manual PyInstaller invocation:
 
