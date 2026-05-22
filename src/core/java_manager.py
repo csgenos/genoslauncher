@@ -9,14 +9,18 @@ repeated subprocess calls on every Settings tab open or launch.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
-import subprocess
 import shutil
+import subprocess
+import tarfile
 import time
+import urllib.parse
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import APP_DIR, config
 
@@ -290,3 +294,169 @@ JVM_PRESETS: dict[str, dict] = {
 
 def get_preset_args(preset_key: str) -> str:
     return JVM_PRESETS.get(preset_key, {}).get("args", "")
+
+
+# ---------------------------------------------------------------------------
+# Adoptium (Eclipse Temurin) auto-downloader
+# ---------------------------------------------------------------------------
+
+ADOPTIUM_API = "https://api.adoptium.net/v3"
+_JAVA_MAJOR_VERSIONS = [8, 11, 17, 21]
+
+
+def _adoptium_platform() -> tuple[str, str]:
+    """Return (os_name, arch) in Adoptium API format."""
+    system = platform.system()
+    machine = platform.machine().lower()
+    os_map = {"Windows": "windows", "Darwin": "mac", "Linux": "linux"}
+    arch_map = {
+        "x86_64": "x64", "amd64": "x64",
+        "aarch64": "aarch64", "arm64": "aarch64",
+        "x86": "x32",
+    }
+    return os_map.get(system, "linux"), arch_map.get(machine, "x64")
+
+
+def list_adoptium_releases(major: int) -> list[dict]:
+    """Fetch available Eclipse Temurin JDK releases for given major and current platform."""
+    import requests
+    os_name, arch = _adoptium_platform()
+    try:
+        from .._version import __version__ as _v
+    except Exception:
+        _v = "0"
+    try:
+        resp = requests.get(
+            f"{ADOPTIUM_API}/assets/latest/{major}/hotspot",
+            params={"os": os_name, "architecture": arch, "image_type": "jdk"},
+            headers={"User-Agent": f"GenosLauncher/{_v}"},
+            timeout=15,
+        )
+        if not resp.ok:
+            return []
+        return resp.json()
+    except Exception:
+        return []
+
+
+def download_java(
+    major: int,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> Optional[str]:
+    """
+    Download and extract Eclipse Temurin JDK for the given major version.
+
+    Extracts into JAVA_INSTALLS_DIR/<major>/. Returns the java executable path
+    on success, or None on failure. Verifies SHA256 checksum from Adoptium metadata.
+    """
+    import requests
+
+    def _s(msg: str) -> None:
+        if on_status:
+            on_status(msg)
+
+    releases = list_adoptium_releases(major)
+    if not releases:
+        _s(f"No Java {major} release found for this platform.")
+        return None
+
+    binary = releases[0].get("binary", {})
+    package = binary.get("package", {})
+    url = package.get("link", "")
+    checksum = package.get("checksum", "").lower()
+
+    if not url:
+        _s("No download URL in release metadata.")
+        return None
+
+    dest_dir = JAVA_INSTALLS_DIR / str(major)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    archive_name = Path(urllib.parse.urlparse(url).path).name
+    archive_path = dest_dir / archive_name
+
+    _s(f"Downloading Java {major}…")
+    try:
+        try:
+            from .._version import __version__ as _v
+        except Exception:
+            _v = "0"
+        resp = requests.get(
+            url, stream=True, timeout=120,
+            headers={"User-Agent": f"GenosLauncher/{_v}"},
+        )
+        resp.raise_for_status()
+        total = int(resp.headers.get("Content-Length", 0))
+        done = 0
+        with open(archive_path, "wb") as fh:
+            for chunk in resp.iter_content(65536):
+                if chunk:
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if on_progress:
+                        on_progress(done, total)
+    except Exception as exc:
+        archive_path.unlink(missing_ok=True)
+        _s(f"Download failed: {exc}")
+        return None
+
+    if checksum:
+        _s("Verifying download…")
+        sha256 = hashlib.sha256()
+        with open(archive_path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                sha256.update(chunk)
+        if sha256.hexdigest() != checksum:
+            archive_path.unlink(missing_ok=True)
+            _s("SHA256 mismatch — download corrupted.")
+            return None
+
+    _s(f"Extracting Java {major}…")
+    extract_dir = dest_dir / "extracted"
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir, ignore_errors=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if archive_name.endswith((".tar.gz", ".tar")):
+            with tarfile.open(archive_path) as tf:
+                members = [
+                    m for m in tf.getmembers()
+                    if not m.name.startswith("/") and ".." not in m.name
+                ]
+                tf.extractall(extract_dir, members=members)
+        elif archive_name.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(extract_dir)
+        else:
+            _s(f"Unsupported archive type: {archive_name}")
+            return None
+    except Exception as exc:
+        _s(f"Extraction failed: {exc}")
+        return None
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+    java_exe = "java.exe" if platform.system() == "Windows" else "java"
+    for candidate in sorted(extract_dir.rglob(f"bin/{java_exe}")):
+        if candidate.is_file():
+            global _java_cache, _java_cache_time
+            _java_cache = None
+            _java_cache_time = 0.0
+            _s(f"Java {major} installed.")
+            return str(candidate)
+
+    _s("Could not find java binary in extracted archive.")
+    return None
+
+
+def remove_java_installation(major: int) -> bool:
+    """Delete a managed Java installation from JAVA_INSTALLS_DIR."""
+    target = JAVA_INSTALLS_DIR / str(major)
+    if not target.exists():
+        return False
+    shutil.rmtree(target, ignore_errors=True)
+    global _java_cache, _java_cache_time
+    _java_cache = None
+    _java_cache_time = 0.0
+    return True

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.csgenos.GenosLauncher</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>GenosLauncher</name>
+  <summary>Open source Minecraft launcher with modpack and mod manager support</summary>
+
+  <description>
+    <p>
+      GenosLauncher is a feature-rich Minecraft launcher built with PySide6.
+      It supports Microsoft account authentication, multiple game instances,
+      Modrinth and CurseForge mod browsing, modpack installation, shader packs,
+      automatic Java management, and per-instance mod profiles.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Microsoft account login via PKCE OAuth 2.0</li>
+      <li>Modrinth and CurseForge mod/modpack/shader browser</li>
+      <li>Automatic Java download and version management (Eclipse Temurin)</li>
+      <li>Mod dependency resolution and conflict detection</li>
+      <li>Per-instance mod profiles</li>
+      <li>JVM performance presets (Aikar's Flags, ZGC, Low Latency)</li>
+      <li>World backup and crash report viewer</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.github.csgenos.GenosLauncher.desktop</launchable>
+
+  <url type="homepage">https://github.com/csgenos/genoslauncher</url>
+  <url type="bugtracker">https://github.com/csgenos/genoslauncher/issues</url>
+
+  <provides>
+    <binary>genoslauncher</binary>
+  </provides>
+
+  <releases>
+    <release version="0.2.0" date="2026-01-01">
+      <description>
+        <p>Java auto-downloader, mod dependency resolver, enhanced Modrinth integration, and Linux packaging.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+
+  <categories>
+    <category>Game</category>
+  </categories>
+
+  <keywords>
+    <keyword>Minecraft</keyword>
+    <keyword>Mods</keyword>
+    <keyword>Modpack</keyword>
+    <keyword>Fabric</keyword>
+    <keyword>Forge</keyword>
+    <keyword>Launcher</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main launcher window showing instance management</caption>
+    </screenshot>
+  </screenshots>
+</component>

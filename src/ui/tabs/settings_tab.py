@@ -383,6 +383,11 @@ class SettingsTab(QWidget):
             self._java_combo.currentIndexChanged.connect(self._on_java_selected)
             java_layout.addWidget(self._java_combo)
 
+        manage_java_btn = OutlineButton("Manage Java Installations…")
+        manage_java_btn.setFixedHeight(36)
+        manage_java_btn.clicked.connect(self._open_java_manager)
+        java_layout.addWidget(manage_java_btn)
+
         cl.addWidget(java_card)
         cl.addSpacing(24)
 
@@ -581,6 +586,11 @@ class SettingsTab(QWidget):
         if p:
             self._w_spin.setValue(p[0])
             self._h_spin.setValue(p[1])
+
+    def _open_java_manager(self) -> None:
+        from ..dialogs.java_manager_dialog import JavaManagerDialog
+        dlg = JavaManagerDialog(self)
+        dlg.exec()
 
     def _on_dark_mode_toggled(self, dark: bool) -> None:
         config.set("dark_mode", dark)
