@@ -28,9 +28,11 @@ build/
 .DS_Store
 Thumbs.db
 
-# Launcher data
-*.json
-!resources/*.json
+# Launcher runtime data
+config.json
+mods_index.json
+mod_profiles.json
+*.corrupt-*.json
 logs/
 crash-reports/
 

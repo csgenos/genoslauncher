@@ -125,7 +125,10 @@ class Config:
 
     def set(self, key: str, value: Any) -> None:
         if key in _SENSITIVE_KEYS:
-            return
+            raise ValueError(
+                f"Refusing to set protected key '{key}' via config. "
+                "Use the authentication/secret storage API instead."
+            )
         if key in _SECRET_CONFIG_KEYS:
             secret_value = str(value or "")
             if secret_value:
@@ -146,7 +149,12 @@ class Config:
                         set_secret(APP_DIR, k, secret_value)
                     else:
                         delete_secret(APP_DIR, k)
-                elif k not in _SENSITIVE_KEYS:
+                elif k in _SENSITIVE_KEYS:
+                    raise ValueError(
+                        f"Refusing to update protected key '{k}' via config. "
+                        "Use the authentication/secret storage API instead."
+                    )
+                else:
                     self._data[k] = self._validate_value(k, v)
             self._save_locked()
 

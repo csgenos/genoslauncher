@@ -18,7 +18,7 @@ Azure App setup (portal.azure.com):
   - No client secret needed — PKCE provides proof-of-possession
 
 Security:
-  S-Z-001: Fernet-encrypted fallback with machine-bound PBKDF2 key; secure delete on logout
+  S-Z-001: Fernet-encrypted fallback with app-local random PBKDF2 key; secure delete on logout
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ import logging
 import os
 import re as _re
 import secrets
-import socket
 import threading
 import time
 import urllib.parse
@@ -50,7 +49,7 @@ except ImportError:
     _KEYRING_OK = False
 
 try:
-    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives import hashes as _hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     import base64 as _b64

@@ -243,7 +243,7 @@ class InstancesTab(QWidget):
             empty.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['sm']};")
             self._instances_layout.addWidget(empty)
             return
-        for instance in instances[:20]:
+        for instance in instances:
             row = QWidget()
             row.setStyleSheet(f"background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px;")
             layout = QHBoxLayout(row)

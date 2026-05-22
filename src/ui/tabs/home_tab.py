@@ -10,6 +10,9 @@ Fixes applied:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QObject, QThread, Signal, QTimer
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QLinearGradient
 from PySide6.QtCore import QUrl
@@ -30,12 +33,61 @@ from ..components.animated_button import LaunchButton, OutlineButton
 from ..components.version_card import VersionCard
 from ..components.progress_widget import LaunchProgressPanel
 from ...core.launcher import get_available_versions, get_installed_versions
-from ...core.config import config
+from ...core.config import APP_DIR, config
 import re as _re
 import requests
 from ..._version import __version__ as _VER
 
-_FALLBACK_VERSIONS = ["1.21.4", "1.20.1", "1.8.9"]
+_STATIC_FALLBACK_VERSIONS = ["1.21.4", "1.20.1", "1.8.9"]
+_STATIC_FALLBACK_NEWS = [
+    ("GenosLauncher v0.2 Released",
+     "Modpack browser, shader management, and a complete premium UI redesign are now live.",
+     "2025-05-01"),
+    ("Modrinth Integration",
+     "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
+     "2025-04-20"),
+    ("Java Auto-Detection",
+     "The launcher now automatically detects installed Java versions and picks the best one.",
+     "2025-04-10"),
+]
+_HOME_CACHE_FILE = APP_DIR / "cache" / "home_cache.json"
+
+
+def _read_home_cache() -> tuple[list[str], list[tuple[str, str, str]]]:
+    try:
+        data = json.loads(_HOME_CACHE_FILE.read_text(encoding="utf-8"))
+        versions = data.get("fallback_versions", [])
+        news = data.get("fallback_news", [])
+        clean_versions = [str(v) for v in versions if isinstance(v, str)][:6]
+        clean_news: list[tuple[str, str, str]] = []
+        for item in news:
+            if not isinstance(item, (list, tuple)) or len(item) != 3:
+                continue
+            clean_news.append((str(item[0]), str(item[1]), str(item[2])))
+        return clean_versions, clean_news
+    except (OSError, ValueError, TypeError):
+        return [], []
+
+
+def _write_home_cache(*, versions: list[str] | None = None, news: list[tuple[str, str, str]] | None = None) -> None:
+    _HOME_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    current = {"fallback_versions": [], "fallback_news": []}
+    try:
+        current = json.loads(_HOME_CACHE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        pass
+    if versions is not None:
+        current["fallback_versions"] = versions[:6]
+    if news is not None:
+        current["fallback_news"] = [[t, b, d] for (t, b, d) in news[:6]]
+    tmp = _HOME_CACHE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_HOME_CACHE_FILE)
+
+
+_CACHED_VERSIONS, _CACHED_NEWS = _read_home_cache()
+_FALLBACK_VERSIONS = _CACHED_VERSIONS or _STATIC_FALLBACK_VERSIONS
+_FALLBACK_NEWS = _CACHED_NEWS or _STATIC_FALLBACK_NEWS
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +102,10 @@ class _VersionLoader(QObject):
         old = config.get("show_old_versions", False)
         try:
             available = get_available_versions(include_snapshots=snapshots, include_old=old)
+            release_ids = [v.get("id", "") for v in available if isinstance(v, dict) and v.get("type") == "release"]
+            release_ids = [v for v in release_ids if v][:6]
+            if release_ids:
+                _write_home_cache(versions=release_ids)
         except Exception:
             available = [{"id": v, "type": "release"} for v in _FALLBACK_VERSIONS]
         try:
@@ -83,22 +139,11 @@ class _NewsLoader(QObject):
                 body = body.split("\n")[0][:160]
                 published = (r.get("published_at") or "")[:10]
                 items.append((title, body or "New release available.", published))
+            if items:
+                _write_home_cache(news=items)
             self.done.emit(items if items else _FALLBACK_NEWS)
         except Exception:
             self.done.emit(_FALLBACK_NEWS)
-
-
-_FALLBACK_NEWS = [
-    ("GenosLauncher v0.2 Released",
-     "Modpack browser, shader management, and a complete premium UI redesign are now live.",
-     "2025-05-01"),
-    ("Modrinth Integration",
-     "Browse and install thousands of modpacks and shaders directly from inside the launcher.",
-     "2025-04-20"),
-    ("Java Auto-Detection",
-     "The launcher now automatically detects installed Java versions and picks the best one.",
-     "2025-04-10"),
-]
 
 
 # ---------------------------------------------------------------------------

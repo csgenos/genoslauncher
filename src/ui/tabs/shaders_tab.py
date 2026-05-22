@@ -12,18 +12,14 @@ Features:
 
 from __future__ import annotations
 
-import os
-import subprocess
-import threading
 import zipfile
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer, QUrl
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -36,7 +32,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..styles import COLORS as C, FONT
-from ..qt_dispatch import run_on_ui_thread
 from ...core.config import APP_DIR, config
 from ...core.instances import create_custom_instance, list_instances, selected_instance_dir, set_selected_instance
 from ...core import modrinth as mr
@@ -730,6 +725,8 @@ class ShadersTab(QWidget):
     def _install_dropped(self, paths: list[str], subdir: str) -> None:
         dest_dir = self._mc_dir / subdir
         dest_dir.mkdir(parents=True, exist_ok=True)
+        installed = 0
+        rejected: list[str] = []
         for path in paths:
             src = Path(path)
             if src.suffix.lower() == ".zip":
@@ -742,6 +739,17 @@ class ShadersTab(QWidget):
                 import shutil
                 dest = mr.safe_download_path(dest_dir, src.name)
                 shutil.copy2(src, dest)
+                installed += 1
+            else:
+                rejected.append(src.name)
+        if installed and rejected:
+            self._shader_status.setText(
+                f"Installed {installed} archive(s); ignored {len(rejected)} non-.zip file(s)."
+            )
+        elif rejected:
+            self._shader_status.setText(
+                f"Ignored {len(rejected)} unsupported file(s). Only .zip packs can be installed."
+            )
         self._refresh_installed()
 
     # ------------------------------------------------------------------
@@ -920,10 +928,4 @@ class ShadersTab(QWidget):
 
     def _open_folder(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True)
-        import subprocess, sys
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer", str(folder)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(folder)])
-        else:
-            subprocess.Popen(["xdg-open", str(folder)])
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))

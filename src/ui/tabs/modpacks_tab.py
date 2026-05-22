@@ -10,17 +10,14 @@ Features:
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer, QSize
-from PySide6.QtGui import QColor, QFont, QPixmap, QPainter, QImage
+from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
+from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,

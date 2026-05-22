@@ -61,6 +61,9 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller GenosLauncher.spec --clean --noconfirm
 
+      - name: Smoke test frozen app imports
+        run: dist\GenosLauncher\GenosLauncher.exe --self-test
+
       - name: Sign application executable
         if: env.GENOS_WINDOWS_SIGNING_CERT_BASE64 != ''
         shell: pwsh

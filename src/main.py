@@ -13,13 +13,11 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+import ctypes
 
 # Ensure src/ is on sys.path when running directly (not needed in bundled build)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from PySide6.QtCore import Qt, QCoreApplication, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src._version import __version__
 from src.core.config import LOGS_DIR, config
@@ -40,6 +38,9 @@ def _resource_path(relative: str) -> str:
 
 
 def _fallback_icon() -> QIcon:
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+
     pixmap = QPixmap(64, 64)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -55,7 +56,41 @@ def _fallback_icon() -> QIcon:
     return QIcon(pixmap)
 
 
+def _show_startup_error(message: str) -> None:
+    try:
+        ctypes.windll.user32.MessageBoxW(None, message, "GenosLauncher startup error", 0x10)
+    except Exception:
+        pass
+
+
+def _pyside_import_diagnostic(exc: Exception) -> str:
+    app_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()
+    expected = os.path.join(app_dir, "_internal", "PySide6")
+    if getattr(sys, "frozen", False):
+        return (
+            "GenosLauncher could not load bundled Qt modules.\n\n"
+            f"Missing module: {exc}\n\n"
+            f"Expected runtime folder:\n{expected}\n\n"
+            "This usually means the app was moved without its _internal folder,\n"
+            "or antivirus quarantined bundled files. Reinstall from the official\n"
+            "Setup .exe and launch from the installed location."
+        )
+    return f"PySide6 is not installed in this Python environment.\n\n{exc}"
+
+
 def main() -> int:
+    try:
+        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtGui import QFont, QIcon
+        from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+    except ModuleNotFoundError as exc:
+        _show_startup_error(_pyside_import_diagnostic(exc))
+        return 1
+
+    if "--self-test" in sys.argv:
+        # Packaging smoke test used by CI: ensure core Qt modules import in the frozen app.
+        return 0
+
     setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("GenosLauncher")
@@ -69,9 +104,14 @@ def main() -> int:
     font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app.setFont(font)
 
-    icon_path = _resource_path(os.path.join("assets", "icons", "app_icon.png"))
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
+    icon_candidates = [
+        _resource_path(os.path.join("src", "resources", "icons", "app_icon.png")),
+        _resource_path(os.path.join("assets", "icon.ico")),
+    ]
+    for icon_path in icon_candidates:
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+            break
     else:
         app.setWindowIcon(_fallback_icon())
 
