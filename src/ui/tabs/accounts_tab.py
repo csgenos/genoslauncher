@@ -115,8 +115,8 @@ class SkinWidget(QLabel):
             font-size: 20px;
             """
         )
-        self.setText("?")
         self.setPixmap(QPixmap())
+        self.setText("?")
 
     def load_for(self, username: str) -> None:
         self._set_placeholder()
@@ -288,9 +288,9 @@ class AccountsTab(QWidget):
         self._root.addWidget(self._ms_card)
 
         add_ms_row = QHBoxLayout()
-        add_ms_lbl = QLabel("Have multiple Minecraft accounts?")
-        add_ms_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
-        add_ms_row.addWidget(add_ms_lbl)
+        self._add_ms_lbl = QLabel("Have multiple Minecraft accounts?")
+        self._add_ms_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        add_ms_row.addWidget(self._add_ms_lbl)
         add_ms_row.addStretch()
         self._add_ms_btn = OutlineButton("+ Add Microsoft Account")
         self._add_ms_btn.setFixedHeight(34)
@@ -413,6 +413,7 @@ class AccountsTab(QWidget):
             self._ms_icon.setVisible(True)
             self._skin_widget.setVisible(False)
         self._add_ms_btn.setVisible(auth_manager.is_logged_in)
+        self._add_ms_lbl.setVisible(auth_manager.is_logged_in)
 
         while self._accounts_layout.count():
             item = self._accounts_layout.takeAt(0)

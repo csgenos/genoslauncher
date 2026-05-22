@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -358,7 +359,7 @@ class InstancesTab(QWidget):
         menu = QMenu(self)
         menu.addAction("Import Prism/MultiMC Folder...", self._import_instances)
         menu.addAction("Import ZIP/MRPACK Archive...", self._import_archive)
-        menu.exec(self.mapToGlobal(self.rect().topLeft()))
+        menu.exec(QCursor.pos())
 
     def _view_crashes(self, instance: dict) -> None:
         CrashReportDialog(instance, self).exec()
