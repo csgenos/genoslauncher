@@ -198,7 +198,7 @@ class Sidebar(QWidget):
         ("mods",      "◆", "Mods"),
         ("modpacks",  "⬡", "Modpacks"),
         ("shaders",   "◈", "Shaders"),
-        ("servers",   "⬡", "Servers"),
+        ("servers",   "⊙", "Servers"),
         ("accounts",  "◉", "Accounts"),
         ("settings",  "⚙", "Settings"),
     ]

@@ -779,7 +779,7 @@ class ModsTab(QWidget):
         instance = selected_instance()
         if not instance:
             return
-        name, ok = QInputDialog.getText(None, "New Mod Profile", "Profile name:")
+        name, ok = QInputDialog.getText(self, "New Mod Profile", "Profile name:")
         if not ok or not name.strip():
             return
         instance_dir = Path(instance.get("directory", ""))
@@ -797,7 +797,7 @@ class ModsTab(QWidget):
             return
         name = self._profile_combo.currentText()
         if name == "Default":
-            QMessageBox.warning(None, "Cannot Delete", "The Default profile cannot be deleted.")
+            QMessageBox.warning(self, "Cannot Delete", "The Default profile cannot be deleted.")
             return
         instance_dir = Path(instance.get("directory", ""))
         data = _load_profiles(instance_dir)

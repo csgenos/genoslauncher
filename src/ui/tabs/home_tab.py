@@ -471,8 +471,6 @@ class HomeTab(QWidget):
 
     def _on_play_clicked(self) -> None:
         vid = self._version_combo.currentData() or self._version_combo.currentText()
-        if vid.startswith("* "):
-            vid = vid[2:]
         if not vid:
             return
         self.launch_requested.emit(vid)
