@@ -411,7 +411,11 @@ class LaunchWorker(QObject):
 
         # Real credentials when logged in with a matching Microsoft account (B-Z-004)
         if auth_manager.is_logged_in and auth_manager.username == self.username:
-            auth_manager.ensure_token_fresh()
+            if not auth_manager.ensure_token_fresh():
+                self.error.emit(
+                    "Microsoft session refresh failed. Please sign in again before launching online."
+                )
+                return
             token = auth_manager.access_token
             uid   = auth_manager.uuid or _offline_uuid(self.username)
         else:

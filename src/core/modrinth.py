@@ -44,6 +44,7 @@ _MAX_ICON_BYTES     =   2 * 1024 * 1024  # per-icon cap for untrusted CDN images
 _MAX_ZIP_FILES = 5000
 _MAX_ZIP_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
 _MAX_ZIP_COMPRESSION_RATIO = 100
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ +()\[\]-]+")
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,30 @@ _MAX_ZIP_COMPRESSION_RATIO = 100
 
 class ModrinthError(Exception):
     """Raised on any Modrinth API or network failure."""
+
+
+def safe_filename(filename: str, max_length: int = 180) -> str:
+    """Return a safe local basename for untrusted API-provided filenames."""
+    raw = str(filename or "").strip()
+    if not raw or raw in {".", ".."}:
+        raise ModrinthError("Missing or unsafe filename")
+    if "/" in raw or "\\" in raw or Path(raw).is_absolute():
+        raise ModrinthError(f"Unsafe filename from remote metadata: {filename!r}")
+    safe = _SAFE_FILENAME_RE.sub("_", raw).strip(" .")
+    if not safe:
+        raise ModrinthError("Filename became empty after sanitization")
+    return safe[:max_length]
+
+
+def safe_download_path(base_dir: Path, filename: str) -> Path:
+    """Build a destination path that is guaranteed to stay under base_dir."""
+    base = base_dir.resolve()
+    target = (base / safe_filename(filename)).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ModrinthError(f"Unsafe download path: {filename!r}") from exc
+    return target
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +233,7 @@ def download_file(
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".download_tmp")
 
-    sha1_h   = hashlib.sha1()   if expected_sha1   else None
+    sha1_h   = hashlib.sha1(usedforsecurity=False) if expected_sha1 else None
     sha512_h = hashlib.sha512() if expected_sha512 else None
 
     try:

@@ -129,7 +129,8 @@ class IrisInstallWorker(QObject):
             primary = next((f for f in files if f.get("primary")), files[0] if files else None)
             if not primary:
                 raise RuntimeError(f"No downloadable file found for {name}.")
-            dest = mods_dir / primary["filename"]
+            filename = mr.safe_filename(primary["filename"])
+            dest = mr.safe_download_path(mods_dir, filename)
             if not dest.exists():
                 self.progress.emit(f"Downloading {primary['filename']}…")
                 hashes = primary.get("hashes", {})
@@ -686,7 +687,8 @@ class ShadersTab(QWidget):
                     self._shader_status.setText(f"Rejected {src.name}: {exc}")
                     continue
                 import shutil
-                shutil.copy2(src, dest_dir / src.name)
+                dest = mr.safe_download_path(dest_dir, src.name)
+                shutil.copy2(src, dest)
         self._refresh_installed()
 
     # ------------------------------------------------------------------
@@ -800,7 +802,8 @@ class ShadersTab(QWidget):
             self._shader_status.setText("No file found for this shader.")
             return
 
-        dest = self._shaderpacks_dir() / primary["filename"]
+        filename = mr.safe_filename(primary["filename"])
+        dest = mr.safe_download_path(self._shaderpacks_dir(), filename)
         self._shader_status.setText(f"Downloading {primary['filename']}…")
 
         def do_download():

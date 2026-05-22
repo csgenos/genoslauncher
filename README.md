@@ -30,6 +30,8 @@ Clean light theme (with optional dark mode), no bloat, no subscriptions.
 - `.mrpack` modpack installation with loader auto-detection
 - Mod update checker — compares installed version against Modrinth's latest
 - **Mod profile switching** — create named profiles to enable/disable mod sets per instance
+- Download destinations are sanitized to prevent traversal via untrusted remote filenames
+- Modrinth and CurseForge downloads validate file integrity where hash metadata is provided
 
 ### Server Browser
 - Save favorite servers with name, IP, and port
@@ -45,6 +47,7 @@ Clean light theme (with optional dark mode), no bloat, no subscriptions.
 - **Crash log viewer** — reads `crash-reports/` in-app; browse reports newest-first
 - **Screenshot gallery** — thumbnail grid from `screenshots/`; double-click to open
 - **World backup manager** — zip any save world, restore from backup, delete old backups
+- Restore uses a staged extraction flow with path validation and rollback on failures
 
 ### Appearance & Settings
 - **Dark mode** toggle — full palette swap applied live without a restart (QSS-based rules update immediately)
@@ -73,7 +76,7 @@ pip install -r requirements.txt
 python src/main.py
 ```
 
-**Requirements:** Python 3.11+ · Windows 10/11 primary target · Linux and macOS supported where PySide6 is available.
+**Requirements:** Python >=3.11,<3.13 · Windows 10/11 primary target · Linux and macOS supported where PySide6 is available.
 
 ---
 
@@ -113,12 +116,20 @@ build.bat
 ```
 
 Requires a virtual environment at `venv\`. For release builds set `GENOS_RELEASE=1` — this enables code signing if `signtool` and a certificate are available.
+The build script also emits `SHA256SUMS.txt` for artifact verification.
 
 | Artifact | Path |
 |---|---|
 | Application folder | `dist\GenosLauncher\` |
 | Main executable | `dist\GenosLauncher\GenosLauncher.exe` |
 | Windows installer | `installer_output\GenosLauncher-0.2.0-Setup.exe` |
+| SHA256 checksums | `SHA256SUMS.txt` |
+
+## Release Hardening
+
+- Tag release workflow requires code-signing secrets.
+- CI signs both app and installer artifacts when signing secrets are configured.
+- CI publishes `installer_output\SHA256SUMS.txt` with release artifacts.
 
 Manual PyInstaller invocation:
 

@@ -110,8 +110,8 @@ class InstallWorker(QObject):
             raise RuntimeError("No downloadable file found in this version.")
 
         file_url = primary["url"]
-        filename = primary["filename"]
-        mrpack_path = self.dest_dir / filename
+        filename = mr.safe_filename(primary["filename"])
+        mrpack_path = mr.safe_download_path(self.dest_dir, filename)
 
         # 2. Download .mrpack
         total_size = primary.get("size", 0)
@@ -120,14 +120,21 @@ class InstallWorker(QObject):
         def on_dl(done: int, total: int) -> None:
             self.progress.emit(done, max(total, 1), f"Downloading {filename}...")
 
-        mr.download_file(file_url, mrpack_path, on_progress=on_dl)
+        hashes = primary.get("hashes", {})
+        mr.download_file(
+            file_url,
+            mrpack_path,
+            on_progress=on_dl,
+            expected_sha1=hashes.get("sha1", ""),
+            expected_sha512=hashes.get("sha512", ""),
+        )
 
         # 3. Parse
         self.progress.emit(0, 1, "Parsing modpack...")
         index = mr.parse_mrpack(mrpack_path)
 
         mc_version = index.get("dependencies", {}).get("minecraft", "")
-        instance_name = self.project["title"]
+        instance_name = mr.safe_filename(self.project.get("title") or "Modpack")
         instance_dir = APP_DIR / "instances" / instance_name
 
         # 3b. Install base Minecraft version into the isolated modpack instance.
@@ -327,6 +334,11 @@ class ModpackCard(QFrame):
         self._install_btn.setEnabled(False)
 
 
+    def set_unavailable(self) -> None:
+        self._install_btn.setText("Unavailable")
+        self._install_btn.setEnabled(False)
+
+
 # ---------------------------------------------------------------------------
 # Modpacks tab
 # ---------------------------------------------------------------------------
@@ -474,7 +486,9 @@ class ModpacksTab(QWidget):
         for project in hits:
             card = ModpackCard(project, self._results_widget)
             card.install_requested.connect(self._on_install_requested)
-            if project["id"] in installed:
+            if project.get("source") == "curseforge":
+                card.set_unavailable()
+            elif project["id"] in installed:
                 card.set_installed()
             self._results_layout.insertWidget(self._results_layout.count() - 1, card)
             self._current_cards[project["id"]] = card
@@ -514,6 +528,11 @@ class ModpacksTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_install_requested(self, project: dict) -> None:
+        if project.get("source") == "curseforge":
+            self._status_label.setText(
+                "CurseForge modpack installation is not supported yet. Use Modrinth modpacks for one-click installs."
+            )
+            return
         # Fetch versions on background thread, then start install
         thread = QThread(self)
 

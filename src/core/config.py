@@ -60,10 +60,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "jvm_preset": "performance",
     "window_width": 1280,
     "window_height": 760,
+    "dark_mode": False,
+    "azure_client_id": "",
+    "curseforge_api_key": "",
+    "servers": [],
+    "ms_usernames": [],
+    "active_ms_username": "",
+    "auth_redirect_port": 0,
 }
 
 # Keys whose types are enforced (basic schema validation)
 _SCHEMA: dict[str, type | tuple] = {
+    "version":            str,
+    "minecraft_dir":      str,
     "ram_mb":             int,
     "resolution_width":   int,
     "resolution_height":  int,
@@ -71,16 +80,24 @@ _SCHEMA: dict[str, type | tuple] = {
     "close_on_launch":    bool,
     "show_snapshots":     bool,
     "show_old_versions":  bool,
+    "dark_mode":          bool,
     "first_run":          bool,
     "auth_redirect_port": int,
     "window_width":       int,
     "window_height":      int,
     "jvm_args":           str,
     "jvm_preset":         str,
+    "selected_version":   str,
     "selected_instance_id": str,
     "java_path":          str,
     "last_account":       str,
     "offline_accounts":   list,
+    "instances":          list,
+    "azure_client_id":    str,
+    "curseforge_api_key": str,
+    "servers":            list,
+    "ms_usernames":       list,
+    "active_ms_username": str,
 }
 
 
@@ -155,8 +172,10 @@ class Config:
         if key in {"resolution_height", "window_height"}:
             return max(240, min(int(val), 4320))
         if key == "auth_redirect_port":
+            if not int(val):
+                return 0
             return max(1024, min(int(val), 65535))
-        if key == "offline_accounts" and isinstance(val, list):
+        if key in {"offline_accounts", "ms_usernames"} and isinstance(val, list):
             unique = []
             seen = set()
             for x in val:
@@ -170,6 +189,25 @@ class Config:
                 if isinstance(item, dict) and item.get("name") and item.get("directory"):
                     clean.append(item)
             return clean[:200]
+        if key == "servers" and isinstance(val, list):
+            clean_servers: list[dict] = []
+            for item in val:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()[:80]
+                ip = str(item.get("ip", "")).strip()[:255]
+                if not name or not ip:
+                    continue
+                try:
+                    port = int(item.get("port", 25565))
+                except (TypeError, ValueError):
+                    port = 25565
+                clean_servers.append({
+                    "name": name,
+                    "ip": ip,
+                    "port": max(1, min(port, 65535)),
+                })
+            return clean_servers[:200]
         return val
 
     def _validate(self, data: dict) -> dict:
