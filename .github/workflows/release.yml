@@ -55,16 +55,23 @@ jobs:
           CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
         run: pyinstaller GenosLauncher.spec --clean --noconfirm
 
-      - name: Verify PySide6 present in bundle
+      - name: Verify C-extension packages present in bundle
         shell: pwsh
         run: |
-          $pyside6 = "dist\GenosLauncher\_internal\PySide6"
-          if (-not (Test-Path $pyside6)) {
-            Write-Error "PySide6 is missing from the bundle at: $pyside6"
-            exit 1
+          $base = "dist\GenosLauncher\_internal"
+          $required = @("PySide6", "cryptography", "psutil")
+          $failed = $false
+          foreach ($pkg in $required) {
+            $dir = "$base\$pkg"
+            if (-not (Test-Path $dir)) {
+              Write-Error "MISSING from bundle: $dir"
+              $failed = $true
+            } else {
+              $count = (Get-ChildItem $dir -Recurse).Count
+              Write-Output "OK: $pkg ($count items)"
+            }
           }
-          $count = (Get-ChildItem $pyside6 -Recurse).Count
-          Write-Output "PySide6 bundled OK — $count items in $pyside6"
+          if ($failed) { exit 1 }
 
       - name: Smoke test frozen app imports
         run: dist\GenosLauncher\GenosLauncher.exe --self-test
