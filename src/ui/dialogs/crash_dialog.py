@@ -15,10 +15,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
 )
 
 from ..styles import COLORS as C, FONT
+from ...core.crash_analyzer import analyze_crash_text
 
 
 MAX_CRASH_BYTES = 2 * 1024 * 1024
@@ -88,6 +90,24 @@ class CrashReportDialog(QDialog):
             }}
         """)
         layout.addWidget(self._viewer, 1)
+
+        sugg_title = QLabel("Smart Suggestions")
+        sugg_title.setStyleSheet(f"font-size: {FONT['sm']}; font-weight: 700; color: {C['text_primary']};")
+        layout.addWidget(sugg_title)
+        self._suggestions = QTextEdit()
+        self._suggestions.setReadOnly(True)
+        self._suggestions.setFixedHeight(130)
+        self._suggestions.setStyleSheet(f"""
+            QTextEdit {{
+                background: {C["bg_secondary"]};
+                color: {C["text_primary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 8px;
+                font-size: {FONT["xs"]};
+                padding: 6px;
+            }}
+        """)
+        layout.addWidget(self._suggestions)
 
         btn_row = QHBoxLayout()
         copy_btn = QPushButton("Copy to Clipboard")
@@ -163,5 +183,9 @@ class CrashReportDialog(QDialog):
             else:
                 text = path.read_text(encoding="utf-8", errors="replace")
             self._viewer.setPlainText(text)
+            suggestions = analyze_crash_text(text)
+            lines = [f"[{s.severity.upper()}] {s.title}\n{s.detail}" for s in suggestions]
+            self._suggestions.setPlainText("\n\n".join(lines))
         except OSError as exc:
             self._viewer.setPlainText(f"Could not read file:\n{exc}")
+            self._suggestions.setPlainText("No suggestions available.")
