@@ -142,6 +142,7 @@ class InstancesTab(QWidget):
         self._search_text = ""
         self._instance_search_text = ""
         self._group_filter = "All groups"
+        self._instance_sort = "Name (A-Z)"
         self._load_threads: list[QThread] = []
         self._load_workers: list[QObject] = []
         self._install_workers: dict[str, InstallWorker] = {}
@@ -200,6 +201,12 @@ class InstancesTab(QWidget):
         self._group_filter_combo.setMinimumWidth(180)
         self._group_filter_combo.currentTextChanged.connect(self._on_group_filter_changed)
         instance_filter_row.addWidget(self._group_filter_combo)
+        self._sort_combo = QComboBox()
+        self._sort_combo.setFixedHeight(34)
+        self._sort_combo.setMinimumWidth(180)
+        self._sort_combo.addItems(["Name (A-Z)", "Recently Played", "Minecraft Version"])
+        self._sort_combo.currentTextChanged.connect(self._on_sort_changed)
+        instance_filter_row.addWidget(self._sort_combo)
         root.addLayout(instance_filter_row)
 
         bulk_row = QHBoxLayout()
@@ -322,12 +329,22 @@ class InstancesTab(QWidget):
                         str(instance.get("mc_version", "")),
                         str(instance.get("type", "")),
                         group,
+                        str(instance.get("notes", "")),
+                        " ".join(instance.get("tags", [])),
                     ]
                 ).lower()
                 if text not in blob:
                     continue
             out.append(instance)
         return out
+
+    def _instance_sort_key(self, instance: dict) -> tuple:
+        if self._instance_sort == "Recently Played":
+            last = str(instance.get("last_played_at", "")).strip()
+            return (last == "", last, str(instance.get("name", "")).lower())
+        if self._instance_sort == "Minecraft Version":
+            return (str(instance.get("mc_version", "")).lower(), str(instance.get("name", "")).lower())
+        return (str(instance.get("name", "")).lower(),)
 
     def _render_instances(self) -> None:
         while self._instances_layout.count():
@@ -365,7 +382,7 @@ class InstancesTab(QWidget):
             section = QLabel(f"{group_name} ({len(grouped[group_name])})")
             section.setStyleSheet(f"color: {C['text_secondary']}; font-size: {FONT['sm']}; font-weight: 700;")
             self._instances_layout.addWidget(section)
-            rows = sorted(grouped[group_name], key=lambda i: str(i.get("name", "")).lower())
+            rows = sorted(grouped[group_name], key=self._instance_sort_key, reverse=self._instance_sort == "Recently Played")
             for instance in rows:
                 inst_id = instance.get("id", "")
                 row = QWidget()
@@ -383,6 +400,9 @@ class InstancesTab(QWidget):
                     f"{active}{instance.get('name', 'Instance')} - {instance.get('mc_version', '?')} - "
                     f"{str(instance.get('type', 'custom')).title()}"
                 )
+                tags = instance.get("tags", [])
+                if tags:
+                    detail += f" - tags: {', '.join(tags[:3])}"
                 name = QLabel(detail)
                 name.setStyleSheet(f"color: {C['text_primary']}; font-size: {FONT['md']}; font-weight: 600;")
                 layout.addWidget(name, 1)
@@ -412,6 +432,7 @@ class InstancesTab(QWidget):
     def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
         menu = QMenu(self)
         menu.addAction("Edit", lambda: self._edit_instance(instance))
+        menu.addAction("Edit Metadata", lambda: self._edit_instance_metadata(instance))
         menu.addAction("Validate", lambda: self._validate_instance(instance))
         menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
         menu.addAction("Clone", lambda: self._clone_instance(instance))
@@ -599,6 +620,42 @@ class InstancesTab(QWidget):
             update_instance(instance.get("id", ""), name=name.strip(), jvm_args=jvm_args.strip())
             self._render_instances()
 
+    def _edit_instance_metadata(self, instance: dict) -> None:
+        current_java = str(instance.get("java_path", "")).strip()
+        java_path, ok = QInputDialog.getText(
+            self,
+            "Instance Java Override",
+            "Java executable path (leave blank for global default):",
+            text=current_java,
+        )
+        if not ok:
+            return
+        tags_text, ok = QInputDialog.getText(
+            self,
+            "Instance Tags",
+            "Comma-separated tags:",
+            text=", ".join(instance.get("tags", [])),
+        )
+        if not ok:
+            return
+        notes, ok = QInputDialog.getMultiLineText(
+            self,
+            "Instance Notes",
+            "Notes:",
+            text=str(instance.get("notes", "")),
+        )
+        if not ok:
+            return
+        tags = [t.strip() for t in tags_text.split(",") if t.strip()]
+        update_instance(
+            instance.get("id", ""),
+            java_path=java_path.strip(),
+            tags=tags,
+            notes=notes.strip(),
+        )
+        self._render_instances()
+        self._count_label.setText(f"Updated metadata for {instance.get('name', 'instance')}.")
+
     def _clone_instance(self, instance: dict) -> None:
         cloned = clone_instance(instance.get("id", ""))
         if cloned:
@@ -688,6 +745,10 @@ class InstancesTab(QWidget):
 
     def _on_group_filter_changed(self, group_name: str) -> None:
         self._group_filter = group_name or "All groups"
+        self._render_instances()
+
+    def _on_sort_changed(self, sort_name: str) -> None:
+        self._instance_sort = sort_name or "Name (A-Z)"
         self._render_instances()
 
     def _on_filter_changed(self) -> None:

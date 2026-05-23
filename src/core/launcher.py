@@ -16,6 +16,7 @@ import logging
 import subprocess
 import threading
 import uuid as _uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -24,7 +25,7 @@ from PySide6.QtCore import QObject, Signal
 from .config import config
 from .config import APP_DIR, LOGS_DIR
 from .auth import auth_manager
-from .instances import create_vanilla_instance, find_instance, find_instance_for_version, list_instances
+from .instances import create_vanilla_instance, find_instance, find_instance_for_version, list_instances, update_instance
 from .java_manager import find_best_java, get_preset_args, required_java_for_mc
 from .validators import safe_path_segment, validate_version_id
 
@@ -464,7 +465,7 @@ class LaunchWorker(QObject):
                 "Install or repair the instance first."
             )
             return
-        java = config.get("java_path") or find_best_java(required_java_for_mc(self.version_id))
+        java = (instance or {}).get("java_path") or config.get("java_path") or find_best_java(required_java_for_mc(self.version_id))
         if not java:
             self.error.emit("No compatible Java installation was found. Set Java in Settings.")
             return
@@ -530,6 +531,11 @@ class LaunchWorker(QObject):
                 stderr=subprocess.STDOUT,
                 text=True,
             )
+            if instance:
+                update_instance(
+                    instance.get("id", ""),
+                    last_played_at=datetime.now(timezone.utc).isoformat(),
+                )
             self.process_started.emit()
             self.status_changed.emit("Minecraft is running!")
             self._process.wait()

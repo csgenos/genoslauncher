@@ -225,7 +225,7 @@ class Config:
             for item in val:
                 if isinstance(item, dict) and item.get("name") and item.get("directory"):
                     clean.append(item)
-            return clean[:200]
+            return clean[:2000]
         if key == "servers" and isinstance(val, list):
             clean_servers: list[dict] = []
             for item in val:

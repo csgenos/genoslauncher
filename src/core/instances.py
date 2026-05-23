@@ -50,6 +50,21 @@ def _normalize_instance(instance: dict) -> dict:
         cleaned.get("group"),
         str(cleaned.get("type", "")).strip().lower(),
     )
+    cleaned["notes"] = str(cleaned.get("notes", "")).strip()[:500]
+    raw_tags = cleaned.get("tags", [])
+    if isinstance(raw_tags, str):
+        raw_tags = [t.strip() for t in raw_tags.split(",")]
+    tags: list[str] = []
+    seen: set[str] = set()
+    if isinstance(raw_tags, list):
+        for tag in raw_tags:
+            clean = safe_instance_name(str(tag)).strip()
+            if clean and clean not in seen:
+                tags.append(clean[:24])
+                seen.add(clean)
+    cleaned["tags"] = tags[:12]
+    java_override = str(cleaned.get("java_path", "")).strip()
+    cleaned["java_path"] = java_override
     return cleaned
 
 
