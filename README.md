@@ -67,6 +67,31 @@ Linux users can grab the AppImage or Flatpak from the same page.
 
 ---
 
+## Recent Features
+
+- Per-instance overrides:
+  - Java executable path
+  - RAM allocation (`ram_mb`)
+  - JVM args
+  - Notes and tags
+- Instance list improvements:
+  - Sort by name, Minecraft version, or recently played
+  - Bulk actions on filtered results (set group, remove, delete+remove)
+  - Safer remove flow with explicit "remove from list" vs "delete files"
+- Modpack lifecycle:
+  - Reliable installed-state detection for existing instances
+  - Check installed modpacks for updates
+  - One-click in-place update with staging + rollback safety
+  - Update actions directly from update check results (`Update All` / `Choose One`)
+- Modpack update policy in Settings:
+  - `manual`
+  - `notify`
+  - `auto-on-launch`
+- Startup policy execution:
+  - Update policy can run at app startup even if Modpacks tab is never opened
+- Java runtime selection:
+  - Auto-selection now prefers the newest compatible installed Java
+
 ## Quick Start (Source)
 
 ```bash
