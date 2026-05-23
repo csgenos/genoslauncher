@@ -199,6 +199,7 @@ class ModSearchWorker(QObject):
                 game_version=self.game_version,
                 limit=18,
                 categories=[self.loader] if self.loader else None,
+                sort_index=self.sort_index,
             )
             self.results_ready.emit(hits, total)
         except mr.ModrinthError as exc:
