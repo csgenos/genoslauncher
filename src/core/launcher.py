@@ -235,7 +235,10 @@ def install_loader(
     on_progress=None,
 ) -> str:
     """
-    Install the Fabric or Quilt loader declared in mrpack dependencies.
+    Install the mod loader declared in mrpack dependencies.
+
+    Supports Fabric, Quilt, Forge, and NeoForge via MLL 8.0's unified
+    mod_loader API.
 
     Returns the full version ID to pass to the launcher (e.g.
     "fabric-loader-0.14.21-1.20.1").  Falls back to the plain minecraft
@@ -255,47 +258,95 @@ def install_loader(
         "setMax":      lambda v: _cb(0, v, ""),
     }
 
+    java_path = config.get("java_path") or ""
+
+    try:
+        from minecraft_launcher_lib.mod_loader import Fabric, Forge, Neoforge, Quilt
+        _MOD_LOADER_API = True
+    except ImportError:
+        _MOD_LOADER_API = False
+
     fabric_ver = deps.get("fabric-loader")
     if fabric_ver:
         _cb(0, 1, f"Installing Fabric {fabric_ver} for {mc_version}…")
-        mll.fabric.install_fabric(
-            minecraft_version=mc_version,
-            minecraft_directory=mc_dir,
-            loader_version=fabric_ver,
-            callback=callbacks,
-        )
-        return f"fabric-loader-{fabric_ver}-{mc_version}"
+        try:
+            if _MOD_LOADER_API:
+                Fabric().install(mc_version, mc_dir, callbacks, java=java_path, loader_version=fabric_ver)
+                return Fabric().get_installed_version(mc_version, fabric_ver)
+            else:
+                mll.fabric.install_fabric(
+                    minecraft_version=mc_version,
+                    minecraft_directory=mc_dir,
+                    loader_version=fabric_ver,
+                    callback=callbacks,
+                )
+                return f"fabric-loader-{fabric_ver}-{mc_version}"
+        except Exception as exc:
+            log.warning("Fabric install failed for %s: %s", fabric_ver, exc)
+            return mc_version
 
     quilt_ver = deps.get("quilt-loader")
     if quilt_ver:
         _cb(0, 1, f"Installing Quilt {quilt_ver} for {mc_version}…")
-        mll.quilt.install_quilt(
-            minecraft_version=mc_version,
-            minecraft_directory=mc_dir,
-            loader_version=quilt_ver,
-            callback=callbacks,
-        )
-        return f"quilt-loader-{quilt_ver}-{mc_version}"
+        try:
+            if _MOD_LOADER_API:
+                Quilt().install(mc_version, mc_dir, callbacks, java=java_path, loader_version=quilt_ver)
+                return Quilt().get_installed_version(mc_version, quilt_ver)
+            else:
+                mll.quilt.install_quilt(
+                    minecraft_version=mc_version,
+                    minecraft_directory=mc_dir,
+                    loader_version=quilt_ver,
+                    callback=callbacks,
+                )
+                return f"quilt-loader-{quilt_ver}-{mc_version}"
+        except Exception as exc:
+            log.warning("Quilt install failed for %s: %s", quilt_ver, exc)
+            return mc_version
 
     forge_ver = deps.get("forge")
     if forge_ver:
-        full_ver = f"{mc_version}-{forge_ver}"
         _cb(0, 1, f"Installing Forge {forge_ver} for {mc_version}…")
-        java_path = config.get("java_path") or None
         try:
-            mll.forge.install_forge_version(full_ver, mc_dir, callbacks, java=java_path)
-            return mll.forge.forge_to_installed_version(full_ver)
+            if _MOD_LOADER_API:
+                Forge().install(mc_version, mc_dir, callbacks, java=java_path, loader_version=forge_ver)
+                return Forge().get_installed_version(mc_version, forge_ver)
+            else:
+                full_ver = f"{mc_version}-{forge_ver}"
+                mll.forge.install_forge_version(full_ver, mc_dir, callbacks, java=java_path or None)
+                return mll.forge.forge_to_installed_version(full_ver)
         except Exception as exc:
-            log.warning("Forge install failed for %s: %s", full_ver, exc)
+            log.warning("Forge install failed for %s: %s", forge_ver, exc)
+            return mc_version
 
     neoforge_ver = deps.get("neoforge")
     if neoforge_ver:
-        log.warning(
-            "NeoForge %s detected in mrpack but is not yet supported by this MLL version; "
-            "launching with base Minecraft %s.", neoforge_ver, mc_version
-        )
+        _cb(0, 1, f"Installing NeoForge {neoforge_ver} for {mc_version}…")
+        try:
+            if _MOD_LOADER_API:
+                Neoforge().install(mc_version, mc_dir, callbacks, java=java_path, loader_version=neoforge_ver)
+                return Neoforge().get_installed_version(mc_version, neoforge_ver)
+            else:
+                log.warning(
+                    "NeoForge %s detected in mrpack but requires MLL 8.0+; "
+                    "launching with base Minecraft %s.", neoforge_ver, mc_version
+                )
+        except Exception as exc:
+            log.warning("NeoForge install failed for %s: %s", neoforge_ver, exc)
 
     return mc_version
+
+
+def get_neoforge_versions(mc_version: str) -> list[str]:
+    """Return available NeoForge loader versions for a given Minecraft version."""
+    if not MLL_AVAILABLE:
+        return []
+    try:
+        from minecraft_launcher_lib.mod_loader import Neoforge
+        return Neoforge().get_loader_versions(mc_version, stable_only=False)
+    except Exception as exc:
+        log.warning("Failed to fetch NeoForge versions for %s: %s", mc_version, exc)
+        return []
 
 
 # ---------------------------------------------------------------------------

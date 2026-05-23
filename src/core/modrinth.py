@@ -334,6 +334,75 @@ def get_version(version_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Dependency resolution
+# ---------------------------------------------------------------------------
+
+def get_dependencies(version_id: str) -> list[dict]:
+    """Return list of required dependency dicts for a Modrinth version.
+
+    Each dict has at minimum: dependency_type, project_id (optional version_id).
+    Filters to only dependency_type == 'required'.
+    """
+    data = _get(f"/version/{version_id}")
+    deps = data.get("dependencies", [])
+    return [d for d in deps if d.get("dependency_type") == "required"]
+
+
+def resolve_dependencies(
+    version_id: str,
+    game_version: str,
+    loader: str,
+    _visited: set[str] | None = None,
+) -> list[dict]:
+    """Recursively resolve all required dependencies for a Modrinth version.
+
+    Returns a list of dicts, each with 'project' and 'version' keys ready for
+    installation, de-duplicated by project_id.
+    """
+    if _visited is None:
+        _visited = set()
+
+    deps = get_dependencies(version_id)
+    results: list[dict] = []
+
+    for dep in deps:
+        dep_project_id = dep.get("project_id", "")
+        dep_version_id = dep.get("version_id", "")
+
+        if not dep_project_id or dep_project_id in _visited:
+            continue
+        _visited.add(dep_project_id)
+
+        try:
+            if dep_version_id:
+                dep_version = get_version(dep_version_id)
+                dep_project = get_project(dep_project_id)
+            else:
+                versions = get_project_versions(
+                    dep_project_id,
+                    game_versions=[game_version] if game_version else None,
+                    loaders=[loader] if loader else None,
+                )
+                if not versions:
+                    log.warning("No compatible versions found for dependency %s", dep_project_id)
+                    continue
+                dep_version = versions[0]
+                dep_project = get_project(dep_project_id)
+
+            results.append({"project": dep_project, "version": dep_version})
+
+            # Recurse into transitive deps
+            nested_vid = dep_version.get("id", "")
+            if nested_vid:
+                nested = resolve_dependencies(nested_vid, game_version, loader, _visited)
+                results.extend(nested)
+        except ModrinthError as exc:
+            log.warning("Failed to resolve dependency %s: %s", dep_project_id, exc)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # File download — atomic + hash verification (S-Y-006)
 # ---------------------------------------------------------------------------
 
@@ -503,6 +572,125 @@ def extract_mrpack_overrides(mrpack_path: Path, dest_dir: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
+
+
+def export_mrpack(
+    instance: dict,
+    output_path: Path,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> None:
+    """Export an instance's mods as a .mrpack file.
+
+    Reads mods_index.json for Modrinth-sourced mods (included as download
+    entries with hashes). Non-Modrinth mods and config/resourcepacks/
+    shaderpacks directories are bundled directly as overrides.
+    """
+    import io
+
+    instance_dir = Path(instance.get("directory", ""))
+    mc_version = instance.get("mc_version", "")
+    loader_type = instance.get("type", "vanilla")  # fabric, forge, neoforge, quilt, vanilla
+    name = instance.get("name", "Exported Instance")
+
+    index_path = instance_dir / "mods_index.json"
+    mods_index: dict = {}
+    if index_path.exists():
+        try:
+            mods_index = json.loads(index_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    modrinth_files: list[dict] = []
+    bundled_mods: list[Path] = []
+
+    mods_dir = instance_dir / "mods"
+    if mods_dir.exists():
+        all_mod_files = {f.name: f for f in mods_dir.iterdir() if f.suffix.lower() == ".jar"}
+        modrinth_filenames = set()
+
+        total = len(mods_index)
+        for i, (project_id, entry) in enumerate(mods_index.items()):
+            if on_progress:
+                on_progress(i + 1, total, entry.get("filename", project_id))
+
+            if entry.get("source", "modrinth") == "modrinth":
+                version_id = entry.get("version_id", "")
+                filename = entry.get("filename", "")
+                if not version_id:
+                    continue
+                try:
+                    ver_data = get_version(version_id)
+                    files = ver_data.get("files", [])
+                    primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+                    if primary:
+                        hashes = primary.get("hashes", {})
+                        modrinth_files.append({
+                            "path": f"mods/{primary['filename']}",
+                            "hashes": {
+                                "sha1":   hashes.get("sha1", ""),
+                                "sha512": hashes.get("sha512", ""),
+                            },
+                            "env": {"client": "required", "server": "required"},
+                            "downloads": [primary["url"]],
+                            "fileSize": primary.get("size", 0),
+                        })
+                        modrinth_filenames.add(primary["filename"])
+                        if filename and filename != primary["filename"]:
+                            modrinth_filenames.add(filename)
+                except ModrinthError as exc:
+                    log.warning("Could not fetch version data for %s: %s", project_id, exc)
+
+        # Any jar not tracked as Modrinth gets bundled directly
+        for fname, fpath in all_mod_files.items():
+            if fname not in modrinth_filenames:
+                bundled_mods.append(fpath)
+
+    # Build modrinth.index.json
+    dependencies: dict[str, str] = {"minecraft": mc_version}
+    if loader_type == "fabric":
+        loader_ver = instance.get("loader_version", "")
+        if loader_ver:
+            dependencies["fabric-loader"] = loader_ver
+    elif loader_type == "quilt":
+        loader_ver = instance.get("loader_version", "")
+        if loader_ver:
+            dependencies["quilt-loader"] = loader_ver
+    elif loader_type == "forge":
+        loader_ver = instance.get("loader_version", "")
+        if loader_ver:
+            dependencies["forge"] = loader_ver
+    elif loader_type == "neoforge":
+        loader_ver = instance.get("loader_version", "")
+        if loader_ver:
+            dependencies["neoforge"] = loader_ver
+
+    mrpack_index = {
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": mc_version,
+        "name": name,
+        "dependencies": dependencies,
+        "files": modrinth_files,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    override_dirs = ["config", "resourcepacks", "shaderpacks"]
+
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("modrinth.index.json", json.dumps(mrpack_index, indent=2, ensure_ascii=False))
+
+        # Bundle non-Modrinth mods
+        for mod_path in bundled_mods:
+            zf.write(mod_path, f"overrides/mods/{mod_path.name}")
+
+        # Bundle config dirs as overrides
+        for dir_name in override_dirs:
+            dir_path = instance_dir / dir_name
+            if dir_path.exists():
+                for item in dir_path.rglob("*"):
+                    if item.is_file():
+                        rel = item.relative_to(instance_dir)
+                        zf.write(item, f"overrides/{rel.as_posix()}")
 
 
 def install_mrpack_mods(
