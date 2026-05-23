@@ -78,7 +78,31 @@ Produces `dist\GenosLauncher\GenosLauncher.exe`, an Inno Setup installer, and `S
 - Microsoft sign-in and CurseForge browsing work out of the box — no configuration needed.
 - Cloud Sync requires no third-party account; any writable directory works.
 - macOS builds are currently disabled.
-- GenosLauncher is not yet code-signed. If Windows Defender quarantines Qt DLLs on install, restore them from Protection History, add `%LOCALAPPDATA%\GenosLauncher` as an exclusion, and reinstall.
+
+## Antivirus Troubleshooting (Windows)
+
+GenosLauncher is not yet code-signed. Some antivirus software — including Windows Defender — may quarantine bundled Qt DLLs (PySide6) during or after installation, causing a **"No module named 'PySide6'"** startup error.
+
+### Fix for Windows Security (Defender)
+
+**Step 1 — Restore the quarantined files**
+
+1. Open **Windows Security** → **Virus & threat protection**
+2. Click **Protection history**
+3. Find any recent detections related to `GenosLauncher` or `PySide6`, select them, and click **Restore**
+
+**Step 2 — Add an exclusion folder**
+
+1. In **Windows Security** → **Virus & threat protection**, scroll to **Virus & threat protection settings** and click **Manage settings**
+2. Scroll to **Exclusions** → click **Add or remove exclusions**
+3. Click **+ Add an exclusion** → **Folder**
+4. Enter the path shown in the error dialog (typically `C:\Users\<YourName>\AppData\Local\GenosLauncher`) and click **Select Folder**
+
+**Step 3 — Reinstall**
+
+Run the GenosLauncher installer again with the exclusion in place.
+
+> If you use a third-party antivirus (Malwarebytes, Norton, Kaspersky, etc.) the steps are similar — look for a **Quarantine** or **Protection History** section to restore files, and an **Exclusions** or **Whitelist** section to add the folder path.
 
 ## License
 
