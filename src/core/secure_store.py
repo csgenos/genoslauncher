@@ -136,7 +136,7 @@ def _read_fallback(app_dir: Path) -> dict[str, str]:
         data = json.loads(payload.decode("utf-8"))
         if isinstance(data, dict):
             return {str(k): str(v) for k, v in data.items()}
-    except (OSError, ValueError, InvalidToken):
+    except (OSError, ValueError, InvalidToken, RuntimeError):
         log.warning("Encrypted fallback secret store could not be read")
     return {}
 
@@ -179,7 +179,7 @@ def get_secret(app_dir: Path, key: str) -> str:
     if keyring is not None:
         try:
             value = keyring.get_password(SERVICE_NAME, _account(key))
-            if value:
+            if value is not None:
                 return value
         except Exception:
             log.warning("System keyring read failed for %s", key, exc_info=True)

@@ -504,13 +504,12 @@ class SettingsTab(QWidget):
         behav_layout.addWidget(cf_hint)
         self._cf_key_input = QLineEdit()
         self._cf_key_input.setPlaceholderText("Enter CurseForge API key…")
-        self._cf_key_input.setText(get_secret(APP_DIR, "curseforge_api_key"))
         self._cf_key_input.setEchoMode(QLineEdit.Password)
         self._cf_key_input.setFixedHeight(38)
-        self._cf_key_input.textChanged.connect(
-            lambda t: set_secret(APP_DIR, "curseforge_api_key", t)
-        )
+        self._cf_key_input.textChanged.connect(self._on_cf_key_changed)
         behav_layout.addWidget(self._cf_key_input)
+        # Defer the keyring/fallback read off the critical widget-construction path
+        QTimer.singleShot(0, self._load_cf_key)
 
         cl.addWidget(behav_card)
         cl.addSpacing(24)
@@ -573,6 +572,26 @@ class SettingsTab(QWidget):
             timer.timeout.connect(lambda k=key: config.set(k, self._pending_values.pop(k, "")))
             self._debounce_timers[key] = timer
         timer.start(delay_ms)
+
+    def _load_cf_key(self) -> None:
+        """Load the CurseForge API key from secure storage without blocking _build_ui."""
+        self._cf_key_input.blockSignals(True)
+        self._cf_key_input.setText(get_secret(APP_DIR, "curseforge_api_key"))
+        self._cf_key_input.blockSignals(False)
+
+    def _on_cf_key_changed(self, text: str) -> None:
+        """Debounced save of the CurseForge API key to keyring/encrypted fallback."""
+        _KEY = "curseforge_api_key"
+        self._pending_values[_KEY] = text
+        timer = self._debounce_timers.get(_KEY)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(
+                lambda: set_secret(APP_DIR, "curseforge_api_key", self._pending_values.pop("curseforge_api_key", ""))
+            )
+            self._debounce_timers[_KEY] = timer
+        timer.start(600)
 
     def _on_preset_selected(self, key: str) -> None:
         config.set("jvm_preset", key)
