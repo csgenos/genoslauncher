@@ -17,6 +17,7 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QSize,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
@@ -73,7 +74,7 @@ class WindowControlButton(QWidget):
     animated with a 150ms QPropertyAnimation on the hover_progress float property.
     """
 
-    clicked = __import__('PySide6.QtCore', fromlist=['Signal']).Signal()
+    clicked = Signal()
 
     def __init__(
         self,
