@@ -68,17 +68,39 @@ def _show_startup_error(message: str) -> None:
 
 def _pyside_import_diagnostic(exc: Exception) -> str:
     app_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()
-    expected = os.path.join(app_dir, "_internal", "PySide6")
-    if getattr(sys, "frozen", False):
-        return (
-            "GenosLauncher could not load bundled Qt modules.\n\n"
-            f"Missing module: {exc}\n\n"
-            f"Expected runtime folder:\n{expected}\n\n"
-            "This usually means the app was moved without its _internal folder,\n"
-            "or antivirus quarantined bundled files. Reinstall from the official\n"
-            "Setup .exe and launch from the installed location."
+    if not getattr(sys, "frozen", False):
+        return f"PySide6 is not installed in this Python environment.\n\n{exc}"
+
+    internal_dir = os.path.join(app_dir, "_internal")
+    pyside6_dir = os.path.join(internal_dir, "PySide6")
+
+    if not os.path.isdir(internal_dir):
+        detail = (
+            f"The _internal folder is missing from:\n{app_dir}\n\n"
+            "The installation appears incomplete. Reinstall from the official\n"
+            "Setup .exe and do not move the application after installing."
         )
-    return f"PySide6 is not installed in this Python environment.\n\n{exc}"
+    elif not os.path.isdir(pyside6_dir):
+        detail = (
+            f"PySide6 was removed from:\n{pyside6_dir}\n\n"
+            "Antivirus software likely quarantined Qt files during installation.\n"
+            "Check your antivirus quarantine / protection history, restore any\n"
+            f"quarantined files, add an exclusion for:\n{app_dir}\n\n"
+            "then reinstall."
+        )
+    else:
+        detail = (
+            f"PySide6 is present at:\n{pyside6_dir}\n"
+            "but a required Qt library failed to load. A DLL may be quarantined\n"
+            "or corrupted. Check your antivirus quarantine, add an exclusion\n"
+            "for the folder above, and reinstall."
+        )
+
+    return (
+        "GenosLauncher could not load bundled Qt modules.\n\n"
+        f"Error: {exc}\n\n"
+        + detail
+    )
 
 
 def main() -> int:
