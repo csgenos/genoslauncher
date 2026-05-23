@@ -86,7 +86,7 @@ def main() -> int:
         from PySide6.QtCore import Qt, QTimer
         from PySide6.QtGui import QFont, QIcon
         from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
-    except ModuleNotFoundError as exc:
+    except ImportError as exc:
         _show_startup_error(_pyside_import_diagnostic(exc))
         return 1
 

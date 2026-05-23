@@ -75,7 +75,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $version = python -c "import pathlib,re; print(re.search(r'__version__\s*=\s*[\"'']([^\"'']+)', pathlib.Path('src/_version.py').read_text()).group(1))"
+          $version = python -c "import sys; sys.path.insert(0, 'src'); from _version import __version__; print(__version__)"
           iscc "/DAppVersion=$version" GenosLauncher.iss
 
       - name: Sign installer
