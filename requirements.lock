@@ -421,9 +421,6 @@ pycparser==3.0 \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
     # via cffi
-pywin32-ctypes==0.2.3 \
-    --hash=sha256:de3d8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf
-    # via keyring
 pyside6==6.6.0 \
     --hash=sha256:8103f14ed46a05e81acccbfc8388e3321e392fe54f3aa4a13336bd2ed8af5cd4 \
     --hash=sha256:d41dfcfa32c89502cdaa20206b7e2aba199072f94b424bc6a4d6f50b10f4eb5a \
