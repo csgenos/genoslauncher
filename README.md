@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/glauncherlogo.png" alt="GenosLauncher" width="120" />
+</p>
+
 # GenosLauncher
 
 Open-source Minecraft launcher built with Python + PySide6.
