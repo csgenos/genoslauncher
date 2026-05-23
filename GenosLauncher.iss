@@ -34,10 +34,11 @@ SetupIconFile=assets\icon.ico
 #endif
 UninstallDisplayIcon={app}\{#AppExeName}
 
-; Compression
-Compression=lzma2/ultra64
-SolidCompression=yes
-LZMANumBlockThreads=4
+; Compression — solid mode disabled so files extract directly to the
+; destination rather than via a temp directory, avoiding a window where
+; security software can intercept Qt DLLs before the exclusion applies.
+Compression=lzma2/fast
+SolidCompression=no
 
 ; No admin required — installs per-user into LocalAppData
 PrivilegesRequired=lowest
