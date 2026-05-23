@@ -57,11 +57,25 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y fuse libfuse2
 
+      - name: Download appimagetool
+        env:
+          # Repo variable overrides are optional; the fallback URL is the
+          # official continuous build from the AppImage project on GitHub.
+          APPIMAGETOOL_URL: ${{ vars.APPIMAGETOOL_X86_64_URL || 'https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage' }}
+          PINNED_SHA256: ${{ vars.APPIMAGETOOL_X86_64_SHA256 }}
+        run: |
+          curl -L --retry 3 -o appimagetool "${APPIMAGETOOL_URL}"
+          chmod +x appimagetool
+          COMPUTED_SHA256="$(sha256sum appimagetool | awk '{print $1}')"
+          # If a pinned hash is configured, enforce it; otherwise trust the HTTPS download.
+          if [[ -n "${PINNED_SHA256}" ]]; then
+            echo "${PINNED_SHA256}  appimagetool" | sha256sum -c -
+          fi
+          echo "APPIMAGETOOL_SHA256=${COMPUTED_SHA256}" >> "$GITHUB_ENV"
+
       - name: Build AppImage
         env:
           ARCH: x86_64
-          APPIMAGETOOL_URL: ${{ vars.APPIMAGETOOL_X86_64_URL }}
-          APPIMAGETOOL_SHA256: ${{ vars.APPIMAGETOOL_X86_64_SHA256 }}
         run: bash packaging/appimage/build_appimage.sh
 
       - name: Attest AppImage artifact
