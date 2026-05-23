@@ -67,11 +67,22 @@ Requires Python `>=3.11,<3.13`.
 
 ## Build (Windows)
 
+Requires Python `>=3.11,<3.13`, a virtual environment with dependencies installed, and [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+
 ```bat
 build.bat
 ```
 
-Produces `dist\GenosLauncher\GenosLauncher.exe`, an Inno Setup installer, and `SHA256SUMS.txt`.
+The script runs PyInstaller in **onedir mode**, producing a `dist\GenosLauncher\` folder containing `GenosLauncher.exe` and a `_internal\` directory with all bundled libraries (PySide6, cryptography, psutil, etc.). Inno Setup then packages that folder into a single `installer_output\GenosLauncher-X.Y.Z-Setup.exe` that installs per-user into `%LocalAppData%` with no UAC prompt required.
+
+To build the installer manually:
+
+```bat
+pyinstaller GenosLauncher.spec --clean --noconfirm
+iscc /DAppVersion=0.2.1 GenosLauncher.iss
+```
+
+SHA256 checksums are written to `SHA256SUMS.txt` and published alongside each release for verification.
 
 ## Notes
 
@@ -79,9 +90,22 @@ Produces `dist\GenosLauncher\GenosLauncher.exe`, an Inno Setup installer, and `S
 - Cloud Sync requires no third-party account; any writable directory works.
 - macOS builds are currently disabled.
 
+## Windows SmartScreen
+
+When you run the installer for the first time, Windows SmartScreen may show a blue **"Windows protected your PC"** dialog. This happens because GenosLauncher is a new open-source project and is building its download reputation with Microsoft.
+
+**This is expected and safe to bypass:**
+
+1. Click **More info** (below the warning text)
+2. Click **Run anyway**
+
+SmartScreen reputation is earned by download count — the more people install GenosLauncher, the sooner this dialog disappears for everyone. If you trust the project, clicking "Run anyway" directly helps.
+
+You can verify the download is genuine by checking the SHA256 checksum published on the [Releases page](https://github.com/csgenos/genoslauncher/releases) against the file you downloaded.
+
 ## Antivirus Troubleshooting (Windows)
 
-GenosLauncher is not yet code-signed. Some antivirus software — including Windows Defender — may quarantine bundled Qt DLLs (PySide6) during or after installation, causing a **"No module named 'PySide6'"** startup error.
+Some antivirus software — including Windows Defender — may quarantine bundled Qt DLLs (PySide6) during or after installation, causing a **"No module named 'PySide6'"** startup error.
 
 ### Fix for Windows Security (Defender)
 

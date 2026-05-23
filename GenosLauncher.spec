@@ -5,10 +5,62 @@
 
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
 block_cipher = None
+
+# ---------------------------------------------------------------------------
+# Read version — single source of truth is src/_version.py
+# ---------------------------------------------------------------------------
+_ver_text = Path("src/_version.py").read_text(encoding="utf-8")
+_ver_match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', _ver_text)
+if not _ver_match:
+    raise RuntimeError("Could not read __version__ from src/_version.py")
+_VERSION = _ver_match.group(1)
+_ver_parts = [int(x) for x in re.split(r"[.\-]", _VERSION) if x.isdigit()]
+_ver_parts = (_ver_parts + [0, 0, 0, 0])[:4]  # pad to 4 ints
+
+_PUBLISHER = "GenosLauncher Contributors"
+
+# ---------------------------------------------------------------------------
+# Generate file_version_info.txt for PyInstaller EXE version resource.
+# This embeds company/product/version metadata into the EXE so signtool
+# can read it and authenticode signatures display the correct publisher.
+# ---------------------------------------------------------------------------
+Path("file_version_info.txt").write_text(
+    f"""\
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({_ver_parts[0]}, {_ver_parts[1]}, {_ver_parts[2]}, {_ver_parts[3]}),
+    prodvers=({_ver_parts[0]}, {_ver_parts[1]}, {_ver_parts[2]}, {_ver_parts[3]}),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'040904B0',
+        [StringStruct(u'CompanyName', u'{_PUBLISHER}'),
+         StringStruct(u'FileDescription', u'GenosLauncher Minecraft Launcher'),
+         StringStruct(u'FileVersion', u'{_VERSION}.0'),
+         StringStruct(u'InternalName', u'GenosLauncher'),
+         StringStruct(u'LegalCopyright', u'Copyright 2025 {_PUBLISHER}'),
+         StringStruct(u'OriginalFilename', u'GenosLauncher.exe'),
+         StringStruct(u'ProductName', u'GenosLauncher'),
+         StringStruct(u'ProductVersion', u'{_VERSION}.0')])
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [0x0409, 1200])])
+  ]
+)
+""",
+    encoding="utf-8",
+)
 
 # ---------------------------------------------------------------------------
 # Build-time secret injection

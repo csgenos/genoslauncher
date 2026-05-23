@@ -1,4 +1,5 @@
 """GenosLauncher — premium open-source Minecraft launcher."""
 
-__version__ = "0.1.0"
+from ._version import __version__
+
 __author__ = "GenosLauncher Contributors"
