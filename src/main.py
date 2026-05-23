@@ -104,16 +104,23 @@ def _pyside_import_diagnostic(exc: Exception) -> str:
 
 
 def main() -> int:
+    _self_test = "--self-test" in sys.argv
+
     try:
         from PySide6.QtCore import Qt, QTimer
         from PySide6.QtGui import QFont, QIcon
         from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     except ImportError as exc:
+        if _self_test:
+            # In CI, print to stderr and exit non-zero so the step fails cleanly
+            # rather than blocking with a MessageBox waiting for a click.
+            print(f"SELF-TEST FAILED — PySide6 not bundled: {exc}", file=sys.stderr)
+            return 1
         _show_startup_error(_pyside_import_diagnostic(exc))
         return 1
 
-    if "--self-test" in sys.argv:
-        # Packaging smoke test used by CI: ensure core Qt modules import in the frozen app.
+    if _self_test:
+        # Packaging smoke test: PySide6 imported successfully.
         return 0
 
     setup_logging()
