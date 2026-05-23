@@ -21,15 +21,17 @@ Linux users can grab the AppImage or Flatpak from the same page.
 ### Instances
 - Create vanilla, Fabric, Forge, NeoForge, and Quilt instances
 - Clone, rename, repair, and validate instances
-- Import from Prism Launcher
+- Import from Prism Launcher — one-click 3-page migration wizard with auto-detection
 - Per-instance disk usage display
 - Bulk actions: Validate All, Repair All, Export All
-- Per-instance JVM args and RAM allocation
+- Per-instance JVM args, RAM allocation, and Java path override
 - JVM performance presets (Aikar's Flags, ZGC, Low Latency)
+- Per-instance health score with issue breakdown and reclaimable storage estimate
+- Built-in optimizer for safe cleanup and repair tasks
 
 ### Mods
 - Browse and install mods from Modrinth and CurseForge (no API key required)
-- Automatic dependency resolution — required deps are offered for install alongside the mod
+- Automatic dependency resolution — required deps offered for install alongside the mod
 - Conflict detection — warns when duplicate mod IDs are present in an instance
 - Mod update checker with one-click or bulk "Update All"
 - Per-update rollback — auto-backup before each update, restore with one click
@@ -41,6 +43,9 @@ Linux users can grab the AppImage or Flatpak from the same page.
 - Install CurseForge modpacks (.zip)
 - Export any instance as a redistributable .mrpack
 - Install history log per instance with retry on failure
+- Smart Discovery panel — recommends modpacks based on your installed instances' MC version and loader
+- Modpack update checker with one-click in-place update, staging, and rollback safety
+- Update policy: manual, notify, or auto-on-launch
 
 ### Shaders & Resource Packs
 - Drag-and-drop shader/resource pack installation
@@ -56,48 +61,29 @@ Linux users can grab the AppImage or Flatpak from the same page.
 ### Java
 - Automatic Java download and version management (Eclipse Temurin)
 - Manual Java path override with "Test" button to verify the binary
-- Keyring backend diagnostics in Settings
+- Auto-selection prefers the newest compatible installed Java
+
+### Cloud Sync & Backup
+- Local-first instance backup to any directory (Dropbox, OneDrive, NAS, or any local path — no cloud account required)
+- Push and pull individual instances; keep last 5 backups per instance
+- "Sync All" pushes every instance modified since last sync
+- Auto-sync before each launch (optional)
+- Restore any previous backup from a timestamped menu
+
+### Crash Diagnostics
+- Smart crash signature analysis with severity-ranked suggestions
+- One-click fix actions from crash reports (increase RAM, repair instance, clear logs)
+- One-click modpack update action when a crash suggests an outdated pack
 
 ### Settings & Diagnostics
 - Light and dark themes
+- Performance Advisor — analyses RAM allocation and JVM preset against system memory; gives plain-English recommendations
 - Crash report viewer with copy-to-clipboard and in-report search
 - Screenshot gallery with multi-select, export, and storage size display
 - World backup and restore with multi-select and storage tracking
 - Keyring status panel showing active credential storage backend
 
 ---
-
-## Recent Features
-
-- Per-instance overrides:
-  - Java executable path
-  - RAM allocation (`ram_mb`)
-  - JVM args
-  - Notes and tags
-- Instance list improvements:
-  - Sort by name, Minecraft version, or recently played
-  - Bulk actions on filtered results (set group, remove, delete+remove)
-  - Safer remove flow with explicit "remove from list" vs "delete files"
-- Modpack lifecycle:
-  - Reliable installed-state detection for existing instances
-  - Check installed modpacks for updates
-  - One-click in-place update with staging + rollback safety
-  - Update actions directly from update check results (`Update All` / `Choose One`)
-- Modpack update policy in Settings:
-  - `manual`
-  - `notify`
-  - `auto-on-launch`
-- Startup policy execution:
-  - Update policy can run at app startup even if Modpacks tab is never opened
-- Java runtime selection:
-  - Auto-selection now prefers the newest compatible installed Java
-- Crash diagnostics and auto-fix actions:
-  - Smart crash signature analysis with severity-ranked suggestions
-  - One-click fix actions from crash reports (increase RAM, repair instance, clear logs)
-  - One-click modpack update action from crash suggestions when applicable
-- Instance health and optimization:
-  - Per-instance health score with issue breakdown and reclaimable storage estimate
-  - Built-in optimizer for safe cleanup/repair tasks
 
 ## Quick Start (Source)
 
@@ -134,6 +120,7 @@ Outputs:
 ## Notes
 
 - Microsoft sign-in and CurseForge browsing both work out of the box — no API keys needed.
+- Cloud Sync works with any directory you can write to; no third-party account is required.
 - macOS public build flow is currently disabled.
 
 ## Windows Antivirus Warning
@@ -154,7 +141,7 @@ This is a known limitation for unsigned open-source projects. Code signing is pl
 
 ```text
 src/main.py                 app entry point
-src/core/                   auth, config, launcher, modrinth, instances
+src/core/                   auth, config, launcher, modrinth, instances, cloud_sync
 src/ui/                     Qt UI, tabs, dialogs, components
 tests/                      unit and smoke tests
 build.bat                   Windows build script
