@@ -79,9 +79,22 @@ Produces `dist\GenosLauncher\GenosLauncher.exe`, an Inno Setup installer, and `S
 - Cloud Sync requires no third-party account; any writable directory works.
 - macOS builds are currently disabled.
 
+## Windows SmartScreen
+
+When you run the installer for the first time, Windows SmartScreen may show a blue **"Windows protected your PC"** dialog. This happens because GenosLauncher is a new open-source project and is building its download reputation with Microsoft.
+
+**This is expected and safe to bypass:**
+
+1. Click **More info** (below the warning text)
+2. Click **Run anyway**
+
+SmartScreen reputation is earned by download count — the more people install GenosLauncher, the sooner this dialog disappears for everyone. If you trust the project, clicking "Run anyway" directly helps.
+
+You can verify the download is genuine by checking the SHA256 checksum published on the [Releases page](https://github.com/csgenos/genoslauncher/releases) against the file you downloaded.
+
 ## Antivirus Troubleshooting (Windows)
 
-GenosLauncher is not yet code-signed. Some antivirus software — including Windows Defender — may quarantine bundled Qt DLLs (PySide6) during or after installation, causing a **"No module named 'PySide6'"** startup error.
+Some antivirus software — including Windows Defender — may quarantine bundled Qt DLLs (PySide6) during or after installation, causing a **"No module named 'PySide6'"** startup error.
 
 ### Fix for Windows Security (Defender)
 

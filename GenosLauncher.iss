@@ -34,6 +34,17 @@ SetupIconFile=assets\icon.ico
 #endif
 UninstallDisplayIcon={app}\{#AppExeName}
 
+; Version resource embedded in the installer EXE — read by signtool and
+; displayed in Windows file properties.  All four fields must be present
+; for authenticode signatures to display the publisher name correctly.
+VersionInfoVersion={#AppVersion}.0
+VersionInfoCompany={#AppPublisher}
+VersionInfoDescription={#AppName} Setup
+VersionInfoTextVersion={#AppVersion}
+VersionInfoCopyright=Copyright 2025 {#AppPublisher}
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#AppVersion}.0
+
 ; Compression — solid mode disabled so files extract directly to the
 ; destination rather than via a temp directory, avoiding a window where
 ; security software can intercept Qt DLLs before the exclusion applies.
