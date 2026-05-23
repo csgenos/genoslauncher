@@ -91,6 +91,13 @@ Linux users can grab the AppImage or Flatpak from the same page.
   - Update policy can run at app startup even if Modpacks tab is never opened
 - Java runtime selection:
   - Auto-selection now prefers the newest compatible installed Java
+- Crash diagnostics and auto-fix actions:
+  - Smart crash signature analysis with severity-ranked suggestions
+  - One-click fix actions from crash reports (increase RAM, repair instance, clear logs)
+  - One-click modpack update action from crash suggestions when applicable
+- Instance health and optimization:
+  - Per-instance health score with issue breakdown and reclaimable storage estimate
+  - Built-in optimizer for safe cleanup/repair tasks
 
 ## Quick Start (Source)
 

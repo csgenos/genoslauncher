@@ -30,6 +30,7 @@ from ..components.animated_button import OutlineButton
 from ..components.version_card import VersionCard
 from ..dialogs.backup_dialog import WorldBackupDialog
 from ..dialogs.crash_dialog import CrashReportDialog
+from ..dialogs.instance_health_dialog import InstanceHealthDialog
 from ..dialogs.screenshot_dialog import ScreenshotGalleryDialog
 from ..styles import COLORS as C, FONT
 from ...core.config import config
@@ -458,6 +459,7 @@ class InstancesTab(QWidget):
         menu.addAction("Edit", lambda: self._edit_instance(instance))
         menu.addAction("Edit Metadata", lambda: self._edit_instance_metadata(instance))
         menu.addAction("Validate", lambda: self._validate_instance(instance))
+        menu.addAction("Health Check / Optimize", lambda: self._open_health_dialog(instance))
         menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
         menu.addAction("Clone", lambda: self._clone_instance(instance))
         menu.addAction("Repair", lambda: self._repair_instance(instance))
@@ -569,6 +571,9 @@ class InstancesTab(QWidget):
 
     def _view_crashes(self, instance: dict) -> None:
         CrashReportDialog(instance, self).exec()
+
+    def _open_health_dialog(self, instance: dict) -> None:
+        InstanceHealthDialog(instance, self).exec()
 
     def _view_screenshots(self, instance: dict) -> None:
         ScreenshotGalleryDialog(instance, self).exec()
