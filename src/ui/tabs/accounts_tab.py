@@ -54,10 +54,13 @@ class _SkinFetchWorker(QObject):
             uid = resp.json().get("id", "")
             if not uid:
                 return
-            prof = requests.get(
+            prof_resp = requests.get(
                 f"https://sessionserver.mojang.com/session/minecraft/profile/{uid}",
                 timeout=5,
-            ).json()
+            )
+            if not prof_resp.ok:
+                return
+            prof = prof_resp.json()
             props = prof.get("properties", [])
             if not props:
                 return

@@ -200,7 +200,7 @@ class _WelcomePage(QWidget):
             icon_label.setPixmap(pix)
             icon_label.setFixedSize(72, 72)
         else:
-            icon_label = _make_icon_box(56)
+            icon_label = _make_icon_box(72)
         icon_row = QHBoxLayout()
         icon_row.setAlignment(Qt.AlignCenter)
         icon_row.addWidget(icon_label)

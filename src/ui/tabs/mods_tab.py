@@ -1202,12 +1202,6 @@ class ModsTab(QWidget):
         self._update_all_btn.setText("Updating…")
         self._check_updates_btn.setEnabled(False)
 
-        # Mark all update cards as updating
-        for i in range(self._updates_list.count()):
-            item = self._updates_list.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
-                item.widget().set_updated()
-
         thread = QThread(self)
         worker = ModApplyAllUpdatesWorker(list(self._pending_updates))
         worker.moveToThread(thread)
@@ -1220,6 +1214,13 @@ class ModsTab(QWidget):
                 f"Updated {ok} mod(s)." + (f" {fail} failed." if fail else "")
             )
         )
+        # Mark all cards as done only after updates complete
+        def _mark_all_done():
+            for i in range(self._updates_list.count()):
+                item = self._updates_list.itemAt(i)
+                if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
+                    item.widget().set_updated()
+        worker.finished.connect(lambda ok, fail: _mark_all_done())
         worker.finished.connect(thread.quit)
         self._threads.append(thread)
         self._workers.append(worker)

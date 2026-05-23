@@ -183,7 +183,7 @@ class SplashScreen(QWidget):
     # ------------------------------------------------------------------
 
     def _tick_progress(self) -> None:
-        self._prog_value = (self._prog_value + 2) % 101
+        self._prog_value = (self._prog_value + 2) % 100
         self._progress.setValue(self._prog_value)
 
     # ------------------------------------------------------------------
