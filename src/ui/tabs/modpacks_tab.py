@@ -458,9 +458,12 @@ class ModpacksTab(QWidget):
         self._outdated_instances: dict[str, str] = {}
         self._active_update_threads: list[QThread] = []
         self._active_update_workers: list[ModpackInstanceUpdateWorker] = []
+        self._update_policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
+        if self._update_policy in {"notify", "auto-on-launch"}:
+            QTimer.singleShot(900, lambda: self._check_installed_updates(interactive=False))
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -783,13 +786,13 @@ class ModpacksTab(QWidget):
         except Exception as exc:
             self._status_label.setText(f"Import failed: {exc}")
 
-    def _check_installed_updates(self) -> None:
+    def _check_installed_updates(self, interactive: bool = True) -> None:
         self._status_label.setText("Checking installed modpacks for updates...")
         thread = QThread(self)
         worker = UpdateCheckWorker()
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(self._on_update_check_finished)
+        worker.finished.connect(lambda outdated, intr=interactive: self._on_update_check_finished(outdated, intr))
         worker.error.connect(lambda msg: self._status_label.setText(f"Update check failed: {msg}"))
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
@@ -801,11 +804,12 @@ class ModpacksTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    def _on_update_check_finished(self, outdated: dict) -> None:
+    def _on_update_check_finished(self, outdated: dict, interactive: bool = True) -> None:
         self._outdated_instances = dict(outdated)
         if not outdated:
             self._status_label.setText("All installed modpacks are up to date.")
             return
+        policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
         names: list[str] = []
         for instance in list_instances():
             iid = str(instance.get("id", ""))
@@ -815,6 +819,10 @@ class ModpacksTab(QWidget):
         if len(names) > 3:
             preview += f" (+{len(names) - 3} more)"
         self._status_label.setText(f"{len(outdated)} modpack instance(s) have updates: {preview}")
+        if not interactive:
+            if policy == "auto-on-launch":
+                self._update_all_outdated_instances(ask_confirmation=False)
+            return
         action, ok = QInputDialog.getItem(
             self,
             "Modpack Updates",
@@ -848,19 +856,20 @@ class ModpacksTab(QWidget):
             return
         self._start_instance_update(mapping[choice], 1, 1)
 
-    def _update_all_outdated_instances(self) -> None:
+    def _update_all_outdated_instances(self, ask_confirmation: bool = True) -> None:
         targets = [i for i in list_instances() if str(i.get("id", "")) in self._outdated_instances]
         if not targets:
             self._status_label.setText("No outdated modpack instances available.")
             return
-        reply = QMessageBox.question(
-            self,
-            "Update All Modpacks",
-            f"Update {len(targets)} outdated modpack instance(s)?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
+        if ask_confirmation:
+            reply = QMessageBox.question(
+                self,
+                "Update All Modpacks",
+                f"Update {len(targets)} outdated modpack instance(s)?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
         total = len(targets)
         for idx, instance in enumerate(targets, start=1):
             self._start_instance_update(instance, idx, total)
