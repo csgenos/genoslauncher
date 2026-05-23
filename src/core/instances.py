@@ -65,6 +65,11 @@ def _normalize_instance(instance: dict) -> dict:
     cleaned["tags"] = tags[:12]
     java_override = str(cleaned.get("java_path", "")).strip()
     cleaned["java_path"] = java_override
+    try:
+        ram_override = int(cleaned.get("ram_mb", 0))
+    except (TypeError, ValueError):
+        ram_override = 0
+    cleaned["ram_mb"] = max(0, min(ram_override, 32768))
     return cleaned
 
 

@@ -469,7 +469,8 @@ class LaunchWorker(QObject):
         if not java:
             self.error.emit("No compatible Java installation was found. Set Java in Settings.")
             return
-        ram    = config.get("ram_mb", 4096)
+        ram_override = int((instance or {}).get("ram_mb", 0) or 0)
+        ram    = ram_override if ram_override >= 512 else config.get("ram_mb", 4096)
         width  = config.get("resolution_width", 1280)
         height = config.get("resolution_height", 720)
         fullscreen = config.get("fullscreen", False)

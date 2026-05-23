@@ -182,6 +182,11 @@ class InstancesTab(QWidget):
         import_btn.setFixedWidth(100)
         import_btn.clicked.connect(self._import_menu)
         header_row.addWidget(import_btn)
+        bulk_btn = OutlineButton("Bulk Actions")
+        bulk_btn.setFixedHeight(34)
+        bulk_btn.setFixedWidth(126)
+        bulk_btn.clicked.connect(self._bulk_actions)
+        header_row.addWidget(bulk_btn)
 
         root.addLayout(header_row)
 
@@ -630,6 +635,14 @@ class InstancesTab(QWidget):
         )
         if not ok:
             return
+        ram_text, ok = QInputDialog.getText(
+            self,
+            "Instance RAM Override",
+            "RAM (MB, leave blank for global default):",
+            text=str(instance.get("ram_mb", "") or ""),
+        )
+        if not ok:
+            return
         tags_text, ok = QInputDialog.getText(
             self,
             "Instance Tags",
@@ -647,14 +660,51 @@ class InstancesTab(QWidget):
         if not ok:
             return
         tags = [t.strip() for t in tags_text.split(",") if t.strip()]
+        try:
+            ram_value = int(ram_text.strip()) if ram_text.strip() else 0
+        except ValueError:
+            ram_value = 0
         update_instance(
             instance.get("id", ""),
             java_path=java_path.strip(),
+            ram_mb=max(0, min(ram_value, 32768)),
             tags=tags,
             notes=notes.strip(),
         )
         self._render_instances()
         self._count_label.setText(f"Updated metadata for {instance.get('name', 'instance')}.")
+
+    def _bulk_actions(self) -> None:
+        target = self._filter_instances(list_instances())
+        if not target:
+            self._count_label.setText("No instances match current filters.")
+            return
+        action, ok = QInputDialog.getItem(
+            self,
+            "Bulk Actions",
+            f"Action for {len(target)} filtered instance(s):",
+            ["Set Group", "Remove from List", "Delete Files and Remove"],
+            0,
+            False,
+        )
+        if not ok or not action:
+            return
+        if action == "Set Group":
+            group_name, ok = QInputDialog.getText(self, "Set Group", "Group name:")
+            if not ok:
+                return
+            for inst in target:
+                set_instance_group(inst.get("id", ""), group_name.strip())
+            self._render_instances()
+            self._count_label.setText(f"Updated group for {len(target)} instance(s).")
+            return
+        delete_files = action == "Delete Files and Remove"
+        for inst in target:
+            remove_instance(inst.get("id", ""), delete_files=delete_files)
+            if config.get("selected_instance_id", "") == inst.get("id", ""):
+                config.set("selected_instance_id", "")
+        self._render_instances()
+        self._count_label.setText(f"Removed {len(target)} instance(s).")
 
     def _clone_instance(self, instance: dict) -> None:
         cloned = clone_instance(instance.get("id", ""))
