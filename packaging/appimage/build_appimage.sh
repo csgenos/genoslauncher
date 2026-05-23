@@ -57,13 +57,21 @@ shutil.copy('${APPDIR}/genoslauncher.png', '${APPDIR}/usr/share/icons/hicolor/25
 fi
 
 # ── 3. Run appimagetool ───────────────────────────────────────────────────────
-APPIMAGETOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+APPIMAGETOOL_URL="${APPIMAGETOOL_URL:-https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage}"
+APPIMAGETOOL_SHA256="${APPIMAGETOOL_SHA256:-}"
 APPIMAGETOOL="${REPO_ROOT}/appimagetool"
 
 if [[ ! -x "${APPIMAGETOOL}" ]]; then
+    if [[ -z "${APPIMAGETOOL_SHA256}" ]]; then
+        echo "APPIMAGETOOL_SHA256 must be set before downloading appimagetool." >&2
+        exit 1
+    fi
     echo "==> Downloading appimagetool for ${ARCH}…"
     curl -L --retry 3 -o "${APPIMAGETOOL}" "${APPIMAGETOOL_URL}"
+    echo "${APPIMAGETOOL_SHA256}  ${APPIMAGETOOL}" | sha256sum -c -
     chmod +x "${APPIMAGETOOL}"
+elif [[ -n "${APPIMAGETOOL_SHA256}" ]]; then
+    echo "${APPIMAGETOOL_SHA256}  ${APPIMAGETOOL}" | sha256sum -c -
 fi
 
 VERSION="$(python3 -c "import re, pathlib; print(re.search(r'__version__\s*=\s*[\"\'](.*?)[\"\']\s*$', pathlib.Path('src/_version.py').read_text(), re.M).group(1))")"

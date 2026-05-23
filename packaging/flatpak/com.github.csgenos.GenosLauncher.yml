@@ -12,13 +12,11 @@ finish-args:
   - --socket=wayland
   # Network (Modrinth, CurseForge, Microsoft auth, Minecraft downloads)
   - --share=network
-  # Access to Minecraft game files in home
-  - --filesystem=home
+  # Import/export access is limited to Downloads; app data stays in the sandbox.
+  - --filesystem=xdg-download:ro
   # Keyring for credential storage
   - --socket=pcsc
   - --talk-name=org.freedesktop.secrets
-  # Allow launching Minecraft processes
-  - --allow=devel
 
 modules:
   - name: genoslauncher

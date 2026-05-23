@@ -10,6 +10,8 @@ Features:
 
 from __future__ import annotations
 
+import shutil
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -86,11 +88,14 @@ class InstallWorker(QObject):
         self.dest_dir = dest_dir
         self.requested_game_version = requested_game_version
         self._mrpack_path: Path | None = None
+        self._staging_dir: Path | None = None
 
     def run(self) -> None:
         try:
             self._install()
         except Exception as exc:
+            if self._staging_dir is not None:
+                shutil.rmtree(self._staging_dir, ignore_errors=True)
             self.finished.emit(False, str(exc))
             return
         finally:
@@ -150,9 +155,11 @@ class InstallWorker(QObject):
         instance_dir = APP_DIR / "instances" / instance_name
         if instance_dir.exists() and any(instance_dir.iterdir()):
             raise RuntimeError("This modpack version already has an instance directory.")
+        staging_dir = instance_dir.with_name(f".{instance_dir.name}.staging-{uuid.uuid4().hex[:8]}")
+        self._staging_dir = staging_dir
 
         # 3b. Install base Minecraft version into the isolated modpack instance.
-        mc_dir = str(instance_dir)
+        mc_dir = str(staging_dir)
         self.progress.emit(0, 1, f"Installing Minecraft {mc_version}…")
         install_minecraft_base(
             mc_version, mc_dir,
@@ -171,7 +178,7 @@ class InstallWorker(QObject):
         def on_mod(current: int, total: int, fname: str) -> None:
             self.progress.emit(current, max(total, 1), f"Downloading mod {current}/{total}: {fname}")
 
-        failures = mr.install_mrpack_mods(index, instance_dir, on_progress=on_mod)
+        failures = mr.install_mrpack_mods(index, staging_dir, on_progress=on_mod)
         if failures:
             failed_str = ", ".join(failures[:3])
             if len(failures) > 3:
@@ -180,9 +187,14 @@ class InstallWorker(QObject):
 
         # 5. Extract overrides
         self.progress.emit(0, 1, "Extracting overrides...")
-        mr.extract_mrpack_overrides(mrpack_path, instance_dir)
+        mr.extract_mrpack_overrides(mrpack_path, staging_dir)
 
-        # 6. Register instance in config
+        if instance_dir.exists():
+            raise RuntimeError("This modpack version already has an instance directory.")
+        shutil.move(str(staging_dir), str(instance_dir))
+        self._staging_dir = instance_dir
+
+        # 6. Register instance in config after every file operation succeeds.
         create_modpack_instance(
             self.project,
             mc_version,
@@ -190,6 +202,7 @@ class InstallWorker(QObject):
             pack_version_id=self.version.get("id", ""),
             launch_version_id=loader_version_id,
         )
+        self._staging_dir = None
 
         return failures
 
@@ -389,6 +402,8 @@ class ModpacksTab(QWidget):
         self._search_threads: list[QThread] = []
         self._workers: list[QObject] = []
         self._search_generation = 0
+        self._active_search_thread: QThread | None = None
+        self._search_pending = False
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
@@ -494,6 +509,11 @@ class ModpacksTab(QWidget):
         self._search_timer.start(400)
 
     def _execute_search(self) -> None:
+        if self._active_search_thread is not None and self._active_search_thread.isRunning():
+            self._search_generation += 1
+            self._search_pending = True
+            self._status_label.setText("Search queued...")
+            return
         query = self._search_box.text().strip()
         ver_text = self._version_filter.currentText()
         game_version = "" if ver_text.startswith("Any") else ver_text
@@ -512,13 +532,24 @@ class ModpacksTab(QWidget):
         worker.error.connect(lambda msg, gen=generation: self._on_search_error(gen, msg))
         worker.results_ready.connect(thread.quit)
         worker.error.connect(thread.quit)
-        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
-        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        self._active_search_thread = thread
+        thread.finished.connect(lambda t=thread, w=worker: self._cleanup_search_thread(t, w))
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._search_threads.append(thread)
         self._workers.append(worker)
         thread.start()
+
+    def _cleanup_search_thread(self, thread: QThread, worker: QObject) -> None:
+        if thread in self._search_threads:
+            self._search_threads.remove(thread)
+        if worker in self._workers:
+            self._workers.remove(worker)
+        if self._active_search_thread is thread:
+            self._active_search_thread = None
+        if self._search_pending:
+            self._search_pending = False
+            QTimer.singleShot(0, self._execute_search)
 
     def _on_results(self, generation: int, hits: list[dict], total: int) -> None:
         if generation != self._search_generation:

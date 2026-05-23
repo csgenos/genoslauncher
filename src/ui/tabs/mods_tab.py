@@ -148,12 +148,29 @@ def _switch_profile(instance_dir: Path, new_profile: str) -> None:
     disabled_dir.mkdir(exist_ok=True)
 
     enabled_set = set(data["profiles"][new_profile])
+    moves: list[tuple[Path, Path]] = []
     for f in list(mods_dir.iterdir()):
         if f.suffix.lower() == ".jar" and f.name not in enabled_set:
-            shutil.move(str(f), str(disabled_dir / f.name))
+            moves.append((f, disabled_dir / f.name))
     for f in list(disabled_dir.iterdir()):
         if f.suffix.lower() == ".jar" and f.name in enabled_set:
-            shutil.move(str(f), str(mods_dir / f.name))
+            moves.append((f, mods_dir / f.name))
+
+    completed: list[tuple[Path, Path]] = []
+    try:
+        for src, dst in moves:
+            if dst.exists():
+                raise RuntimeError(f"Cannot switch profile because '{dst.name}' already exists.")
+            src.replace(dst)
+            completed.append((src, dst))
+    except Exception:
+        for src, dst in reversed(completed):
+            try:
+                if dst.exists() and not src.exists():
+                    dst.replace(src)
+            except OSError:
+                pass
+        raise
 
     data["active"] = new_profile
     _save_profiles(instance_dir, data)
@@ -592,6 +609,8 @@ class ModsTab(QWidget):
         self._threads: list[QThread] = []
         self._workers: list[QObject] = []
         self._search_generation = 0
+        self._active_search_thread: QThread | None = None
+        self._search_pending = False
         self._cards: dict[str, ModCard] = {}
         self._build_ui()
         QTimer.singleShot(250, self.refresh_instances)
@@ -836,6 +855,11 @@ class ModsTab(QWidget):
     # ------------------------------------------------------------------
 
     def _execute_search(self) -> None:
+        if self._active_search_thread is not None and self._active_search_thread.isRunning():
+            self._search_generation += 1
+            self._search_pending = True
+            self._status.setText("Search queued...")
+            return
         query        = self._search_box.text().strip() if hasattr(self, "_search_box") else ""
         game_version = self._version_filter.currentData() if hasattr(self, "_version_filter") else ""
         source       = self._source_combo.currentData() if hasattr(self, "_source_combo") else "modrinth"
@@ -869,11 +893,22 @@ class ModsTab(QWidget):
         worker.error.connect(thread.quit)
         self._threads.append(thread)
         self._workers.append(worker)
-        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
-        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        self._active_search_thread = thread
+        thread.finished.connect(lambda t=thread, w=worker: self._cleanup_search_thread(t, w))
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.start()
+
+    def _cleanup_search_thread(self, thread: QThread, worker: QObject) -> None:
+        if thread in self._threads:
+            self._threads.remove(thread)
+        if worker in self._workers:
+            self._workers.remove(worker)
+        if self._active_search_thread is thread:
+            self._active_search_thread = None
+        if self._search_pending:
+            self._search_pending = False
+            QTimer.singleShot(0, self._execute_search)
 
     def _on_results(self, generation: int, hits: list[dict], total: int) -> None:
         if generation != self._search_generation:

@@ -25,6 +25,9 @@ class UISmokeTests(unittest.TestCase):
             tab = HomeTab()
             self.assertIsNotNone(tab)
             self.assertIsNotNone(tab._version_combo)
+            tab.close()
+            tab.deleteLater()
+            self.app.processEvents()
 
     def test_instances_tab_constructs(self) -> None:
         from src.ui.tabs.instances_tab import InstancesTab
@@ -33,6 +36,9 @@ class UISmokeTests(unittest.TestCase):
             tab = InstancesTab()
             self.assertIsNotNone(tab)
             self.assertIsNotNone(tab._instances_layout)
+            tab.close()
+            tab.deleteLater()
+            self.app.processEvents()
 
     def test_accounts_tab_constructs(self) -> None:
         from src.ui.tabs.accounts_tab import AccountsTab
@@ -40,6 +46,9 @@ class UISmokeTests(unittest.TestCase):
         tab = AccountsTab()
         self.assertIsNotNone(tab)
         self.assertIsNotNone(tab._accounts_layout)
+        tab.close()
+        tab.deleteLater()
+        self.app.processEvents()
 
     def test_main_window_constructs(self) -> None:
         from src.ui.main_window import MainWindow
@@ -50,6 +59,9 @@ class UISmokeTests(unittest.TestCase):
             win = MainWindow()
             self.assertIsNotNone(win)
             self.assertIsNotNone(win._tabs)
+            win.close()
+            win.deleteLater()
+            self.app.processEvents()
 
 
 if __name__ == "__main__":

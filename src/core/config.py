@@ -55,6 +55,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "resolution_height": 720,
     "fullscreen": False,
     "close_on_launch": False,
+    "allow_online_launch_token": False,
     "selected_version": "",
     "selected_instance_id": "",
     "last_account": "",
@@ -84,6 +85,7 @@ _SCHEMA: dict[str, type | tuple] = {
     "resolution_height":  int,
     "fullscreen":         bool,
     "close_on_launch":    bool,
+    "allow_online_launch_token": bool,
     "show_snapshots":     bool,
     "show_old_versions":  bool,
     "dark_mode":          bool,
@@ -263,6 +265,8 @@ class Config:
                 try:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         stored = json.load(f)
+                    if not isinstance(stored, dict):
+                        raise ValueError("Config root must be a JSON object.")
                     migrated_secret = False
                     legacy_cf_key = stored.pop("curseforge_api_key", "")
                     if isinstance(legacy_cf_key, str) and legacy_cf_key.strip():
@@ -272,7 +276,7 @@ class Config:
                     if migrated_secret:
                         self._save_locked()
                     return
-                except (json.JSONDecodeError, OSError):
+                except (json.JSONDecodeError, OSError, ValueError):
                     try:
                         backup = CONFIG_FILE.with_suffix(f".corrupt-{int(time.time())}.json")
                         shutil.copy2(CONFIG_FILE, backup)
