@@ -119,7 +119,7 @@ jobs:
           flatpak-builder \
             --force-clean \
             --repo=flatpak-repo \
-            --install-deps-from=flathub \
+            --disable-rofiles-fuse \
             flatpak-build-dir \
             packaging/flatpak/com.github.csgenos.GenosLauncher.yml
 
