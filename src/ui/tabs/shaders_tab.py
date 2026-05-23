@@ -164,6 +164,27 @@ class IrisInstallWorker(QObject):
         return matches[-1] if matches else ""
 
 
+class CompatFetchWorker(QObject):
+    """Fetches supported game versions for a Modrinth shader project."""
+    done = Signal(str, list)  # project_id, list of game version strings
+    err = Signal(str)
+
+    def __init__(self, project_id: str) -> None:
+        super().__init__()
+        self._project_id = project_id
+
+    def run(self) -> None:
+        try:
+            versions = mr.get_project_versions(self._project_id)
+            game_versions: set[str] = set()
+            for v in versions[:20]:
+                for gv in v.get("game_versions", []):
+                    game_versions.add(gv)
+            self.done.emit(self._project_id, sorted(game_versions, reverse=True))
+        except Exception:
+            self.done.emit(self._project_id, [])
+
+
 class ShaderDownloadWorker(QObject):
     finished = Signal(bool, str)
 
@@ -263,7 +284,6 @@ class ShaderCard(QFrame):
         super().__init__(parent)
         self._project = project
         self.setObjectName("ShaderCard")
-        self.setFixedHeight(88)
         self.setStyleSheet(f"""
             #ShaderCard {{
                 background: {C["bg_primary"]};
@@ -273,8 +293,14 @@ class ShaderCard(QFrame):
             #ShaderCard:hover {{ border-color: {C["border_strong"]}; }}
         """)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        main_row = QWidget()
+        main_row.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(main_row)
+        layout.setContentsMargins(14, 12, 14, 8)
         layout.setSpacing(12)
 
         # Icon
@@ -325,6 +351,43 @@ class ShaderCard(QFrame):
         """)
         install_btn.clicked.connect(lambda: self.install_requested.emit(self._project))
         layout.addWidget(install_btn)
+
+        outer.addWidget(main_row)
+
+        # Compat badge row (hidden until fetched)
+        self._badge_row_widget = QWidget()
+        self._badge_row_widget.setStyleSheet("background: transparent;")
+        self._badge_layout = QHBoxLayout(self._badge_row_widget)
+        self._badge_layout.setContentsMargins(14, 0, 14, 8)
+        self._badge_layout.setSpacing(4)
+        self._badge_layout.addStretch()
+        self._badge_row_widget.setVisible(False)
+        outer.addWidget(self._badge_row_widget)
+
+    def set_compat_badges(self, current_mc_version: str, supported_versions: list[str]) -> None:
+        while self._badge_layout.count():
+            item = self._badge_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not supported_versions:
+            self._badge_row_widget.setVisible(False)
+            return
+
+        recent = supported_versions[:6]
+        for ver in recent:
+            is_match = ver == current_mc_version
+            badge = QLabel(("✓ " if is_match else "") + ver)
+            color = C["success"] if is_match else C["text_tertiary"]
+            bg = C["accent_green_soft"] if is_match else C["bg_tertiary"]
+            badge.setStyleSheet(
+                f"font-size: {FONT['xs']}; color: {color}; background: {bg}; "
+                f"border-radius: 4px; padding: 1px 6px;"
+            )
+            self._badge_layout.addWidget(badge)
+
+        self._badge_layout.addStretch()
+        self._badge_row_widget.setVisible(True)
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +484,8 @@ class ShadersTab(QWidget):
         self._install_threads: list[QThread] = []
         self._workers: list[QObject] = []
         self._search_generation = 0
+        self._shader_cards: dict[str, ShaderCard] = {}
+        self._compat_threads: list[QThread] = []
         self.setAcceptDrops(True)
         self._build_ui()
         QTimer.singleShot(300, self._refresh_installed)
@@ -571,7 +636,24 @@ class ShadersTab(QWidget):
         instance_id = self._instance_combo.itemData(index) or ""
         set_selected_instance(instance_id)
         self._mc_dir = selected_instance_dir()
+        self._reset_iris_btn()
         self._refresh_installed()
+
+    def _reset_iris_btn(self) -> None:
+        """Re-evaluate whether Iris is installed for the current selection and reset button."""
+        if not hasattr(self, "_iris_btn"):
+            return
+        mc_dir_str = str(self._mc_dir)
+        existing = next(
+            (inst for inst in list_instances() if inst.get("directory") == mc_dir_str),
+            None,
+        )
+        if existing is not None:
+            self._iris_btn.setText("Installed ✓")
+            self._iris_btn.setEnabled(False)
+        else:
+            self._iris_btn.setText("Install Iris")
+            self._iris_btn.setEnabled(True)
 
     def _build_iris_card(self) -> QFrame:
         card = QFrame()
@@ -634,9 +716,10 @@ class ShadersTab(QWidget):
         idx = self._iris_version_combo.findText(current_ver)
         if idx >= 0:
             self._iris_version_combo.setCurrentIndex(idx)
+        self._iris_version_combo.currentIndexChanged.connect(lambda _: self._reset_iris_btn())
         right_col.addWidget(self._iris_version_combo)
 
-        self._iris_btn = QPushButton("Install")
+        self._iris_btn = QPushButton("Install Iris")
         self._iris_btn.setFixedSize(130, 34)
         self._iris_btn.setCursor(Qt.PointingHandCursor)
         self._iris_btn.setStyleSheet(f"""
@@ -750,6 +833,8 @@ class ShadersTab(QWidget):
             self._shader_status.setText(
                 f"Ignored {len(rejected)} unsupported file(s). Only .zip packs can be installed."
             )
+        elif installed:
+            self._shader_status.setText(f"Installed {installed} shader(s).")
         self._refresh_installed()
 
     # ------------------------------------------------------------------
@@ -773,16 +858,24 @@ class ShadersTab(QWidget):
         def on_finished(success: bool, message: str, fabric_version_id: str) -> None:
             self._iris_version_combo.setEnabled(True)
             if success:
-                instance = create_custom_instance(
-                    f"Iris + Sodium {mc_version}",
-                    fabric_version_id,
-                    directory=self._mc_dir,
+                mc_dir_str = str(self._mc_dir)
+                existing = next(
+                    (inst for inst in list_instances() if inst.get("directory") == mc_dir_str),
+                    None,
                 )
-                set_selected_instance(instance["id"])
+                if existing is None:
+                    instance = create_custom_instance(
+                        f"Iris + Sodium {mc_version}",
+                        fabric_version_id,
+                        directory=self._mc_dir,
+                    )
+                    set_selected_instance(instance["id"])
+                else:
+                    set_selected_instance(existing["id"])
                 self._iris_btn.setText("Installed ✓")
                 self._iris_btn.setEnabled(False)
             else:
-                self._iris_btn.setText("Install")
+                self._iris_btn.setText("Install Iris")
                 self._iris_btn.setEnabled(True)
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.critical(self, "Install Failed", message)
@@ -839,10 +932,37 @@ class ShadersTab(QWidget):
         if generation != self._search_generation:
             return
         self._shader_status.setText(f"{total:,} shaders found on Modrinth")
+        self._shader_cards.clear()
         for project in hits:
             card = ShaderCard(project, self)
             card.install_requested.connect(self._on_shader_install)
             self._shader_results_layout.addWidget(card)
+            pid = project.get("id", "")
+            if pid:
+                self._shader_cards[pid] = card
+                self._fetch_shader_compat(pid)
+
+    def _fetch_shader_compat(self, project_id: str) -> None:
+        thread = QThread(self)
+        worker = CompatFetchWorker(project_id)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_compat_done)
+        worker.done.connect(thread.quit)
+        self._compat_threads.append(thread)
+        thread.finished.connect(lambda: self._compat_threads.remove(thread) if thread in self._compat_threads else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_compat_done(self, project_id: str, supported_versions: list) -> None:
+        card = self._shader_cards.get(project_id)
+        if card is None:
+            return
+        from ...core.instances import selected_instance
+        instance = selected_instance()
+        mc_version = (instance or {}).get("mc_version", "") if instance else ""
+        card.set_compat_badges(mc_version, supported_versions)
 
     def _on_shader_error(self, generation: int, msg: str) -> None:
         if generation != self._search_generation:

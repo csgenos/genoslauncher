@@ -7,6 +7,8 @@ All settings auto-save to config.json via the config singleton.
 
 from __future__ import annotations
 
+import subprocess
+
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
 from PySide6.QtWidgets import (
@@ -373,11 +375,19 @@ class SettingsTab(QWidget):
         browse_btn.setFixedSize(80, 38)
         browse_btn.clicked.connect(self._browse_java)
         java_h.addWidget(browse_btn)
+        test_java_btn = OutlineButton("Test")
+        test_java_btn.setFixedSize(60, 38)
+        test_java_btn.clicked.connect(self._test_java_path)
+        java_h.addWidget(test_java_btn)
         java_layout.addWidget(SettingRow(
             "Java Executable",
             java_row,
             hint="Path to java.exe / java binary. Blank = auto-detect.",
         ))
+        self._java_test_lbl = QLabel("")
+        self._java_test_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_secondary']};")
+        self._java_test_lbl.setVisible(False)
+        java_layout.addWidget(self._java_test_lbl)
 
         # Auto-detected installations
         self._java_detect_lbl = QLabel("Detecting Java installations…")
@@ -513,10 +523,31 @@ class SettingsTab(QWidget):
         self._cf_key_input.setFixedHeight(38)
         self._cf_key_input.textChanged.connect(self._on_cf_key_changed)
         behav_layout.addWidget(self._cf_key_input)
+        self._cf_key_error = QLabel("")
+        self._cf_key_error.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['danger']};")
+        self._cf_key_error.setVisible(False)
+        behav_layout.addWidget(self._cf_key_error)
         # Defer the keyring/fallback read off the critical widget-construction path
         QTimer.singleShot(0, self._load_cf_key)
 
         cl.addWidget(behav_card)
+        cl.addSpacing(24)
+
+        # ── Keyring Status ────────────────────────────────────────────────
+        cl.addWidget(SectionTitle("Security & Storage"))
+        cl.addSpacing(12)
+
+        kr_card = self._section_card()
+        kr_layout = QVBoxLayout(kr_card)
+        kr_layout.setContentsMargins(20, 16, 20, 16)
+        kr_layout.setSpacing(6)
+
+        self._keyring_lbl = QLabel(self._get_keyring_status())
+        self._keyring_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        self._keyring_lbl.setWordWrap(True)
+        kr_layout.addWidget(self._keyring_lbl)
+
+        cl.addWidget(kr_card)
         cl.addSpacing(24)
 
         # ── About ─────────────────────────────────────────────────────────
@@ -592,11 +623,18 @@ class SettingsTab(QWidget):
         if timer is None:
             timer = QTimer(self)
             timer.setSingleShot(True)
-            timer.timeout.connect(
-                lambda: set_secret(APP_DIR, "curseforge_api_key", self._pending_values.pop("curseforge_api_key", ""))
-            )
+            timer.timeout.connect(self._save_cf_key)
             self._debounce_timers[_KEY] = timer
         timer.start(600)
+
+    def _save_cf_key(self) -> None:
+        value = self._pending_values.pop("curseforge_api_key", "")
+        try:
+            set_secret(APP_DIR, "curseforge_api_key", value)
+            self._cf_key_error.setVisible(False)
+        except Exception as exc:
+            self._cf_key_error.setText(f"Failed to save key: {exc}")
+            self._cf_key_error.setVisible(True)
 
     def _on_preset_selected(self, key: str) -> None:
         config.set("jvm_preset", key)
@@ -662,3 +700,40 @@ class SettingsTab(QWidget):
         self._java_detect_lbl.setText(
             f"Detected {len(installs)} Java installation(s):" if installs else "No Java installations detected."
         )
+
+    def _test_java_path(self) -> None:
+        path = self._java_input.text().strip() or "java"
+        try:
+            result = subprocess.run(
+                [path, "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = (result.stderr or result.stdout or "").strip().splitlines()
+            first_line = output[0] if output else "(no output)"
+            self._java_test_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['success']};")
+            self._java_test_lbl.setText(f"OK: {first_line}")
+        except FileNotFoundError:
+            self._java_test_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['danger']};")
+            self._java_test_lbl.setText("Not found: java executable not found at this path.")
+        except Exception as exc:
+            self._java_test_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['danger']};")
+            self._java_test_lbl.setText(f"Error: {exc}")
+        self._java_test_lbl.setVisible(True)
+
+    def _get_keyring_status(self) -> str:
+        try:
+            import keyring
+            backend = keyring.get_keyring()
+            backend_name = type(backend).__name__
+            if "fail" in backend_name.lower() or "null" in backend_name.lower():
+                return (
+                    f"Keyring backend: {backend_name}  ⚠  System keyring unavailable — "
+                    "falling back to encrypted file store in app directory."
+                )
+            return f"Keyring backend: {backend_name}  ✓  Credentials stored in system keyring."
+        except ImportError:
+            return "keyring module not installed — credentials stored in encrypted file store."
+        except Exception as exc:
+            return f"Keyring check failed: {exc}"

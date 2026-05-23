@@ -11,7 +11,9 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -101,8 +103,10 @@ class WorldRow(QFrame):
 
 
 class BackupRow(QFrame):
-    def __init__(self, backup_path: Path, on_restore, on_delete, parent=None) -> None:
+    def __init__(self, backup_path: Path, on_restore, on_delete, on_selection_changed=None, parent=None) -> None:
         super().__init__(parent)
+        self._backup_path = backup_path
+        self._on_selection_changed = on_selection_changed
         self.setObjectName("BackupRow")
         self.setFixedHeight(52)
         self.setStyleSheet(f"""
@@ -115,6 +119,11 @@ class BackupRow(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 0, 14, 0)
         layout.setSpacing(8)
+
+        self._checkbox = QCheckBox()
+        self._checkbox.stateChanged.connect(self._on_check_changed)
+        layout.addWidget(self._checkbox)
+
         size_kb = backup_path.stat().st_size // 1024
         lbl = QLabel(f"{backup_path.stem}  ({size_kb:,} KB)")
         lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
@@ -128,6 +137,20 @@ class BackupRow(QFrame):
         del_btn.clicked.connect(on_delete)
         layout.addWidget(del_btn)
 
+    def _on_check_changed(self, state: int) -> None:
+        if self._on_selection_changed:
+            self._on_selection_changed(self._backup_path, state == Qt.Checked)
+
+    def is_checked(self) -> bool:
+        return self._checkbox.isChecked()
+
+    def set_checked(self, checked: bool) -> None:
+        self._checkbox.blockSignals(True)
+        self._checkbox.setChecked(checked)
+        self._checkbox.blockSignals(False)
+        if self._on_selection_changed:
+            self._on_selection_changed(self._backup_path, checked)
+
 
 class WorldBackupDialog(QDialog):
     def __init__(self, instance: dict, parent=None) -> None:
@@ -135,6 +158,8 @@ class WorldBackupDialog(QDialog):
         self._instance = instance
         self._saves_dir = Path(instance.get("directory", "")) / "saves"
         self._instance_id = instance.get("id", "unknown")
+        self._selected_backups: set[Path] = set()
+        self._backup_rows: list[BackupRow] = []
         self.setWindowTitle(f"World Backups — {instance.get('name', 'Instance')}")
         self.resize(680, 560)
         self._build_ui()
@@ -168,7 +193,15 @@ class WorldBackupDialog(QDialog):
         sep.setStyleSheet(f"background: {C['border']}; border: none;")
         layout.addWidget(sep)
 
-        layout.addWidget(QLabel("Existing Backups"))
+        backup_hdr = QHBoxLayout()
+        backup_hdr_lbl = QLabel("Existing Backups")
+        backup_hdr_lbl.setStyleSheet(f"font-size: {FONT['sm']}; font-weight: 600; color: {C['text_primary']};")
+        backup_hdr.addWidget(backup_hdr_lbl)
+        backup_hdr.addStretch()
+        self._select_all_cb = QCheckBox("Select All")
+        self._select_all_cb.stateChanged.connect(self._on_select_all)
+        backup_hdr.addWidget(self._select_all_cb)
+        layout.addLayout(backup_hdr)
 
         self._backups_scroll = QScrollArea()
         self._backups_scroll.setWidgetResizable(True)
@@ -180,19 +213,36 @@ class WorldBackupDialog(QDialog):
         self._backups_scroll.setWidget(self._backups_widget)
         layout.addWidget(self._backups_scroll, 1)
 
+        self._storage_lbl = QLabel("")
+        self._storage_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        layout.addWidget(self._storage_lbl)
+
         self._status = QLabel("")
         self._status.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
         layout.addWidget(self._status)
 
+        btn_row = QHBoxLayout()
+        self._delete_sel_btn = QPushButton("Delete Selected")
+        self._delete_sel_btn.setFixedHeight(30)
+        self._delete_sel_btn.setEnabled(False)
+        self._delete_sel_btn.clicked.connect(self._delete_selected)
+        btn_row.addWidget(self._delete_sel_btn)
+        self._export_sel_btn = QPushButton("Export Selected")
+        self._export_sel_btn.setFixedHeight(30)
+        self._export_sel_btn.setEnabled(False)
+        self._export_sel_btn.clicked.connect(self._export_selected)
+        btn_row.addWidget(self._export_sel_btn)
+        btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(90)
         close_btn.clicked.connect(self.accept)
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(close_btn)
-        layout.addLayout(row)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
     def _refresh(self) -> None:
+        self._selected_backups.clear()
+        self._backup_rows.clear()
+
         # Worlds
         while self._worlds_layout.count():
             item = self._worlds_layout.takeAt(0)
@@ -236,15 +286,87 @@ class WorldBackupDialog(QDialog):
             lbl.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['sm']};")
             lbl.setContentsMargins(8, 8, 8, 8)
             self._backups_layout.addWidget(lbl)
+            self._storage_lbl.setText("")
         else:
+            total_bytes = sum(bp.stat().st_size for bp in backups if bp.exists())
+            total_mb = total_bytes / (1024 * 1024)
+            unit = "GB" if total_mb >= 1024 else "MB"
+            total_display = f"{total_mb / 1024:.2f} {unit}" if total_mb >= 1024 else f"{total_mb:.1f} MB"
+            self._storage_lbl.setText(
+                f"Total: {total_display} across {len(backups)} backup(s)  ·  Use checkboxes to select"
+            )
             for bp in backups[:20]:
                 row = BackupRow(
                     bp,
                     on_restore=lambda _=False, b=bp: self._restore_backup(b),
                     on_delete=lambda _=False, b=bp: self._delete_backup(b),
+                    on_selection_changed=self._on_backup_selection_changed,
                 )
+                self._backup_rows.append(row)
                 self._backups_layout.addWidget(row)
         self._backups_layout.addStretch()
+
+        self._select_all_cb.blockSignals(True)
+        self._select_all_cb.setChecked(False)
+        self._select_all_cb.blockSignals(False)
+        self._update_sel_buttons()
+
+    def _on_backup_selection_changed(self, path: Path, selected: bool) -> None:
+        if selected:
+            self._selected_backups.add(path)
+        else:
+            self._selected_backups.discard(path)
+        self._update_sel_buttons()
+
+    def _update_sel_buttons(self) -> None:
+        has_sel = bool(self._selected_backups)
+        self._delete_sel_btn.setEnabled(has_sel)
+        self._export_sel_btn.setEnabled(has_sel)
+
+    def _on_select_all(self, state: int) -> None:
+        checked = state == Qt.Checked
+        for row in self._backup_rows:
+            row.set_checked(checked)
+
+    def _delete_selected(self) -> None:
+        count = len(self._selected_backups)
+        reply = QMessageBox.question(
+            self, "Delete Backups",
+            f"Permanently delete {count} selected backup(s)?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        errors = []
+        for path in list(self._selected_backups):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append(str(exc))
+        if errors:
+            self._status.setText(f"Some deletions failed: {errors[0]}")
+        else:
+            self._status.setText(f"Deleted {count} backup(s).")
+        self._refresh()
+
+    def _export_selected(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Export Backups to Folder")
+        if not folder:
+            return
+        dest_dir = Path(folder)
+        copied = 0
+        errors = []
+        for path in self._selected_backups:
+            if path.exists():
+                try:
+                    shutil.copy2(path, dest_dir / path.name)
+                    copied += 1
+                except OSError as exc:
+                    errors.append(str(exc))
+        if errors:
+            self._status.setText(f"Exported {copied} backup(s); {len(errors)} error(s): {errors[0]}")
+        else:
+            self._status.setText(f"Exported {copied} backup(s) to {folder}.")
 
     def _backup_world(self, world_dir: Path) -> None:
         self._status.setText(f"Backing up {world_dir.name}…")

@@ -7,8 +7,10 @@ Launch: emits server_launch_requested(version_id, instance_id, server_ip, port_s
 
 from __future__ import annotations
 
+import re
 import socket
 import threading
+import time
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -31,6 +33,27 @@ from ...core.instances import list_instances, selected_instance
 
 _DEFAULT_PORT = 25565
 
+_HOSTNAME_RE = re.compile(
+    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$"
+)
+
+
+def _is_valid_host(host: str) -> bool:
+    """Return True if host looks like a valid hostname or IPv4/IPv6 address."""
+    if not host or len(host) > 253:
+        return False
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return True
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return True
+    except OSError:
+        pass
+    return bool(_HOSTNAME_RE.match(host))
+
 
 class ServerRow(QFrame):
     launch_requested = Signal(str, str)   # ip, port
@@ -52,11 +75,19 @@ class ServerRow(QFrame):
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(12)
 
-        # Status dot
+        # Status dot + latency
+        ping_col = QVBoxLayout()
+        ping_col.setSpacing(1)
+        ping_col.setContentsMargins(0, 0, 0, 0)
         self._dot = QLabel("●")
-        self._dot.setFixedWidth(14)
+        self._dot.setFixedWidth(24)
         self._dot.setStyleSheet(f"color: {C['text_disabled']}; font-size: 10px;")
-        layout.addWidget(self._dot)
+        ping_col.addWidget(self._dot)
+        self._latency_lbl = QLabel("")
+        self._latency_lbl.setFixedWidth(46)
+        self._latency_lbl.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['xs']};")
+        ping_col.addWidget(self._latency_lbl)
+        layout.addLayout(ping_col)
 
         # Name + address
         info = QVBoxLayout()
@@ -86,18 +117,24 @@ class ServerRow(QFrame):
 
     def _ping(self) -> None:
         self._dot.setStyleSheet(f"color: {C['text_disabled']}; font-size: 10px;")
+        self._latency_lbl.setText("…")
         ip   = self._server.get("ip", "")
-        port = int(self._server.get("port", _DEFAULT_PORT))
+        port = self._server.get("port", _DEFAULT_PORT)
 
         def _do():
             try:
-                with socket.create_connection((ip, port), timeout=3):
-                    ok = True
-            except OSError:
+                t0 = time.monotonic()
+                with socket.create_connection((ip, int(port)), timeout=3):
+                    ms = int((time.monotonic() - t0) * 1000)
+                ok = True
+            except Exception:
                 ok = False
+                ms = 0
             color = C["success"] if ok else C["danger"]
-            run_on_ui_thread(lambda: self._dot.setStyleSheet(
-                f"color: {color}; font-size: 10px;"
+            latency_text = f"{ms}ms" if ok else "—"
+            run_on_ui_thread(lambda c=color, lt=latency_text: (
+                self._dot.setStyleSheet(f"color: {c}; font-size: 10px;"),
+                self._latency_lbl.setText(lt),
             ))
 
         threading.Thread(target=_do, daemon=True).start()
@@ -200,13 +237,20 @@ class ServersTab(QWidget):
         ip, ok = QInputDialog.getText(self, "Add Server", "Server IP address:")
         if not ok or not ip.strip():
             return
+        ip = ip.strip()
+        if not _is_valid_host(ip):
+            QMessageBox.warning(self, "Invalid Address", f"'{ip}' does not look like a valid hostname or IP address.")
+            return
         port_str, ok = QInputDialog.getText(self, "Add Server", "Port:", text=str(_DEFAULT_PORT))
         if not ok:
             return
         try:
             port = int(port_str.strip()) if port_str.strip() else _DEFAULT_PORT
+            if not (1 <= port <= 65535):
+                raise ValueError("out of range")
         except ValueError:
-            port = _DEFAULT_PORT
+            QMessageBox.warning(self, "Invalid Port", "Port must be an integer between 1 and 65535.")
+            return
         servers = list(config.get("servers", []))
         servers.append({"name": name.strip(), "ip": ip.strip(), "port": port})
         config.set("servers", servers)

@@ -10,8 +10,10 @@ Features:
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,7 @@ from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -379,6 +382,10 @@ class ModpackCard(QFrame):
         self._install_btn.setEnabled(False)
 
 
+    def set_install_ready(self) -> None:
+        self._install_btn.setText("Install")
+        self._install_btn.setEnabled(True)
+
     def set_unavailable(self) -> None:
         self._install_btn.setText("Unavailable")
         self._install_btn.setEnabled(False)
@@ -404,6 +411,7 @@ class ModpacksTab(QWidget):
         self._search_generation = 0
         self._active_search_thread: QThread | None = None
         self._search_pending = False
+        self._last_failed: tuple | None = None  # (project, versions, game_version)
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
@@ -432,6 +440,10 @@ class ModpacksTab(QWidget):
         import_btn.setFixedHeight(32)
         import_btn.clicked.connect(self._import_pack_archive)
         header_row.addWidget(import_btn)
+        history_btn = QPushButton("History")
+        history_btn.setFixedHeight(32)
+        history_btn.clicked.connect(self._show_install_history)
+        header_row.addWidget(history_btn)
         root.addLayout(header_row)
 
         sub = QLabel("Browse and install Minecraft modpacks in one click.")
@@ -481,9 +493,17 @@ class ModpacksTab(QWidget):
         root.addLayout(search_row)
 
         # ---- Status / count ----
+        status_row = QHBoxLayout()
         self._status_label = QLabel("Searching…")
         self._status_label.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
-        root.addWidget(self._status_label)
+        status_row.addWidget(self._status_label)
+        status_row.addStretch()
+        self._retry_btn = QPushButton("Retry")
+        self._retry_btn.setFixedHeight(28)
+        self._retry_btn.setVisible(False)
+        self._retry_btn.clicked.connect(self._retry_last_install)
+        status_row.addWidget(self._retry_btn)
+        root.addLayout(status_row)
 
         # ---- Results scroll area ----
         self._scroll = QScrollArea()
@@ -511,8 +531,9 @@ class ModpacksTab(QWidget):
     def _execute_search(self) -> None:
         if self._active_search_thread is not None and self._active_search_thread.isRunning():
             self._search_generation += 1
-            self._search_pending = True
-            self._status_label.setText("Search queued...")
+            if not self._search_pending:
+                self._search_pending = True
+                self._status_label.setText("Search queued…")
             return
         query = self._search_box.text().strip()
         ver_text = self._version_filter.currentText()
@@ -638,11 +659,21 @@ class ModpacksTab(QWidget):
                     ))
                 except mr.ModrinthError as e: self.err.emit(str(e))
 
+        card = self._current_cards.get(project["id"])
+        if card:
+            card.set_installing("Fetching…")
+
         fetcher = VersionFetcher(project["id"], game_version)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
         fetcher.done.connect(lambda versions, gv=game_version: self._start_install(project, versions, gv))
-        fetcher.err.connect(lambda e: self._status_label.setText(f"Error: {e}"))
+
+        def _on_fetch_err(e, _card=card):
+            self._status_label.setText(f"Error: {e}")
+            if _card:
+                _card.set_install_ready()
+
+        fetcher.err.connect(_on_fetch_err)
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
         self._search_threads.append(thread)
@@ -653,13 +684,12 @@ class ModpacksTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-        card = self._current_cards.get(project["id"])
-        if card:
-            card.set_installing("Fetching…")
-
     def _start_install(self, project: dict, versions: list[dict], game_version: str = "") -> None:
         if not versions:
             self._status_label.setText("No versions available for this modpack.")
+            card = self._current_cards.get(project["id"])
+            if card:
+                card.set_install_ready()
             return
 
         # Pick the latest version
@@ -681,8 +711,17 @@ class ModpacksTab(QWidget):
 
         def on_finish(success, msg):
             self._status_label.setText(msg)
-            if success and card:
-                card.set_installed()
+            _append_install_history(project, version, success, "" if success else msg)
+            if success:
+                if card:
+                    card.set_installed()
+                self._retry_btn.setVisible(False)
+                self._last_failed = None
+            else:
+                if card:
+                    card.set_install_ready()
+                self._last_failed = (project, [version], game_version)
+                self._retry_btn.setVisible(True)
 
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finish)
@@ -710,3 +749,125 @@ class ModpacksTab(QWidget):
             self._status_label.setText(f"Imported {Path(path).name} as '{instance.get('name', 'Instance')}'.")
         except Exception as exc:
             self._status_label.setText(f"Import failed: {exc}")
+
+    def _retry_last_install(self) -> None:
+        if self._last_failed is None:
+            return
+        project, versions, game_version = self._last_failed
+        self._last_failed = None
+        self._retry_btn.setVisible(False)
+        self._start_install(project, versions, game_version)
+
+    def _show_install_history(self) -> None:
+        dlg = InstallHistoryDialog(self)
+        dlg.exec()
+
+
+def _append_install_history(project: dict, version: dict, success: bool, error_message: str) -> None:
+    history_file = APP_DIR / "install_history.json"
+    try:
+        try:
+            history = json.loads(history_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            history = []
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "modpack_name": project.get("title", project.get("id", "Unknown")),
+            "version": version.get("version_number", version.get("id", "")),
+            "status": "success" if success else "failure",
+            "error_message": error_message,
+        }
+        history.append(entry)
+        history = history[-100:]
+        tmp = history_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(history_file)
+    except Exception:
+        pass
+
+
+class InstallHistoryDialog(QDialog):
+    """Lists past modpack installs from install_history.json."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Install History")
+        self.resize(700, 480)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
+
+        title = QLabel("Install History")
+        title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
+        layout.addWidget(title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        vbox = QVBoxLayout(container)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(0, 0, 0, 0)
+
+        history_file = APP_DIR / "install_history.json"
+        try:
+            history = json.loads(history_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            history = []
+
+        if not history:
+            empty = QLabel("No install history yet.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
+            vbox.addWidget(empty)
+        else:
+            for entry in reversed(history[-50:]):
+                row = QFrame()
+                row.setStyleSheet(
+                    f"#HistoryRow {{ background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px; }}"
+                )
+                row.setObjectName("HistoryRow")
+                row.setFixedHeight(54)
+                hl = QHBoxLayout(row)
+                hl.setContentsMargins(14, 0, 14, 0)
+                hl.setSpacing(10)
+
+                status = entry.get("status", "")
+                icon = "✓" if status == "success" else "✗"
+                color = C["success"] if status == "success" else C["danger"]
+                icon_lbl = QLabel(icon)
+                icon_lbl.setStyleSheet(f"font-size: 16px; color: {color}; font-weight: 700;")
+                icon_lbl.setFixedWidth(20)
+                hl.addWidget(icon_lbl)
+
+                info_col = QVBoxLayout()
+                info_col.setSpacing(2)
+                name_lbl = QLabel(f"{entry.get('modpack_name', '?')}  v{entry.get('version', '?')}")
+                name_lbl.setStyleSheet(f"font-size: {FONT['sm']}; font-weight: 600; color: {C['text_primary']};")
+                info_col.addWidget(name_lbl)
+                ts = entry.get("timestamp", "")[:19].replace("T", " ")
+                sub_text = ts
+                if status != "success" and entry.get("error_message"):
+                    sub_text += f"  —  {entry['error_message'][:60]}"
+                sub_lbl = QLabel(sub_text)
+                sub_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_secondary']};")
+                info_col.addWidget(sub_lbl)
+                hl.addLayout(info_col, 1)
+
+                vbox.addWidget(row)
+
+        vbox.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(90)
+        close_btn.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
