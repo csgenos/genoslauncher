@@ -25,6 +25,8 @@
     </ul>
   </description>
 
+  <icon type="stock">com.github.csgenos.GenosLauncher</icon>
+
   <launchable type="desktop-id">com.github.csgenos.GenosLauncher.desktop</launchable>
 
   <url type="homepage">https://github.com/csgenos/genoslauncher</url>
@@ -57,9 +59,4 @@
     <keyword>Launcher</keyword>
   </keywords>
 
-  <screenshots>
-    <screenshot type="default">
-      <caption>Main launcher window showing instance management</caption>
-    </screenshot>
-  </screenshots>
 </component>

@@ -3,10 +3,26 @@
 # PyInstaller spec for GenosLauncher — onedir mode.
 # Build: pyinstaller GenosLauncher.spec
 
+import os
 import sys
 from pathlib import Path
 
 block_cipher = None
+
+# ---------------------------------------------------------------------------
+# Build-time secret injection
+# ---------------------------------------------------------------------------
+# CurseForge API key — injected via CI secret CURSEFORGE_API_KEY.
+# The value is baked into the binary as a PyInstaller runtime hook so that
+# the frozen app can read it from os.environ without ever writing it to disk.
+_CF_KEY = os.environ.get("CURSEFORGE_API_KEY", "")
+_RUNTIME_HOOKS = []
+if _CF_KEY:
+    _hook_path = Path("_genos_cf_key_hook.py")
+    _hook_path.write_text(
+        f"import os\nos.environ.setdefault('GENOS_CURSEFORGE_API_KEY', {_CF_KEY!r})\n"
+    )
+    _RUNTIME_HOOKS = [str(_hook_path)]
 
 # ---------------------------------------------------------------------------
 # Hidden imports needed by PySide6 + minecraft-launcher-lib + keyring
@@ -28,6 +44,7 @@ HIDDEN_IMPORTS = [
     "minecraft_launcher_lib.forge",
     "minecraft_launcher_lib.fabric",
     "minecraft_launcher_lib.quilt",
+    "minecraft_launcher_lib.mod_loader",
 
     # keyring backends — include the ones most likely present on Windows
     "keyring.backends.Windows",
@@ -60,7 +77,7 @@ a = Analysis(
     hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=_RUNTIME_HOOKS,
     excludes=[
         "tkinter",
         "matplotlib",

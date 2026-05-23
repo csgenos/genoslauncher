@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -225,6 +226,7 @@ class ModSearchWorker(QObject):
 
 class ModInstallWorker(QObject):
     finished = Signal(bool, str)
+    deps_found = Signal(list)  # list of {project, version} dicts for unmet deps
 
     def __init__(self, project: dict, version: dict | None, instance: dict | None, fallback_dir: Path) -> None:
         super().__init__()
@@ -233,9 +235,26 @@ class ModInstallWorker(QObject):
         self.instance = instance
         self.fallback_dir = fallback_dir
 
+    def _install_modrinth_version(self, version: dict, instance_dir: Path, mods_dir: Path) -> str:
+        """Install a single Modrinth version; returns filename."""
+        files   = version.get("files", [])
+        primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+        if not primary:
+            raise mr.ModrinthError("No downloadable mod file found.")
+        hashes   = primary.get("hashes", {})
+        filename = mr.safe_filename(primary["filename"])
+        dest     = mr.safe_download_path(mods_dir, filename)
+        mr.download_file(
+            primary["url"], dest,
+            expected_sha1=hashes.get("sha1", ""),
+            expected_sha512=hashes.get("sha512", ""),
+        )
+        return filename
+
     def run(self) -> None:
         try:
             mc_version   = (self.instance or {}).get("mc_version", "")
+            loader       = (self.instance or {}).get("type", "")
             instance_dir = Path((self.instance or {}).get("directory", str(self.fallback_dir)))
             mods_dir     = instance_dir / "mods"
             mods_dir.mkdir(parents=True, exist_ok=True)
@@ -269,22 +288,35 @@ class ModInstallWorker(QObject):
                     if not versions:
                         raise mr.ModrinthError("No compatible versions found.")
                     version = versions[0]
-                files   = version.get("files", [])
-                primary = next((f for f in files if f.get("primary")), files[0] if files else None)
-                if not primary:
-                    raise mr.ModrinthError("No downloadable mod file found.")
 
-                hashes   = primary.get("hashes", {})
-                filename = mr.safe_filename(primary["filename"])
-                dest     = mr.safe_download_path(mods_dir, filename)
-                mr.download_file(
-                    primary["url"], dest,
-                    expected_sha1=hashes.get("sha1", ""),
-                    expected_sha512=hashes.get("sha512", ""),
-                )
+                filename = self._install_modrinth_version(version, instance_dir, mods_dir)
                 _register_mod(instance_dir, self.project, version, filename)
 
-            name = self.project.get("title", filename)
+                # Resolve and report unmet dependencies
+                version_id = version.get("id", "")
+                if version_id:
+                    try:
+                        deps = mr.resolve_dependencies(version_id, mc_version, loader)
+                        if deps:
+                            # Filter out already-installed mods
+                            installed_index = {}
+                            index_p = instance_dir / "mods_index.json"
+                            if index_p.exists():
+                                try:
+                                    installed_index = json.loads(index_p.read_text(encoding="utf-8"))
+                                except Exception:
+                                    pass
+                            unmet = [
+                                d for d in deps
+                                if str(d["project"].get("id", "")) not in installed_index
+                            ]
+                            if unmet:
+                                self.deps_found.emit(unmet)
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger(__name__).warning("Dependency resolution failed: %s", exc)
+
+            name = self.project.get("title", "mod")
             self.finished.emit(True, f"Installed {name}.")
         except Exception as exc:
             self.finished.emit(False, str(exc))
@@ -427,6 +459,33 @@ class ModApplyUpdateWorker(QObject):
             self.finished.emit(False, f"Update failed: {exc}", info)
 
 
+class ModApplyAllUpdatesWorker(QObject):
+    """Applies all pending updates sequentially, emitting progress signals."""
+    progress = Signal(int, int, str)   # current, total, title
+    finished = Signal(int, int)        # succeeded, failed
+
+    def __init__(self, updates: list[dict]) -> None:
+        super().__init__()
+        self._updates = updates
+
+    def run(self) -> None:
+        total = len(self._updates)
+        succeeded = 0
+        failed = 0
+        for i, info in enumerate(self._updates):
+            self.progress.emit(i + 1, total, info.get("title", ""))
+            worker = ModApplyUpdateWorker(info)
+            # Run synchronously inside this thread
+            ok_holder: list[bool] = []
+            worker.finished.connect(lambda ok, msg, _info, h=ok_holder: h.append(ok))
+            worker.run()
+            if ok_holder and ok_holder[0]:
+                succeeded += 1
+            else:
+                failed += 1
+        self.finished.emit(succeeded, failed)
+
+
 class _IconLoader(QObject):
     done = Signal(str, str)  # project_id, path
 
@@ -471,6 +530,18 @@ class ModUpdateCard(QFrame):
         ver_lbl = QLabel(f"{info['current_version']}  →  {info['latest_version_number']}")
         ver_lbl.setStyleSheet("font-size: " + _XS + "; color: " + C["text_secondary"] + ";")
         layout.addWidget(ver_lbl)
+
+        # Changelog link — only for Modrinth mods (has a project URL)
+        if info.get("source", "modrinth") == "modrinth":
+            project_id = info.get("project_id", "")
+            if project_id:
+                changelog_lbl = QLabel(f'<a href="https://modrinth.com/mod/{project_id}">View changelog</a>')
+                changelog_lbl.setStyleSheet(
+                    "font-size: " + _XS + "; color: " + C["accent_blue"] + ";"
+                )
+                changelog_lbl.setOpenExternalLinks(False)
+                changelog_lbl.linkActivated.connect(lambda url: webbrowser.open(url))
+                layout.addWidget(changelog_lbl)
 
         self._btn = QPushButton("Update")
         self._btn.setFixedSize(72, 28)
@@ -612,6 +683,8 @@ class ModsTab(QWidget):
         self._active_search_thread: QThread | None = None
         self._search_pending = False
         self._cards: dict[str, ModCard] = {}
+        self._pending_updates: list[dict] = []
+        self._selected_cards: set[str] = set()
         self._build_ui()
         QTimer.singleShot(250, self.refresh_instances)
 
@@ -640,6 +713,19 @@ class ModsTab(QWidget):
         )
         self._check_updates_btn.clicked.connect(self._run_update_check)
         header.addWidget(self._check_updates_btn)
+
+        self._update_all_btn = QPushButton("Update All")
+        self._update_all_btn.setFixedHeight(34)
+        self._update_all_btn.setCursor(Qt.PointingHandCursor)
+        self._update_all_btn.setVisible(False)
+        self._update_all_btn.setStyleSheet(
+            "QPushButton { background: " + C["accent"] + "; color: " + C["text_inverse"] +
+            "; border: none; border-radius: 7px; padding: 0 14px; font-size: " + _SM + "; font-weight: 700; }"
+            "QPushButton:hover { background: " + C["accent_blue"] + "; }"
+            "QPushButton:disabled { background: " + C["bg_tertiary"] + "; color: " + C["text_disabled"] + "; }"
+        )
+        self._update_all_btn.clicked.connect(self._run_update_all)
+        header.addWidget(self._update_all_btn)
 
         self._instance_combo = QComboBox()
         self._instance_combo.setFixedSize(260, 36)
@@ -1001,13 +1087,54 @@ class ModsTab(QWidget):
         thread.start()
 
     def _on_updates_found(self, updates: list[dict]) -> None:
+        self._pending_updates = updates
         if not updates:
+            self._update_all_btn.setVisible(False)
             return
         self._updates_section.setVisible(True)
+        self._update_all_btn.setVisible(True)
+        self._update_all_btn.setText(f"Update All ({len(updates)})")
         for info in updates:
             card = ModUpdateCard(info, self._updates_section)
             card.update_requested.connect(self._execute_mod_update)
             self._updates_list.addWidget(card)
+
+    def _run_update_all(self) -> None:
+        if not self._pending_updates:
+            return
+        self._update_all_btn.setEnabled(False)
+        self._update_all_btn.setText("Updating…")
+        self._check_updates_btn.setEnabled(False)
+
+        # Mark all update cards as updating
+        for i in range(self._updates_list.count()):
+            item = self._updates_list.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
+                item.widget().set_updated()
+
+        thread = QThread(self)
+        worker = ModApplyAllUpdatesWorker(list(self._pending_updates))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(
+            lambda cur, tot, title: self._status.setText(f"Updating {cur}/{tot}: {title}…")
+        )
+        worker.finished.connect(
+            lambda ok, fail: self._status.setText(
+                f"Updated {ok} mod(s)." + (f" {fail} failed." if fail else "")
+            )
+        )
+        worker.finished.connect(thread.quit)
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(lambda: self._update_all_btn.setEnabled(True))
+        thread.finished.connect(lambda: self._update_all_btn.setText("Update All"))
+        thread.finished.connect(lambda: self._check_updates_btn.setEnabled(True))
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
     def _execute_mod_update(self, info: dict) -> None:
         for i in range(self._updates_list.count()):
@@ -1049,6 +1176,7 @@ class ModsTab(QWidget):
         worker.finished.connect(
             lambda ok, msg: self._status.setText(msg if ok else f"Install failed: {msg}")
         )
+        worker.deps_found.connect(self._on_deps_found)
         worker.finished.connect(thread.quit)
         self._threads.append(thread)
         self._workers.append(worker)
@@ -1057,3 +1185,19 @@ class ModsTab(QWidget):
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.start()
+
+    def _on_deps_found(self, deps: list[dict]) -> None:
+        """Called when the install worker found unmet dependencies."""
+        if not deps:
+            return
+        names = ", ".join(d["project"].get("title", d["project"].get("id", "?")) for d in deps)
+        reply = QMessageBox.question(
+            self,
+            "Install Dependencies?",
+            f"This mod requires the following dependencies:\n\n{names}\n\nInstall them?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            for dep in deps:
+                self._install_mod(dep["project"], dep.get("version"))

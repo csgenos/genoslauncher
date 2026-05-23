@@ -294,9 +294,8 @@ keyring==24.0.0 \
     --hash=sha256:4e87665a19c514c7edada8b15015cf89bd99b8d7edabc5c43cca77166fa8dfad \
     --hash=sha256:770f609eed2a16c65a6349f3ba1545d00c73f9fed4254c13766c674fe6d0d22b
     # via -r requirements.txt
-minecraft-launcher-lib==6.4 \
-    --hash=sha256:08b762a8bb47ceafd1fdea9056d86fa72bebb37b5548d9038a3bbbda4619551f \
-    --hash=sha256:8874e5a979c55fc875431523d840870ab59d09dad0b8c1ebc97d3eaca5dbbcf2
+minecraft-launcher-lib==8.0 \
+    --hash=sha256:ff17960c62e21ca7e21329303ae56bdefc0246de3bc9a5e1578dfa8df6604746
     # via -r requirements.txt
 more-itertools==11.0.2 \
     --hash=sha256:392a9e1e362cbc106a2457d37cabf9b36e5e12efd4ebff1654630e76597df804 \
