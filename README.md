@@ -4,84 +4,45 @@ Open-source Minecraft launcher built with Python + PySide6.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Download
+**Download:** Windows installer · Linux AppImage · Flatpak — all on the [Releases page](https://github.com/csgenos/genoslauncher/releases).
 
-Use the Windows installer from the [Releases page](https://github.com/csgenos/genoslauncher/releases).
-Linux users can grab the AppImage or Flatpak from the same page.
+---
 
-## Features
+GenosLauncher is a full-featured Minecraft launcher designed to replace tools like Prism — including a one-click migration wizard to import from it. Sign in with Microsoft or play offline, manage isolated instances, browse mods and modpacks, and get back into the game fast. The "Continue" chip on the home screen resumes your last session in one click.
 
-### Launching
-- Microsoft account login (PKCE OAuth 2.0, no setup required)
-- Offline account support
-- Multi-account management with per-account avatars and "last used" timestamps
-- "Continue" quick-launch chip on the home screen resumes the last session instantly
-- Close launcher on launch option
+## Instances
 
-### Instances
-- Create vanilla, Fabric, Forge, NeoForge, and Quilt instances
-- Clone, rename, repair, and validate instances
-- Import from Prism Launcher — one-click 3-page migration wizard with auto-detection
-- Per-instance disk usage display
-- Bulk actions: Validate All, Repair All, Export All
-- Per-instance JVM args, RAM allocation, and Java path override
-- JVM performance presets (Aikar's Flags, ZGC, Low Latency)
-- Per-instance health score with issue breakdown and reclaimable storage estimate
-- Built-in optimizer for safe cleanup and repair tasks
+Every version runs in its own isolated environment. You can create vanilla, Fabric, Forge, NeoForge, or Quilt instances side-by-side, each with its own RAM allocation, JVM args, Java path, and mod set. Bulk actions (Validate All, Repair All, Export All) apply across your whole library at once.
 
-### Mods
-- Browse and install mods from Modrinth and CurseForge (no API key required)
-- Automatic dependency resolution — required deps offered for install alongside the mod
-- Conflict detection — warns when duplicate mod IDs are present in an instance
-- Mod update checker with one-click or bulk "Update All"
-- Per-update rollback — auto-backup before each update, restore with one click
-- Per-instance mod profiles — switch between named sets of enabled mods
-- Mod metadata index for reliable update tracking
+A **health scorer** analyses each instance for broken files, orphaned data, and wasted disk space, then gives you a one-click optimizer to clean up safely. Per-instance disk usage is shown inline in the list.
 
-### Modpacks
-- Install Modrinth modpacks (.mrpack) including full loader + mod download
-- Install CurseForge modpacks (.zip)
-- Export any instance as a redistributable .mrpack
-- Install history log per instance with retry on failure
-- Smart Discovery panel — recommends modpacks based on your installed instances' MC version and loader
-- Modpack update checker with one-click in-place update, staging, and rollback safety
-- Update policy: manual, notify, or auto-on-launch
+**Importing from Prism Launcher** is a guided 3-step wizard: it auto-detects your Prism data directory, shows a checklist of every instance it found (with MC version), and imports the ones you select in the background.
 
-### Shaders & Resource Packs
-- Drag-and-drop shader/resource pack installation
-- Iris installer with duplicate-instance protection
-- Compatibility badges showing supported MC versions before install
-- Shader management per instance
+## Mods & Modpacks
 
-### Servers
-- Save and launch servers directly from the launcher
-- Live ping with latency (ms) display
-- Hostname and port validation on add
+Browse and install from **Modrinth** and **CurseForge** — no API key needed for either. When you install a mod, required dependencies are resolved automatically and offered alongside it. A conflict detector warns you when duplicate mod IDs are present. The update checker scans every tracked mod and lets you update individually or all at once; each update creates an auto-backup so you can roll back with one click. **Mod profiles** let you switch between named sets of enabled mods per instance without moving files manually.
 
-### Java
-- Automatic Java download and version management (Eclipse Temurin)
-- Manual Java path override with "Test" button to verify the binary
-- Auto-selection prefers the newest compatible installed Java
+Modpack installs handle the full chain: downloads the `.mrpack` or CurseForge `.zip`, installs the right Minecraft base and loader version, fetches every mod, and extracts overrides. Every install is logged with a retry button if something fails. Installed modpacks can be checked for updates and updated in-place with staging and automatic rollback if the update breaks anything. The update policy (manual / notify / auto-on-launch) is configurable per-launcher and runs at startup even if you never open the Modpacks tab.
 
-### Cloud Sync & Backup
-- Local-first instance backup to any directory (Dropbox, OneDrive, NAS, or any local path — no cloud account required)
-- Push and pull individual instances; keep last 5 backups per instance
-- "Sync All" pushes every instance modified since last sync
-- Auto-sync before each launch (optional)
-- Restore any previous backup from a timestamped menu
+**Smart Discovery** sits above the search bar as a collapsible panel. It looks at which MC versions and loaders you actually use, scores candidate modpacks against that profile, and surfaces up to 6 recommendations as browsable cards — no account or tracking required.
 
-### Crash Diagnostics
-- Smart crash signature analysis with severity-ranked suggestions
-- One-click fix actions from crash reports (increase RAM, repair instance, clear logs)
-- One-click modpack update action when a crash suggests an outdated pack
+## Cloud Sync & Backup
 
-### Settings & Diagnostics
-- Light and dark themes
-- Performance Advisor — analyses RAM allocation and JVM preset against system memory; gives plain-English recommendations
-- Crash report viewer with copy-to-clipboard and in-report search
-- Screenshot gallery with multi-select, export, and storage size display
-- World backup and restore with multi-select and storage tracking
-- Keyring status panel showing active credential storage backend
+Instance backup works with any directory you can write to — a Dropbox folder, a NAS mount, an external drive, anything. No cloud account is required. You can push and pull individual instances on demand, or run "Sync All" to push every instance that has changed since the last sync. Each instance keeps its last 5 snapshots; restoring any of them is a single menu pick. An optional auto-sync runs before every launch so your backup is always current.
+
+## Crash Diagnostics & Performance
+
+When a crash happens, the **crash analyser** reads the report, identifies the most likely causes by signature, ranks them by severity, and presents one-click fix actions — increase RAM, repair the instance, clear logs, or update the modpack if that's what the crash points to.
+
+The **Performance Advisor** in Settings reads your actual system memory, current RAM allocation, and JVM preset, then gives plain-English recommendations: whether your allocation is too low for modern versions, too high relative to physical RAM, or whether a different GC preset would suit your hardware better.
+
+## Shaders, Servers & Java
+
+Shaders and resource packs install by drag-and-drop. The Iris installer is built in with duplicate-instance protection, and each shader card shows a compatibility badge listing supported MC versions before you commit to installing.
+
+Saved servers show live ping with latency in milliseconds. Hostname and port are validated on add.
+
+Java is managed automatically via Eclipse Temurin — the right version is downloaded and selected for each instance. You can override the path manually with a "Test" button that verifies the binary on the spot.
 
 ---
 
@@ -92,18 +53,13 @@ git clone https://github.com/csgenos/genoslauncher.git
 cd genoslauncher
 
 python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS/Linux
-source venv/bin/activate
+source venv/bin/activate   # Windows: venv\Scripts\activate
 
 pip install --require-hashes -r requirements.lock
-# or: pip install -r requirements.txt
-
 python src/main.py
 ```
 
-Requirements: Python `>=3.11,<3.13`
+Requires Python `>=3.11,<3.13`.
 
 ## Build (Windows)
 
@@ -111,41 +67,14 @@ Requirements: Python `>=3.11,<3.13`
 build.bat
 ```
 
-Outputs:
-
-- `dist\GenosLauncher\GenosLauncher.exe`
-- `installer_output\GenosLauncher-<version>-Setup.exe` (if Inno Setup is installed)
-- `SHA256SUMS.txt`
+Produces `dist\GenosLauncher\GenosLauncher.exe`, an Inno Setup installer, and `SHA256SUMS.txt`.
 
 ## Notes
 
-- Microsoft sign-in and CurseForge browsing both work out of the box — no API keys needed.
-- Cloud Sync works with any directory you can write to; no third-party account is required.
-- macOS public build flow is currently disabled.
-
-## Windows Antivirus Warning
-
-GenosLauncher is not yet code-signed. Windows Defender or other antivirus software may quarantine Qt DLL files during installation, causing a "No module named PySide6" error on startup.
-
-**Fix:**
-
-1. Open **Windows Security** → Virus & threat protection → Protection history
-2. Find any quarantined items related to `GenosLauncher` and click **Restore**
-3. Go to **Virus & threat protection settings** → Exclusions → Add an exclusion
-4. Add the folder: `C:\Users\<YourUsername>\AppData\Local\GenosLauncher`
-5. Reinstall from the [Releases page](https://github.com/csgenos/genoslauncher/releases)
-
-This is a known limitation for unsigned open-source projects. Code signing is planned for a future release.
-
-## Repo Layout
-
-```text
-src/main.py                 app entry point
-src/core/                   auth, config, launcher, modrinth, instances, cloud_sync
-src/ui/                     Qt UI, tabs, dialogs, components
-tests/                      unit and smoke tests
-build.bat                   Windows build script
-```
+- Microsoft sign-in and CurseForge browsing work out of the box — no configuration needed.
+- Cloud Sync requires no third-party account; any writable directory works.
+- macOS builds are currently disabled.
+- GenosLauncher is not yet code-signed. If Windows Defender quarantines Qt DLLs on install, restore them from Protection History, add `%LOCALAPPDATA%\GenosLauncher` as an exclusion, and reinstall.
 
 ## License
 
