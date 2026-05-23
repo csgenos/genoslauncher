@@ -10,26 +10,29 @@ class CrashSuggestion:
     title: str
     detail: str
     severity: str  # high, medium, low
+    action_key: str = ""
 
 
 def analyze_crash_text(text: str) -> list[CrashSuggestion]:
     blob = (text or "").lower()
     out: list[CrashSuggestion] = []
 
-    def add(title: str, detail: str, severity: str = "medium") -> None:
-        out.append(CrashSuggestion(title=title, detail=detail, severity=severity))
+    def add(title: str, detail: str, severity: str = "medium", action_key: str = "") -> None:
+        out.append(CrashSuggestion(title=title, detail=detail, severity=severity, action_key=action_key))
 
     if "outofmemoryerror" in blob or "java heap space" in blob:
         add(
             "Memory Exhausted",
             "Minecraft ran out of Java heap memory. Increase RAM for this instance or reduce heavy mods/shaders.",
             "high",
+            "increase_ram",
         )
     if "invalid maximum heap size" in blob or "could not reserve enough space" in blob:
         add(
             "Invalid JVM Memory Flags",
             "Current JVM memory settings are too high or invalid for this system. Lower RAM override and retry.",
             "high",
+            "increase_ram",
         )
     if "mixin" in blob and "failed" in blob:
         add(
@@ -42,6 +45,7 @@ def analyze_crash_text(text: str) -> list[CrashSuggestion]:
             "Missing Mod Dependencies",
             "One or more required dependencies are missing or wrong version. Reinstall/repair the instance.",
             "high",
+            "repair_instance",
         )
     if "nosuchmethoderror" in blob or "noclassdeffounderror" in blob:
         add(
@@ -60,6 +64,7 @@ def analyze_crash_text(text: str) -> list[CrashSuggestion]:
             "Loader/Game Version Mismatch",
             "Fabric loader and Minecraft target versions do not match. Reinstall loader for this exact MC version.",
             "medium",
+            "repair_instance",
         )
     if "authentication servers are down" in blob or "invalid session" in blob:
         add(
@@ -72,6 +77,7 @@ def analyze_crash_text(text: str) -> list[CrashSuggestion]:
             "File Permission Denied",
             "Launcher or Java could not access required files. Check antivirus/file locks and folder permissions.",
             "medium",
+            "clear_runtime_logs",
         )
     if not out:
         add(
@@ -80,4 +86,3 @@ def analyze_crash_text(text: str) -> list[CrashSuggestion]:
             "low",
         )
     return out[:8]
-
