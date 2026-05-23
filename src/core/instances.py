@@ -333,12 +333,13 @@ def _parse_instance_cfg(path: Path) -> dict:
     return result
 
 
-def import_prism_instances(prism_dir: Path) -> list[dict]:
+def import_prism_instances(prism_dir: Path, names: list[str] | None = None) -> list[dict]:
     """
     Scan a MultiMC/Prism Launcher instances directory for importable instances.
 
     Each subfolder containing an instance.cfg with an IntendedVersion is imported
     as a GenosLauncher instance pointing to the existing game files (no copy made).
+    If names is provided, only import instances whose folder name is in that list.
     Returns the list of newly created instance dicts.
     """
     if not prism_dir.is_dir():
@@ -347,6 +348,8 @@ def import_prism_instances(prism_dir: Path) -> list[dict]:
     imported: list[dict] = []
     for child in sorted(prism_dir.iterdir()):
         if not child.is_dir():
+            continue
+        if names is not None and child.name not in names:
             continue
         cfg_path = child / "instance.cfg"
         if not cfg_path.exists():
