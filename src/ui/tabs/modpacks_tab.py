@@ -40,6 +40,7 @@ from ...core import curseforge as cf
 from ...core.instances import create_modpack_instance
 from ...core.instances import set_selected_instance
 from ...core.instances import list_instances
+from ...core.modpack_discovery import recommend_modpacks
 from ...core.launcher import install_minecraft_base, install_loader
 from ...core.modpack_archive import import_instance_archive
 from ...core.modpack_update import update_modpack_instance
@@ -259,6 +260,44 @@ class ModpackInstanceUpdateWorker(QObject):
 
 
 # ---------------------------------------------------------------------------
+# Discovery worker — fetches recommended modpacks
+# ---------------------------------------------------------------------------
+
+class _DiscoveryWorker(QObject):
+    results = Signal(list)
+    error = Signal(str)
+
+    def run(self) -> None:
+        try:
+            instances = list_instances()
+            queries = recommend_modpacks(instances)
+            seen: set[str] = set()
+            projects: list[dict] = []
+            for query, mc_ver, loader in queries:
+                if len(projects) >= 6:
+                    break
+                try:
+                    hits, _ = mr.search_projects(
+                        query=query,
+                        project_type="modpack",
+                        game_version=mc_ver,
+                        limit=3,
+                    )
+                    for p in hits:
+                        pid = str(p.get("id", p.get("slug", "")))
+                        if pid and pid not in seen:
+                            seen.add(pid)
+                            projects.append(p)
+                        if len(projects) >= 6:
+                            break
+                except Exception:
+                    pass
+            self.results.emit(projects[:6])
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+# ---------------------------------------------------------------------------
 # Icon loader (async, simple)
 # ---------------------------------------------------------------------------
 
@@ -460,9 +499,13 @@ class ModpacksTab(QWidget):
         self._active_update_workers: list[ModpackInstanceUpdateWorker] = []
         self._update_policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
         self._startup_policy_ran = False
+        self._discovery_threads: list[QThread] = []
+        self._discovery_workers: list[QObject] = []
+        self._discovery_cards: dict[str, ModpackCard] = {}
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
+        QTimer.singleShot(400, self._load_discovery)
         if self._update_policy in {"notify", "auto-on-launch"}:
             QTimer.singleShot(900, self.run_startup_update_policy)
 
@@ -507,6 +550,69 @@ class ModpacksTab(QWidget):
         sub = QLabel("Browse and install Minecraft modpacks in one click.")
         sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-top: -12px;")
         root.addWidget(sub)
+
+        # ---- Recommended for You ----
+        discovery_panel = QWidget()
+        discovery_panel.setStyleSheet("background: transparent;")
+        discovery_vbox = QVBoxLayout(discovery_panel)
+        discovery_vbox.setContentsMargins(0, 0, 0, 0)
+        discovery_vbox.setSpacing(6)
+
+        disc_header = QHBoxLayout()
+        self._disc_chevron = QPushButton("▼")
+        self._disc_chevron.setFixedSize(24, 24)
+        self._disc_chevron.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                font-size: {FONT['sm']};
+                color: {C['text_secondary']};
+            }}
+            QPushButton:hover {{ color: {C['text_primary']}; }}
+        """)
+        self._disc_chevron.clicked.connect(self._toggle_discovery_panel)
+        disc_header.addWidget(self._disc_chevron)
+
+        disc_title = QLabel("Recommended for You")
+        disc_title.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 700; color: {C['text_primary']};")
+        disc_header.addWidget(disc_title)
+
+        disc_info = QLabel("ⓘ")
+        disc_info.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
+        disc_info.setToolTip("Recommendations are based on your installed instances' Minecraft version and mod loader.")
+        disc_header.addWidget(disc_info)
+        disc_header.addStretch()
+
+        disc_refresh = OutlineButton("Refresh")
+        disc_refresh.setFixedHeight(28)
+        disc_refresh.clicked.connect(self._load_discovery)
+        disc_header.addWidget(disc_refresh)
+        discovery_vbox.addLayout(disc_header)
+
+        self._disc_scroll_area = QScrollArea()
+        self._disc_scroll_area.setFixedHeight(200)
+        self._disc_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._disc_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._disc_scroll_area.setWidgetResizable(True)
+        self._disc_scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        disc_inner = QWidget()
+        disc_inner.setStyleSheet("background: transparent;")
+        self._disc_inner_layout = QHBoxLayout(disc_inner)
+        self._disc_inner_layout.setContentsMargins(0, 0, 0, 0)
+        self._disc_inner_layout.setSpacing(10)
+        self._disc_status_lbl = QLabel("Loading recommendations…")
+        self._disc_status_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
+        self._disc_inner_layout.addWidget(self._disc_status_lbl)
+        self._disc_inner_layout.addStretch()
+        self._disc_scroll_area.setWidget(disc_inner)
+        discovery_vbox.addWidget(self._disc_scroll_area)
+
+        show_panel = bool(config.get("show_discovery_panel", True))
+        self._disc_scroll_area.setVisible(show_panel)
+        self._disc_chevron.setText("▼" if show_panel else "▶")
+
+        root.addWidget(discovery_panel)
 
         # ---- Search bar ----
         search_row = QHBoxLayout()
@@ -570,6 +676,82 @@ class ModpacksTab(QWidget):
 
         self._scroll.setWidget(self._results_widget)
         root.addWidget(self._scroll)
+
+    # ------------------------------------------------------------------
+    # Discovery panel
+    # ------------------------------------------------------------------
+
+    def _toggle_discovery_panel(self) -> None:
+        visible = self._disc_scroll_area.isVisible()
+        self._disc_scroll_area.setVisible(not visible)
+        self._disc_chevron.setText("▼" if not visible else "▶")
+        config.set("show_discovery_panel", not visible)
+
+    def _load_discovery(self) -> None:
+        instances = list_instances()
+        if not instances:
+            self._disc_status_lbl.setText("Add some instances to get personalised recommendations.")
+            return
+
+        self._disc_status_lbl.setText("Loading recommendations…")
+        self._disc_status_lbl.setVisible(True)
+        while self._disc_inner_layout.count() > 1:
+            item = self._disc_inner_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._discovery_cards.clear()
+
+        thread = QThread(self)
+        worker = _DiscoveryWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.results.connect(self._on_discovery_results)
+        worker.error.connect(self._on_discovery_error)
+        worker.results.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        self._discovery_threads.append(thread)
+        self._discovery_workers.append(worker)
+        thread.finished.connect(lambda: self._discovery_threads.remove(thread) if thread in self._discovery_threads else None)
+        thread.finished.connect(lambda: self._discovery_workers.remove(worker) if worker in self._discovery_workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_discovery_results(self, projects: list[dict]) -> None:
+        self._disc_status_lbl.setVisible(False)
+        while self._disc_inner_layout.count() > 1:
+            item = self._disc_inner_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._discovery_cards.clear()
+
+        if not projects:
+            self._disc_status_lbl.setText("No recommendations available.")
+            self._disc_status_lbl.setVisible(True)
+            return
+
+        installed_project_ids: set[str] = set()
+        for instance in config.get("instances", []):
+            if not isinstance(instance, dict):
+                continue
+            src = str(instance.get("source_project_id", "")).strip()
+            if src:
+                installed_project_ids.add(src)
+
+        for project in projects:
+            card = ModpackCard(project)
+            card.setFixedWidth(320)
+            card.install_requested.connect(self._on_install_requested)
+            if str(project.get("id", "")) in installed_project_ids:
+                card.set_installed()
+            self._disc_inner_layout.insertWidget(self._disc_inner_layout.count() - 1, card)
+            self._discovery_cards[str(project.get("id", ""))] = card
+            if project.get("icon_url"):
+                self._load_icon_async(project["id"], project["icon_url"])
+
+    def _on_discovery_error(self, msg: str) -> None:
+        self._disc_status_lbl.setText(f"Could not load recommendations: {msg}")
+        self._disc_status_lbl.setVisible(True)
 
     # ------------------------------------------------------------------
     # Search logic
@@ -689,8 +871,11 @@ class ModpacksTab(QWidget):
         thread.start()
 
     def _on_icon_loaded(self, project_id: str, image: QImage) -> None:
+        pixmap = QPixmap.fromImage(image)
         if project_id in self._current_cards:
-            self._current_cards[project_id].set_icon(QPixmap.fromImage(image))
+            self._current_cards[project_id].set_icon(pixmap)
+        if project_id in self._discovery_cards:
+            self._discovery_cards[project_id].set_icon(pixmap)
 
     # ------------------------------------------------------------------
     # Install

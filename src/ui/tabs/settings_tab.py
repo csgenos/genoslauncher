@@ -39,6 +39,157 @@ from ..._version import __version__
 
 
 # ---------------------------------------------------------------------------
+# Feature 1: Performance Advisor worker
+# ---------------------------------------------------------------------------
+
+class _PerfAdvisorWorker(QObject):
+    done = Signal(list)
+    error = Signal(str)
+
+    def run(self) -> None:
+        try:
+            advisories = self._analyse()
+            self.done.emit(advisories)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+    def _analyse(self) -> list[str]:
+        try:
+            import psutil
+        except ImportError:
+            return ["psutil not installed — install it to enable this feature."]
+
+        advisories: list[str] = []
+        vm = psutil.virtual_memory()
+        total_mb = vm.total // (1024 * 1024)
+        available_mb = vm.available // (1024 * 1024)
+        ram_mb = int(config.get("ram_mb", 4096))
+
+        if ram_mb > total_mb * 0.75:
+            advisories.append(
+                f"RAM allocation ({ram_mb // 1024} GB) exceeds 75 % of physical memory "
+                f"({total_mb // 1024} GB) — reduce to avoid OS swapping."
+            )
+
+        if available_mb > 8192 and ram_mb < 4096:
+            advisories.append(
+                f"RAM is set to {ram_mb // 1024 if ram_mb >= 1024 else str(ram_mb) + ' MB'} "
+                f"but your system has {available_mb // 1024} GB free — consider 4–6 GB for 1.18+."
+            )
+
+        jvm_preset = str(config.get("jvm_preset", "")).strip()
+        jvm_args = str(config.get("jvm_args", "")).strip()
+
+        if jvm_preset == "zgc" and total_mb < 8192:
+            advisories.append(
+                f"ZGC preset is selected but your system has only {total_mb // 1024} GB RAM total "
+                "— Aikar's Flags will perform better."
+            )
+
+        if not jvm_preset and not jvm_args:
+            advisories.append(
+                "No JVM preset selected and no custom args set "
+                "— select 'Performance (Aikar's Flags)' for a smoother experience."
+            )
+
+        instances = config.get("instances", [])
+        selected_id = str(config.get("selected_instance_id", "")).strip()
+        selected = next((i for i in instances if isinstance(i, dict) and i.get("id") == selected_id), None)
+        if selected:
+            mc_ver = str(selected.get("mc_version", "")).strip()
+            parts = mc_ver.split(".")
+            try:
+                major = int(parts[1]) if len(parts) >= 2 else 0
+                minor = int(parts[2]) if len(parts) >= 3 else 0
+            except (ValueError, IndexError):
+                major, minor = 0, 0
+            if major >= 18 and ram_mb < 3072:
+                advisories.append(
+                    f"Instance '{selected.get('name', mc_ver)}' runs Minecraft {mc_ver} "
+                    f"(1.18+) but only {ram_mb // 1024 if ram_mb >= 1024 else str(ram_mb) + ' MB'} RAM is allocated "
+                    "— consider at least 3–4 GB."
+                )
+            if major < 13 and jvm_preset not in ("", "performance"):
+                advisories.append(
+                    f"Instance '{selected.get('name', mc_ver)}' runs Minecraft {mc_ver} "
+                    "(pre-1.13) — legacy GC presets may perform better than modern flags."
+                )
+
+        return advisories
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: Performance Advisor panel widget
+# ---------------------------------------------------------------------------
+
+class PerformanceAdvisorPanel(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        self._thread: QThread | None = None
+        self._worker: _PerfAdvisorWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        title = QLabel("Performance Advisor")
+        title.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 700; color: {C['text_primary']};")
+        header_row.addWidget(title)
+        header_row.addStretch()
+        self._run_btn = OutlineButton("Run Analysis")
+        self._run_btn.setFixedHeight(32)
+        self._run_btn.clicked.connect(self._run_analysis)
+        header_row.addWidget(self._run_btn)
+        layout.addLayout(header_row)
+
+        self._result_lbl = QLabel("Click 'Run Analysis' to check your JVM and RAM settings.")
+        self._result_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        self._result_lbl.setWordWrap(True)
+        layout.addWidget(self._result_lbl)
+
+    def _run_analysis(self) -> None:
+        self._run_btn.setEnabled(False)
+        self._result_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        self._result_lbl.setText("Analysing…")
+
+        thread = QThread(self)
+        worker = _PerfAdvisorWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_done)
+        worker.error.connect(self._on_error)
+        worker.done.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_thread_finished)
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _on_thread_finished(self) -> None:
+        self._thread = None
+        self._worker = None
+        self._run_btn.setEnabled(True)
+
+    def _on_done(self, advisories: list) -> None:
+        if not advisories:
+            self._result_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['success']};")
+            self._result_lbl.setText("No issues found.")
+        else:
+            self._result_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_primary']};")
+            self._result_lbl.setText("\n".join(f"• {a}" for a in advisories))
+
+    def _on_error(self, msg: str) -> None:
+        self._result_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['danger']};")
+        self._result_lbl.setText(f"Error: {msg}")
+
+
+# ---------------------------------------------------------------------------
 # Small helper widgets
 # ---------------------------------------------------------------------------
 
@@ -310,6 +461,14 @@ class SettingsTab(QWidget):
         perf_layout.addWidget(RamSlider())
 
         cl.addWidget(perf_card)
+        cl.addSpacing(16)
+
+        advisor_card = self._section_card()
+        advisor_layout = QVBoxLayout(advisor_card)
+        advisor_layout.setContentsMargins(20, 16, 20, 16)
+        advisor_layout.setSpacing(0)
+        advisor_layout.addWidget(PerformanceAdvisorPanel())
+        cl.addWidget(advisor_card)
         cl.addSpacing(24)
 
         # ── JVM Configuration ────────────────────────────────────────────────
@@ -569,6 +728,28 @@ class SettingsTab(QWidget):
         cl.addWidget(kr_card)
         cl.addSpacing(24)
 
+        # ── Cloud Sync ────────────────────────────────────────────────────
+        cl.addWidget(SectionTitle("Cloud Sync / Backup"))
+        cl.addSpacing(12)
+
+        sync_card = self._section_card()
+        sync_layout = QVBoxLayout(sync_card)
+        sync_layout.setContentsMargins(20, 16, 20, 16)
+        sync_layout.setSpacing(8)
+        sync_hint = QLabel(
+            "Back up your instances to a local folder (e.g. Dropbox, OneDrive, NAS, or any directory). "
+            "No cloud account required — just point to a synced folder."
+        )
+        sync_hint.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
+        sync_hint.setWordWrap(True)
+        sync_layout.addWidget(sync_hint)
+        sync_btn = OutlineButton("Cloud Sync…")
+        sync_btn.setFixedHeight(34)
+        sync_btn.clicked.connect(self._open_cloud_sync)
+        sync_layout.addWidget(sync_btn)
+        cl.addWidget(sync_card)
+        cl.addSpacing(24)
+
         # ── About ─────────────────────────────────────────────────────────
         cl.addWidget(SectionTitle("About"))
         cl.addSpacing(12)
@@ -740,6 +921,11 @@ class SettingsTab(QWidget):
             self._java_test_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['danger']};")
             self._java_test_lbl.setText(f"Error: {exc}")
         self._java_test_lbl.setVisible(True)
+
+    def _open_cloud_sync(self) -> None:
+        from ..dialogs.cloud_sync_dialog import CloudSyncDialog
+        dlg = CloudSyncDialog(self)
+        dlg.exec()
 
     def _get_keyring_status(self) -> str:
         try:

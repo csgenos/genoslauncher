@@ -31,6 +31,7 @@ from ..components.version_card import VersionCard
 from ..dialogs.backup_dialog import WorldBackupDialog
 from ..dialogs.crash_dialog import CrashReportDialog
 from ..dialogs.instance_health_dialog import InstanceHealthDialog
+from ..dialogs.prism_migration_dialog import PrismMigrationDialog
 from ..dialogs.screenshot_dialog import ScreenshotGalleryDialog
 from ..styles import COLORS as C, FONT
 from ...core.config import config
@@ -202,6 +203,11 @@ class InstancesTab(QWidget):
         import_btn.setFixedWidth(100)
         import_btn.clicked.connect(self._import_menu)
         header_row.addWidget(import_btn)
+
+        prism_btn = OutlineButton("Import from Prism…")
+        prism_btn.setFixedHeight(34)
+        prism_btn.clicked.connect(self._open_prism_migration)
+        header_row.addWidget(prism_btn)
         bulk_btn = OutlineButton("Bulk Actions")
         bulk_btn.setFixedHeight(34)
         bulk_btn.setFixedWidth(126)
@@ -788,6 +794,11 @@ class InstancesTab(QWidget):
             self._modpack_update_workers.remove(worker)
         self._count_label.setText(message if ok else f"Modpack update failed: {message}")
         self._load_versions()
+
+    def _open_prism_migration(self) -> None:
+        dlg = PrismMigrationDialog(self)
+        dlg.exec()
+        self._render_instances()
 
     def _import_instances(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select MultiMC / Prism Launcher instances folder")
