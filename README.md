@@ -54,6 +54,20 @@ Outputs:
 - CurseForge requires an API key in Settings.
 - macOS public build flow is currently disabled.
 
+## Windows Antivirus Warning
+
+GenosLauncher is not yet code-signed. Windows Defender or other antivirus software may quarantine Qt DLL files during installation, causing a "No module named PySide6" error on startup.
+
+**Fix:**
+
+1. Open **Windows Security** → Virus & threat protection → Protection history
+2. Find any quarantined items related to `GenosLauncher` and click **Restore**
+3. Go to **Virus & threat protection settings** → Exclusions → Add an exclusion
+4. Add the folder: `C:\Users\<YourUsername>\AppData\Local\GenosLauncher`
+5. Reinstall from the [Releases page](https://github.com/csgenos/genoslauncher/releases)
+
+This is a known limitation for unsigned open-source projects. Code signing is planned for a future release.
+
 ## Repo Layout
 
 ```text
