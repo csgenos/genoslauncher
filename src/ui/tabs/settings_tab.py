@@ -485,6 +485,25 @@ class SettingsTab(QWidget):
         self._show_old.toggled.connect(lambda v: config.set("show_old_versions", v))
         behav_layout.addWidget(self._show_old)
 
+        self._modpack_update_policy = QComboBox()
+        self._modpack_update_policy.setFixedHeight(34)
+        self._modpack_update_policy.addItem("Manual", "manual")
+        self._modpack_update_policy.addItem("Notify", "notify")
+        self._modpack_update_policy.addItem("Auto on Launch", "auto-on-launch")
+        current_policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        idx = max(0, self._modpack_update_policy.findData(current_policy))
+        self._modpack_update_policy.setCurrentIndex(idx)
+        self._modpack_update_policy.currentIndexChanged.connect(
+            lambda i: config.set("modpack_update_policy", self._modpack_update_policy.itemData(i))
+        )
+        behav_layout.addWidget(
+            SettingRow(
+                "Modpack Updates",
+                self._modpack_update_policy,
+                hint="Manual: only when you click. Notify: auto-check and prompt. Auto on Launch: check and update automatically.",
+            )
+        )
+
         self._dark_mode = QCheckBox("Dark mode")
         self._dark_mode.setChecked(config.get("dark_mode", False))
         self._dark_mode.toggled.connect(self._on_dark_mode_toggled)

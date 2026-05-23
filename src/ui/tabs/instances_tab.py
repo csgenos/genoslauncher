@@ -48,6 +48,7 @@ from ...core.instances import (
 )
 from ...core.modpack_archive import export_instance_mrpack, export_instance_zip, import_instance_archive
 from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
+from ...core.modpack_update import update_modpack_instance
 from ...core.validators import validate_version_id
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,22 @@ class _RepairWorker(QObject):
             self.finished.emit(False, str(exc))
 
 
+class _ModpackUpdateWorker(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(bool, str)
+
+    def __init__(self, instance: dict) -> None:
+        super().__init__()
+        self._instance = instance
+
+    def run(self) -> None:
+        try:
+            ok, msg = update_modpack_instance(self._instance, self.progress.emit)
+            self.finished.emit(ok, msg)
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
+
+
 class InstancesTab(QWidget):
     launch_requested = Signal(str)
     instance_launch_requested = Signal(str, str)
@@ -142,6 +159,7 @@ class InstancesTab(QWidget):
         self._search_text = ""
         self._instance_search_text = ""
         self._group_filter = "All groups"
+        self._instance_sort = "Name (A-Z)"
         self._load_threads: list[QThread] = []
         self._load_workers: list[QObject] = []
         self._install_workers: dict[str, InstallWorker] = {}
@@ -150,6 +168,8 @@ class InstancesTab(QWidget):
         self._selected_instances: set[str] = set()
         self._disk_size_threads: list[QThread] = []
         self._disk_labels: dict[str, QLabel] = {}
+        self._modpack_update_threads: list[QThread] = []
+        self._modpack_update_workers: list[_ModpackUpdateWorker] = []
         self._build_ui()
         QTimer.singleShot(100, self._load_versions)
 
@@ -181,6 +201,11 @@ class InstancesTab(QWidget):
         import_btn.setFixedWidth(100)
         import_btn.clicked.connect(self._import_menu)
         header_row.addWidget(import_btn)
+        bulk_btn = OutlineButton("Bulk Actions")
+        bulk_btn.setFixedHeight(34)
+        bulk_btn.setFixedWidth(126)
+        bulk_btn.clicked.connect(self._bulk_actions)
+        header_row.addWidget(bulk_btn)
 
         root.addLayout(header_row)
 
@@ -200,6 +225,12 @@ class InstancesTab(QWidget):
         self._group_filter_combo.setMinimumWidth(180)
         self._group_filter_combo.currentTextChanged.connect(self._on_group_filter_changed)
         instance_filter_row.addWidget(self._group_filter_combo)
+        self._sort_combo = QComboBox()
+        self._sort_combo.setFixedHeight(34)
+        self._sort_combo.setMinimumWidth(180)
+        self._sort_combo.addItems(["Name (A-Z)", "Recently Played", "Minecraft Version"])
+        self._sort_combo.currentTextChanged.connect(self._on_sort_changed)
+        instance_filter_row.addWidget(self._sort_combo)
         root.addLayout(instance_filter_row)
 
         bulk_row = QHBoxLayout()
@@ -322,12 +353,22 @@ class InstancesTab(QWidget):
                         str(instance.get("mc_version", "")),
                         str(instance.get("type", "")),
                         group,
+                        str(instance.get("notes", "")),
+                        " ".join(instance.get("tags", [])),
                     ]
                 ).lower()
                 if text not in blob:
                     continue
             out.append(instance)
         return out
+
+    def _instance_sort_key(self, instance: dict) -> tuple:
+        if self._instance_sort == "Recently Played":
+            last = str(instance.get("last_played_at", "")).strip()
+            return (last == "", last, str(instance.get("name", "")).lower())
+        if self._instance_sort == "Minecraft Version":
+            return (str(instance.get("mc_version", "")).lower(), str(instance.get("name", "")).lower())
+        return (str(instance.get("name", "")).lower(),)
 
     def _render_instances(self) -> None:
         while self._instances_layout.count():
@@ -365,7 +406,7 @@ class InstancesTab(QWidget):
             section = QLabel(f"{group_name} ({len(grouped[group_name])})")
             section.setStyleSheet(f"color: {C['text_secondary']}; font-size: {FONT['sm']}; font-weight: 700;")
             self._instances_layout.addWidget(section)
-            rows = sorted(grouped[group_name], key=lambda i: str(i.get("name", "")).lower())
+            rows = sorted(grouped[group_name], key=self._instance_sort_key, reverse=self._instance_sort == "Recently Played")
             for instance in rows:
                 inst_id = instance.get("id", "")
                 row = QWidget()
@@ -383,6 +424,9 @@ class InstancesTab(QWidget):
                     f"{active}{instance.get('name', 'Instance')} - {instance.get('mc_version', '?')} - "
                     f"{str(instance.get('type', 'custom')).title()}"
                 )
+                tags = instance.get("tags", [])
+                if tags:
+                    detail += f" - tags: {', '.join(tags[:3])}"
                 name = QLabel(detail)
                 name.setStyleSheet(f"color: {C['text_primary']}; font-size: {FONT['md']}; font-weight: 600;")
                 layout.addWidget(name, 1)
@@ -412,10 +456,13 @@ class InstancesTab(QWidget):
     def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
         menu = QMenu(self)
         menu.addAction("Edit", lambda: self._edit_instance(instance))
+        menu.addAction("Edit Metadata", lambda: self._edit_instance_metadata(instance))
         menu.addAction("Validate", lambda: self._validate_instance(instance))
         menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
         menu.addAction("Clone", lambda: self._clone_instance(instance))
         menu.addAction("Repair", lambda: self._repair_instance(instance))
+        if instance.get("type") == "modpack":
+            menu.addAction("Update Modpack", lambda: self._update_modpack(instance))
         menu.addAction("Export ZIP...", lambda: self._export_instance_zip(instance))
         menu.addAction("Export MRPACK...", lambda: self._export_instance_mrpack(instance))
         menu.addSeparator()
@@ -599,6 +646,87 @@ class InstancesTab(QWidget):
             update_instance(instance.get("id", ""), name=name.strip(), jvm_args=jvm_args.strip())
             self._render_instances()
 
+    def _edit_instance_metadata(self, instance: dict) -> None:
+        current_java = str(instance.get("java_path", "")).strip()
+        java_path, ok = QInputDialog.getText(
+            self,
+            "Instance Java Override",
+            "Java executable path (leave blank for global default):",
+            text=current_java,
+        )
+        if not ok:
+            return
+        ram_text, ok = QInputDialog.getText(
+            self,
+            "Instance RAM Override",
+            "RAM (MB, leave blank for global default):",
+            text=str(instance.get("ram_mb", "") or ""),
+        )
+        if not ok:
+            return
+        tags_text, ok = QInputDialog.getText(
+            self,
+            "Instance Tags",
+            "Comma-separated tags:",
+            text=", ".join(instance.get("tags", [])),
+        )
+        if not ok:
+            return
+        notes, ok = QInputDialog.getMultiLineText(
+            self,
+            "Instance Notes",
+            "Notes:",
+            text=str(instance.get("notes", "")),
+        )
+        if not ok:
+            return
+        tags = [t.strip() for t in tags_text.split(",") if t.strip()]
+        try:
+            ram_value = int(ram_text.strip()) if ram_text.strip() else 0
+        except ValueError:
+            ram_value = 0
+        update_instance(
+            instance.get("id", ""),
+            java_path=java_path.strip(),
+            ram_mb=max(0, min(ram_value, 32768)),
+            tags=tags,
+            notes=notes.strip(),
+        )
+        self._render_instances()
+        self._count_label.setText(f"Updated metadata for {instance.get('name', 'instance')}.")
+
+    def _bulk_actions(self) -> None:
+        target = self._filter_instances(list_instances())
+        if not target:
+            self._count_label.setText("No instances match current filters.")
+            return
+        action, ok = QInputDialog.getItem(
+            self,
+            "Bulk Actions",
+            f"Action for {len(target)} filtered instance(s):",
+            ["Set Group", "Remove from List", "Delete Files and Remove"],
+            0,
+            False,
+        )
+        if not ok or not action:
+            return
+        if action == "Set Group":
+            group_name, ok = QInputDialog.getText(self, "Set Group", "Group name:")
+            if not ok:
+                return
+            for inst in target:
+                set_instance_group(inst.get("id", ""), group_name.strip())
+            self._render_instances()
+            self._count_label.setText(f"Updated group for {len(target)} instance(s).")
+            return
+        delete_files = action == "Delete Files and Remove"
+        for inst in target:
+            remove_instance(inst.get("id", ""), delete_files=delete_files)
+            if config.get("selected_instance_id", "") == inst.get("id", ""):
+                config.set("selected_instance_id", "")
+        self._render_instances()
+        self._count_label.setText(f"Removed {len(target)} instance(s).")
+
     def _clone_instance(self, instance: dict) -> None:
         cloned = clone_instance(instance.get("id", ""))
         if cloned:
@@ -626,6 +754,34 @@ class InstancesTab(QWidget):
         if worker in self._repair_workers:
             self._repair_workers.remove(worker)
         self._count_label.setText(message if ok else f"Repair failed: {message}")
+        self._load_versions()
+
+    def _update_modpack(self, instance: dict) -> None:
+        thread = QThread(self)
+        worker = _ModpackUpdateWorker(instance)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda _c, _t, status: self._count_label.setText(status or "Updating modpack..."))
+        worker.finished.connect(lambda ok, msg: self._on_modpack_update_finished(thread, worker, ok, msg))
+        worker.finished.connect(thread.quit)
+        self._modpack_update_threads.append(thread)
+        self._modpack_update_workers.append(worker)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_modpack_update_finished(
+        self,
+        thread: QThread,
+        worker: _ModpackUpdateWorker,
+        ok: bool,
+        message: str,
+    ) -> None:
+        if thread in self._modpack_update_threads:
+            self._modpack_update_threads.remove(thread)
+        if worker in self._modpack_update_workers:
+            self._modpack_update_workers.remove(worker)
+        self._count_label.setText(message if ok else f"Modpack update failed: {message}")
         self._load_versions()
 
     def _import_instances(self) -> None:
@@ -662,17 +818,21 @@ class InstancesTab(QWidget):
             self._count_label.setText(f"Import failed: {exc}")
 
     def _remove_instance(self, instance: dict) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Remove Instance",
-            f"Remove {instance.get('name', 'this instance')} from the launcher list?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            remove_instance(instance.get("id", ""))
-            if config.get("selected_instance_id", "") == instance.get("id", ""):
-                config.set("selected_instance_id", "")
-            self._render_instances()
+        box = QMessageBox(self)
+        box.setWindowTitle("Remove Instance")
+        box.setText(f"How do you want to remove {instance.get('name', 'this instance')}?")
+        remove_only = box.addButton("Remove from List", QMessageBox.AcceptRole)
+        remove_and_delete = box.addButton("Remove and Delete Files", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in {remove_only, remove_and_delete}:
+            return
+        delete_files = clicked is remove_and_delete
+        remove_instance(instance.get("id", ""), delete_files=delete_files)
+        if config.get("selected_instance_id", "") == instance.get("id", ""):
+            config.set("selected_instance_id", "")
+        self._render_instances()
 
     def _on_search(self, text: str) -> None:
         self._search_text = text.lower()
@@ -684,6 +844,10 @@ class InstancesTab(QWidget):
 
     def _on_group_filter_changed(self, group_name: str) -> None:
         self._group_filter = group_name or "All groups"
+        self._render_instances()
+
+    def _on_sort_changed(self, sort_name: str) -> None:
+        self._instance_sort = sort_name or "Name (A-Z)"
         self._render_instances()
 
     def _on_filter_changed(self) -> None:

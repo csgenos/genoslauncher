@@ -63,6 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "instances": [],
     "show_snapshots": False,
     "show_old_versions": False,
+    "modpack_update_policy": "manual",
     "first_run": True,
     "jvm_args": "",
     "jvm_preset": "performance",
@@ -88,6 +89,7 @@ _SCHEMA: dict[str, type | tuple] = {
     "allow_online_launch_token": bool,
     "show_snapshots":     bool,
     "show_old_versions":  bool,
+    "modpack_update_policy": str,
     "dark_mode":          bool,
     "first_run":          bool,
     "auth_redirect_port": int,
@@ -225,7 +227,7 @@ class Config:
             for item in val:
                 if isinstance(item, dict) and item.get("name") and item.get("directory"):
                     clean.append(item)
-            return clean[:200]
+            return clean[:2000]
         if key == "servers" and isinstance(val, list):
             clean_servers: list[dict] = []
             for item in val:
@@ -245,6 +247,11 @@ class Config:
                     "port": max(1, min(port, 65535)),
                 })
             return clean_servers[:200]
+        if key == "modpack_update_policy":
+            policy = str(val or "").strip().lower()
+            if policy not in {"manual", "notify", "auto-on-launch"}:
+                return "manual"
+            return policy
         return val
 
     def _validate(self, data: dict) -> dict:

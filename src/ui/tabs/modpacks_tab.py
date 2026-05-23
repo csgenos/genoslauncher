@@ -10,10 +10,8 @@ Features:
 
 from __future__ import annotations
 
-import json
 import shutil
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -21,12 +19,13 @@ from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -40,8 +39,10 @@ from ...core import modrinth as mr
 from ...core import curseforge as cf
 from ...core.instances import create_modpack_instance
 from ...core.instances import set_selected_instance
+from ...core.instances import list_instances
 from ...core.launcher import install_minecraft_base, install_loader
 from ...core.modpack_archive import import_instance_archive
+from ...core.modpack_update import update_modpack_instance
 from ...core.validators import safe_path_segment
 
 
@@ -208,6 +209,53 @@ class InstallWorker(QObject):
         self._staging_dir = None
 
         return failures
+
+
+class UpdateCheckWorker(QObject):
+    finished = Signal(dict)  # {instance_id: latest_pack_version_id}
+    error = Signal(str)
+
+    def run(self) -> None:
+        try:
+            outdated: dict[str, str] = {}
+            for instance in list_instances():
+                if instance.get("type") != "modpack":
+                    continue
+                project_id = str(instance.get("source_project_id", "")).strip()
+                if not project_id:
+                    continue
+                current_pack_id = str(instance.get("pack_version_id", "")).strip()
+                if not current_pack_id:
+                    continue
+                mc_version = str(instance.get("base_mc_version") or instance.get("mc_version") or "").strip()
+                versions = mr.get_project_versions(
+                    project_id,
+                    game_versions=[mc_version] if mc_version else None,
+                )
+                if not versions:
+                    continue
+                latest = str(versions[0].get("id", "")).strip()
+                if latest and latest != current_pack_id:
+                    outdated[str(instance.get("id", ""))] = latest
+            self.finished.emit(outdated)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class ModpackInstanceUpdateWorker(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(bool, str)
+
+    def __init__(self, instance: dict) -> None:
+        super().__init__()
+        self._instance = instance
+
+    def run(self) -> None:
+        try:
+            ok, msg = update_modpack_instance(self._instance, self.progress.emit)
+            self.finished.emit(ok, msg)
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +430,6 @@ class ModpackCard(QFrame):
         self._install_btn.setEnabled(False)
 
 
-    def set_install_ready(self) -> None:
-        self._install_btn.setText("Install")
-        self._install_btn.setEnabled(True)
-
     def set_unavailable(self) -> None:
         self._install_btn.setText("Unavailable")
         self._install_btn.setEnabled(False)
@@ -411,10 +455,24 @@ class ModpacksTab(QWidget):
         self._search_generation = 0
         self._active_search_thread: QThread | None = None
         self._search_pending = False
-        self._last_failed: tuple | None = None  # (project, versions, game_version)
+        self._outdated_instances: dict[str, str] = {}
+        self._active_update_threads: list[QThread] = []
+        self._active_update_workers: list[ModpackInstanceUpdateWorker] = []
+        self._update_policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        self._startup_policy_ran = False
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
+        if self._update_policy in {"notify", "auto-on-launch"}:
+            QTimer.singleShot(900, self.run_startup_update_policy)
+
+    def run_startup_update_policy(self) -> None:
+        if self._startup_policy_ran:
+            return
+        self._startup_policy_ran = True
+        policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        if policy in {"notify", "auto-on-launch"}:
+            self._check_installed_updates(interactive=False)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -436,14 +494,14 @@ class ModpacksTab(QWidget):
         self._source_combo.setFixedSize(140, 32)
         self._source_combo.currentIndexChanged.connect(self._on_search_changed)
         header_row.addWidget(self._source_combo)
+        check_updates_btn = QPushButton("Check Updates")
+        check_updates_btn.setFixedHeight(32)
+        check_updates_btn.clicked.connect(self._check_installed_updates)
+        header_row.addWidget(check_updates_btn)
         import_btn = QPushButton("Import Pack...")
         import_btn.setFixedHeight(32)
         import_btn.clicked.connect(self._import_pack_archive)
         header_row.addWidget(import_btn)
-        history_btn = QPushButton("History")
-        history_btn.setFixedHeight(32)
-        history_btn.clicked.connect(self._show_install_history)
-        header_row.addWidget(history_btn)
         root.addLayout(header_row)
 
         sub = QLabel("Browse and install Minecraft modpacks in one click.")
@@ -493,17 +551,9 @@ class ModpacksTab(QWidget):
         root.addLayout(search_row)
 
         # ---- Status / count ----
-        status_row = QHBoxLayout()
         self._status_label = QLabel("Searching…")
         self._status_label.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
-        status_row.addWidget(self._status_label)
-        status_row.addStretch()
-        self._retry_btn = QPushButton("Retry")
-        self._retry_btn.setFixedHeight(28)
-        self._retry_btn.setVisible(False)
-        self._retry_btn.clicked.connect(self._retry_last_install)
-        status_row.addWidget(self._retry_btn)
-        root.addLayout(status_row)
+        root.addWidget(self._status_label)
 
         # ---- Results scroll area ----
         self._scroll = QScrollArea()
@@ -531,9 +581,8 @@ class ModpacksTab(QWidget):
     def _execute_search(self) -> None:
         if self._active_search_thread is not None and self._active_search_thread.isRunning():
             self._search_generation += 1
-            if not self._search_pending:
-                self._search_pending = True
-                self._status_label.setText("Search queued…")
+            self._search_pending = True
+            self._status_label.setText("Search queued...")
             return
         query = self._search_box.text().strip()
         ver_text = self._version_filter.currentText()
@@ -579,14 +628,28 @@ class ModpacksTab(QWidget):
         self._clear_results()
         self._current_cards.clear()
 
-        installed = {i.get("source", "") for i in config.get("instances", [])}
+        installed_project_ids: set[str] = set()
+        for instance in config.get("instances", []):
+            if not isinstance(instance, dict):
+                continue
+            src_project = str(instance.get("source_project_id", "")).strip()
+            if src_project:
+                installed_project_ids.add(src_project)
+            raw_source = str(instance.get("source", "")).strip()
+            if ":" in raw_source:
+                _src_name, _sep, src_id = raw_source.partition(":")
+                src_id = src_id.strip()
+                if src_id:
+                    installed_project_ids.add(src_id)
+            elif raw_source and raw_source not in {"vanilla", "custom", "prism", "imported-mrpack"}:
+                installed_project_ids.add(raw_source)
 
         for project in hits:
             card = ModpackCard(project, self._results_widget)
             card.install_requested.connect(self._on_install_requested)
             if project.get("source") == "curseforge":
                 card.set_unavailable()
-            elif project["id"] in installed:
+            elif str(project["id"]) in installed_project_ids:
                 card.set_installed()
             self._results_layout.insertWidget(self._results_layout.count() - 1, card)
             self._current_cards[project["id"]] = card
@@ -659,21 +722,11 @@ class ModpacksTab(QWidget):
                     ))
                 except mr.ModrinthError as e: self.err.emit(str(e))
 
-        card = self._current_cards.get(project["id"])
-        if card:
-            card.set_installing("Fetching…")
-
         fetcher = VersionFetcher(project["id"], game_version)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
         fetcher.done.connect(lambda versions, gv=game_version: self._start_install(project, versions, gv))
-
-        def _on_fetch_err(e, _card=card):
-            self._status_label.setText(f"Error: {e}")
-            if _card:
-                _card.set_install_ready()
-
-        fetcher.err.connect(_on_fetch_err)
+        fetcher.err.connect(lambda e: self._status_label.setText(f"Error: {e}"))
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
         self._search_threads.append(thread)
@@ -684,12 +737,13 @@ class ModpacksTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
+        card = self._current_cards.get(project["id"])
+        if card:
+            card.set_installing("Fetching…")
+
     def _start_install(self, project: dict, versions: list[dict], game_version: str = "") -> None:
         if not versions:
             self._status_label.setText("No versions available for this modpack.")
-            card = self._current_cards.get(project["id"])
-            if card:
-                card.set_install_ready()
             return
 
         # Pick the latest version
@@ -711,17 +765,8 @@ class ModpacksTab(QWidget):
 
         def on_finish(success, msg):
             self._status_label.setText(msg)
-            _append_install_history(project, version, success, "" if success else msg)
-            if success:
-                if card:
-                    card.set_installed()
-                self._retry_btn.setVisible(False)
-                self._last_failed = None
-            else:
-                if card:
-                    card.set_install_ready()
-                self._last_failed = (project, [version], game_version)
-                self._retry_btn.setVisible(True)
+            if success and card:
+                card.set_installed()
 
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finish)
@@ -750,124 +795,127 @@ class ModpacksTab(QWidget):
         except Exception as exc:
             self._status_label.setText(f"Import failed: {exc}")
 
-    def _retry_last_install(self) -> None:
-        if self._last_failed is None:
+    def _check_installed_updates(self, interactive: bool = True) -> None:
+        self._status_label.setText("Checking installed modpacks for updates...")
+        thread = QThread(self)
+        worker = UpdateCheckWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda outdated, intr=interactive: self._on_update_check_finished(outdated, intr))
+        worker.error.connect(lambda msg: self._status_label.setText(f"Update check failed: {msg}"))
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_update_check_finished(self, outdated: dict, interactive: bool = True) -> None:
+        self._outdated_instances = dict(outdated)
+        if not outdated:
+            self._status_label.setText("All installed modpacks are up to date.")
             return
-        project, versions, game_version = self._last_failed
-        self._last_failed = None
-        self._retry_btn.setVisible(False)
-        self._start_install(project, versions, game_version)
+        policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        names: list[str] = []
+        for instance in list_instances():
+            iid = str(instance.get("id", ""))
+            if iid in outdated:
+                names.append(str(instance.get("name", iid)))
+        preview = ", ".join(names[:3])
+        if len(names) > 3:
+            preview += f" (+{len(names) - 3} more)"
+        self._status_label.setText(f"{len(outdated)} modpack instance(s) have updates: {preview}")
+        if not interactive:
+            if policy == "auto-on-launch":
+                self._update_all_outdated_instances(ask_confirmation=False)
+            return
+        action, ok = QInputDialog.getItem(
+            self,
+            "Modpack Updates",
+            "Update action:",
+            ["Update All", "Choose One", "Not Now"],
+            0,
+            False,
+        )
+        if not ok or action == "Not Now":
+            return
+        if action == "Update All":
+            self._update_all_outdated_instances()
+            return
+        self._choose_and_update_instance()
 
-    def _show_install_history(self) -> None:
-        dlg = InstallHistoryDialog(self)
-        dlg.exec()
+    def _choose_and_update_instance(self) -> None:
+        choices: list[str] = []
+        mapping: dict[str, dict] = {}
+        for instance in list_instances():
+            iid = str(instance.get("id", ""))
+            if iid not in self._outdated_instances:
+                continue
+            label = f"{instance.get('name', iid)} ({instance.get('mc_version', '?')})"
+            choices.append(label)
+            mapping[label] = instance
+        if not choices:
+            self._status_label.setText("No outdated modpack instances available.")
+            return
+        choice, ok = QInputDialog.getItem(self, "Update Modpack", "Choose instance:", choices, 0, False)
+        if not ok or choice not in mapping:
+            return
+        self._start_instance_update(mapping[choice], 1, 1)
 
+    def _update_all_outdated_instances(self, ask_confirmation: bool = True) -> None:
+        targets = [i for i in list_instances() if str(i.get("id", "")) in self._outdated_instances]
+        if not targets:
+            self._status_label.setText("No outdated modpack instances available.")
+            return
+        if ask_confirmation:
+            reply = QMessageBox.question(
+                self,
+                "Update All Modpacks",
+                f"Update {len(targets)} outdated modpack instance(s)?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        total = len(targets)
+        for idx, instance in enumerate(targets, start=1):
+            self._start_instance_update(instance, idx, total)
 
-def _append_install_history(project: dict, version: dict, success: bool, error_message: str) -> None:
-    history_file = APP_DIR / "install_history.json"
-    try:
-        try:
-            history = json.loads(history_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            history = []
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "modpack_name": project.get("title", project.get("id", "Unknown")),
-            "version": version.get("version_number", version.get("id", "")),
-            "status": "success" if success else "failure",
-            "error_message": error_message,
-        }
-        history.append(entry)
-        history = history[-100:]
-        tmp = history_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(history_file)
-    except Exception:
-        pass
+    def _start_instance_update(self, instance: dict, index: int, total: int) -> None:
+        thread = QThread(self)
+        worker = ModpackInstanceUpdateWorker(instance)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(
+            lambda _c, _t, s, i=index, n=total, name=instance.get("name", "instance"):
+            self._status_label.setText(f"[{i}/{n}] {name}: {s}")
+        )
+        worker.finished.connect(
+            lambda ok, msg, i=index, n=total, name=instance.get("name", "instance"):
+            self._on_instance_update_finished(thread, worker, ok, msg, i, n, name)
+        )
+        worker.finished.connect(thread.quit)
+        self._active_update_threads.append(thread)
+        self._active_update_workers.append(worker)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
-
-class InstallHistoryDialog(QDialog):
-    """Lists past modpack installs from install_history.json."""
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Install History")
-        self.resize(700, 480)
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(12)
-
-        title = QLabel("Install History")
-        title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
-        layout.addWidget(title)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        container = QWidget()
-        container.setStyleSheet("background: transparent;")
-        vbox = QVBoxLayout(container)
-        vbox.setSpacing(6)
-        vbox.setContentsMargins(0, 0, 0, 0)
-
-        history_file = APP_DIR / "install_history.json"
-        try:
-            history = json.loads(history_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            history = []
-
-        if not history:
-            empty = QLabel("No install history yet.")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_tertiary']};")
-            vbox.addWidget(empty)
-        else:
-            for entry in reversed(history[-50:]):
-                row = QFrame()
-                row.setStyleSheet(
-                    f"#HistoryRow {{ background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px; }}"
-                )
-                row.setObjectName("HistoryRow")
-                row.setFixedHeight(54)
-                hl = QHBoxLayout(row)
-                hl.setContentsMargins(14, 0, 14, 0)
-                hl.setSpacing(10)
-
-                status = entry.get("status", "")
-                icon = "✓" if status == "success" else "✗"
-                color = C["success"] if status == "success" else C["danger"]
-                icon_lbl = QLabel(icon)
-                icon_lbl.setStyleSheet(f"font-size: 16px; color: {color}; font-weight: 700;")
-                icon_lbl.setFixedWidth(20)
-                hl.addWidget(icon_lbl)
-
-                info_col = QVBoxLayout()
-                info_col.setSpacing(2)
-                name_lbl = QLabel(f"{entry.get('modpack_name', '?')}  v{entry.get('version', '?')}")
-                name_lbl.setStyleSheet(f"font-size: {FONT['sm']}; font-weight: 600; color: {C['text_primary']};")
-                info_col.addWidget(name_lbl)
-                ts = entry.get("timestamp", "")[:19].replace("T", " ")
-                sub_text = ts
-                if status != "success" and entry.get("error_message"):
-                    sub_text += f"  —  {entry['error_message'][:60]}"
-                sub_lbl = QLabel(sub_text)
-                sub_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_secondary']};")
-                info_col.addWidget(sub_lbl)
-                hl.addLayout(info_col, 1)
-
-                vbox.addWidget(row)
-
-        vbox.addStretch()
-        scroll.setWidget(container)
-        layout.addWidget(scroll, 1)
-
-        close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(90)
-        close_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
+    def _on_instance_update_finished(
+        self,
+        thread: QThread,
+        worker: ModpackInstanceUpdateWorker,
+        ok: bool,
+        msg: str,
+        index: int,
+        total: int,
+        name: str,
+    ) -> None:
+        if thread in self._active_update_threads:
+            self._active_update_threads.remove(thread)
+        if worker in self._active_update_workers:
+            self._active_update_workers.remove(worker)
+        prefix = "Updated" if ok else "Failed"
+        self._status_label.setText(f"[{index}/{total}] {prefix} {name}: {msg}")

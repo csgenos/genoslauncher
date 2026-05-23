@@ -208,7 +208,8 @@ def find_best_java(required_major: int = 21) -> Optional[str]:
     valid = [j for j in installs if j["major"] >= required_major]
     if not valid:
         return None
-    valid.sort(key=lambda j: j["major"])
+    # Prefer the newest compatible major to reduce edge-case incompatibilities.
+    valid.sort(key=lambda j: j["major"], reverse=True)
     return valid[0]["path"]
 
 
