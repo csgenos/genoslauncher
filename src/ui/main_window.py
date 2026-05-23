@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._load_auth()
+        QTimer.singleShot(1500, self._run_startup_modpack_update_policy)
         QTimer.singleShot(3000, self._check_for_update)
 
     # ------------------------------------------------------------------
@@ -244,6 +245,14 @@ class MainWindow(QMainWindow):
             f"⬆  GenosLauncher {result['version']} is available"
         )
         self._update_bar.setVisible(True)
+
+    def _run_startup_modpack_update_policy(self) -> None:
+        policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        if policy not in {"notify", "auto-on-launch"}:
+            return
+        tab = self._get_tab("modpacks")
+        if tab is not None and hasattr(tab, "run_startup_update_policy"):
+            tab.run_startup_update_policy()
 
     # ------------------------------------------------------------------
     # Signals

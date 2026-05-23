@@ -459,11 +459,20 @@ class ModpacksTab(QWidget):
         self._active_update_threads: list[QThread] = []
         self._active_update_workers: list[ModpackInstanceUpdateWorker] = []
         self._update_policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        self._startup_policy_ran = False
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
         if self._update_policy in {"notify", "auto-on-launch"}:
-            QTimer.singleShot(900, lambda: self._check_installed_updates(interactive=False))
+            QTimer.singleShot(900, self.run_startup_update_policy)
+
+    def run_startup_update_policy(self) -> None:
+        if self._startup_policy_ran:
+            return
+        self._startup_policy_ran = True
+        policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
+        if policy in {"notify", "auto-on-launch"}:
+            self._check_installed_updates(interactive=False)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
