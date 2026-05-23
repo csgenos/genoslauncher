@@ -67,11 +67,22 @@ Requires Python `>=3.11,<3.13`.
 
 ## Build (Windows)
 
+Requires Python `>=3.11,<3.13`, a virtual environment with dependencies installed, and [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+
 ```bat
 build.bat
 ```
 
-Produces `dist\GenosLauncher\GenosLauncher.exe`, an Inno Setup installer, and `SHA256SUMS.txt`.
+The script runs PyInstaller in **onedir mode**, producing a `dist\GenosLauncher\` folder containing `GenosLauncher.exe` and a `_internal\` directory with all bundled libraries (PySide6, cryptography, psutil, etc.). Inno Setup then packages that folder into a single `installer_output\GenosLauncher-X.Y.Z-Setup.exe` that installs per-user into `%LocalAppData%` with no UAC prompt required.
+
+To build the installer manually:
+
+```bat
+pyinstaller GenosLauncher.spec --clean --noconfirm
+iscc /DAppVersion=0.2.1 GenosLauncher.iss
+```
+
+SHA256 checksums are written to `SHA256SUMS.txt` and published alongside each release for verification.
 
 ## Notes
 
