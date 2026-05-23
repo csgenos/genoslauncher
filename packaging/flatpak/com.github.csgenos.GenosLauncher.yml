@@ -34,6 +34,8 @@ modules:
                        /app/share/applications/com.github.csgenos.GenosLauncher.desktop
       - install -Dm644 packaging/flatpak/com.github.csgenos.GenosLauncher.metainfo.xml
                        /app/share/metainfo/com.github.csgenos.GenosLauncher.metainfo.xml
+      - install -Dm644 src/resources/icons/app_icon.png
+                       /app/share/icons/hicolor/256x256/apps/com.github.csgenos.GenosLauncher.png
     sources:
       - type: dir
         path: ../..
