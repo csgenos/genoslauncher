@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import socket
 import time
 import urllib.parse
 
@@ -171,9 +172,20 @@ def _is_blocked_host(url: str) -> bool:
             return True
         try:
             ip = ipaddress.ip_address(host)
-            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+            return not ip.is_global
         except ValueError:
-            return False
+            pass
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError:
+            return True
+        for info in infos:
+            try:
+                if not ipaddress.ip_address(info[4][0]).is_global:
+                    return True
+            except ValueError:
+                return True
+        return False
     except Exception:
         return True
 

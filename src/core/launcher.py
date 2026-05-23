@@ -422,8 +422,10 @@ class LaunchWorker(QObject):
         height = config.get("resolution_height", 720)
         fullscreen = config.get("fullscreen", False)
 
-        # Real credentials when logged in with a matching Microsoft account (B-Z-004)
-        if auth_manager.is_logged_in and auth_manager.username == self.username:
+        # Online Minecraft requires passing the bearer token in the child process
+        # arguments. Keep the privacy-safe offline token path as the default.
+        online_token_allowed = config.get("allow_online_launch_token", False)
+        if online_token_allowed and auth_manager.is_logged_in and auth_manager.username == self.username:
             if not auth_manager.ensure_token_fresh(force=True):
                 self.error.emit(
                     "Microsoft session refresh failed. Please sign in again before launching online."
@@ -432,6 +434,8 @@ class LaunchWorker(QObject):
             token = auth_manager.access_token
             uid   = auth_manager.uuid or _offline_uuid(self.username)
         else:
+            if auth_manager.is_logged_in and auth_manager.username == self.username:
+                self.status_changed.emit("Launching without exposing the Microsoft access token...")
             token = "offline"
             uid   = _offline_uuid(self.username)
 
@@ -469,9 +473,6 @@ class LaunchWorker(QObject):
             safe_version = safe_path_segment(self.version_id, "version")
             log_path = LOGS_DIR / f"minecraft-{safe_version}.log"
             log_fh = open(log_path, "a", encoding="utf-8", errors="replace")
-            # SX-001: --accessToken is visible in /proc/<pid>/cmdline on Linux and
-            # Task Manager / WMI on Windows.  This is a known Minecraft launcher
-            # limitation; there is no API to pass credentials out-of-band.
             self._process = subprocess.Popen(
                 command,
                 stdout=log_fh,

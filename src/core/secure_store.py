@@ -32,6 +32,20 @@ SERVICE_NAME = "GenosLauncher"
 _FALLBACK_FILE = ".secrets_store"
 _FALLBACK_KEY_FILE = ".secrets_key"
 _FALLBACK_SALT_FILE = ".secrets_salt"
+_INSECURE_FALLBACK_ENV = "GENOS_ALLOW_INSECURE_SECRET_FALLBACK"
+
+
+def _insecure_fallback_allowed() -> bool:
+    return os.environ.get(_INSECURE_FALLBACK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _secret_store_unavailable(key: str, detail: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"System credential storage is unavailable, so GenosLauncher refused to "
+        f"write secret '{key}' to a local fallback file. Enable your OS keyring "
+        f"or set {_INSECURE_FALLBACK_ENV}=1 to opt into weaker local fallback storage. "
+        f"Details: {detail}"
+    )
 
 
 def _restrict_file(path: Path) -> None:
@@ -155,6 +169,7 @@ def _account(key: str) -> str:
 def set_secret(app_dir: Path, key: str, value: str) -> None:
     """Store a secret in keyring, falling back to encrypted local storage."""
     value = str(value)
+    keyring_error: Exception | None = None
     if keyring is not None:
         try:
             keyring.set_password(SERVICE_NAME, _account(key), value)
@@ -167,8 +182,11 @@ def set_secret(app_dir: Path, key: str, value: str) -> None:
                     store_path, _ = _fallback_paths(app_dir)
                     secure_delete(store_path)
             return
-        except Exception:
-            log.warning("System keyring failed; using encrypted fallback for %s", key, exc_info=True)
+        except Exception as exc:
+            keyring_error = exc
+            log.warning("System keyring failed for %s", key, exc_info=True)
+    if not _insecure_fallback_allowed():
+        raise _secret_store_unavailable(key, keyring_error or RuntimeError("keyring module is unavailable"))
     data = _read_fallback(app_dir)
     data[key] = value
     _write_fallback(app_dir, data)

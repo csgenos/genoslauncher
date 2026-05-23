@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import ipaddress
+import socket
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -61,9 +62,21 @@ def _is_blocked_host(hostname: str) -> bool:
         return True
     try:
         ip = ipaddress.ip_address(host)
-        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+        return not ip.is_global
     except ValueError:
-        return False
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return True
+    for info in infos:
+        addr = info[4][0]
+        try:
+            if not ipaddress.ip_address(addr).is_global:
+                return True
+        except ValueError:
+            return True
+    return False
 
 
 def _validate_download_url(url: str, allow_external_hosts: bool = False) -> None:
@@ -78,6 +91,22 @@ def _validate_download_url(url: str, allow_external_hosts: bool = False) -> None
         for suffix in _ALLOWED_DOWNLOAD_HOST_SUFFIXES
     ):
         raise CurseForgeError(f"Refusing unapproved download host: {hostname}")
+
+
+def _open_validated_download(url: str, allow_external_hosts: bool, timeout: int = 60) -> requests.Response:
+    current_url = url
+    for _ in range(6):
+        _validate_download_url(current_url, allow_external_hosts=allow_external_hosts)
+        resp = _session().get(current_url, stream=True, timeout=timeout, allow_redirects=False)
+        if 300 <= resp.status_code < 400:
+            location = resp.headers.get("Location", "")
+            resp.close()
+            if not location:
+                raise CurseForgeError(f"Download redirect missing Location header: {current_url}")
+            current_url = urllib.parse.urljoin(current_url, location)
+            continue
+        return resp
+    raise CurseForgeError(f"Too many redirects while downloading: {url}")
 
 
 def is_configured() -> bool:
@@ -187,8 +216,9 @@ def download_file(
     sha1_h = hashlib.sha1(usedforsecurity=False) if expected_sha1 else None
     sha512_h = hashlib.sha512() if expected_sha512 else None
 
+    resp: requests.Response | None = None
     try:
-        resp = _session().get(url, stream=True, headers=_headers(), timeout=60)
+        resp = _open_validated_download(url, allow_external_hosts=allow_unverified, timeout=60)
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
         if total > max_bytes:
@@ -218,6 +248,8 @@ def download_file(
     except Exception:
         raise
     finally:
+        if resp is not None:
+            resp.close()
         if tmp_path and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
 

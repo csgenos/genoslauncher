@@ -460,6 +460,11 @@ class SettingsTab(QWidget):
         self._close_on_launch.toggled.connect(lambda v: config.set("close_on_launch", v))
         behav_layout.addWidget(self._close_on_launch)
 
+        self._allow_online_token = QCheckBox("Allow online launch token in process arguments")
+        self._allow_online_token.setChecked(config.get("allow_online_launch_token", False))
+        self._allow_online_token.toggled.connect(lambda v: config.set("allow_online_launch_token", v))
+        behav_layout.addWidget(self._allow_online_token)
+
         self._show_snapshots = QCheckBox("Show snapshot versions")
         self._show_snapshots.setChecked(config.get("show_snapshots", False))
         self._show_snapshots.toggled.connect(lambda v: config.set("show_snapshots", v))

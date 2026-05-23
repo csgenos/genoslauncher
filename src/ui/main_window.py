@@ -139,28 +139,38 @@ class MainWindow(QMainWindow):
 
         root_layout.addLayout(body, 1)
 
-        # Instantiate all tabs
+        # Instantiate launch-critical tabs; heavier browsers/settings are loaded on first use.
         self._home_tab      = HomeTab()
         self._instances_tab = InstancesTab()
-        self._mods_tab      = ModsTab()
-        self._modpacks_tab  = ModpacksTab()
-        self._shaders_tab   = ShadersTab()
-        self._accounts_tab  = AccountsTab()
-        self._settings_tab  = SettingsTab()
         self._servers_tab   = ServersTab()
+        self._mods_tab: ModsTab | None = None
+        self._modpacks_tab: ModpacksTab | None = None
+        self._shaders_tab: ShadersTab | None = None
+        self._accounts_tab: AccountsTab | None = None
+        self._settings_tab: SettingsTab | None = None
 
-        self._tabs: dict[str, QWidget] = {
+        self._tab_factories = {
+            "mods": ModsTab,
+            "modpacks": ModpacksTab,
+            "shaders": ShadersTab,
+            "accounts": AccountsTab,
+            "settings": SettingsTab,
+        }
+
+        self._tabs: dict[str, QWidget | None] = {
             "home":      self._home_tab,
             "instances": self._instances_tab,
-            "mods":      self._mods_tab,
-            "modpacks":  self._modpacks_tab,
-            "shaders":   self._shaders_tab,
+            "mods":      None,
+            "modpacks":  None,
+            "shaders":   None,
             "servers":   self._servers_tab,
-            "accounts":  self._accounts_tab,
-            "settings":  self._settings_tab,
+            "accounts":  None,
+            "settings":  None,
         }
 
         for tab in self._tabs.values():
+            if tab is None:
+                continue
             tab.setVisible(True)
             tab.setGraphicsEffect(None)
             self._content.stack.addWidget(tab)
@@ -269,13 +279,15 @@ class MainWindow(QMainWindow):
     def _on_login_success(self, account: dict) -> None:
         config.update({"last_account": account.get("name", "")})
         self._update_sidebar_account()
-        self._accounts_tab._refresh_state()
+        if self._accounts_tab is not None:
+            self._accounts_tab._refresh_state()
 
     def _logout(self) -> None:
         auth_manager.logout()
         config.update({"last_account": ""})
         self._update_sidebar_account()
-        self._accounts_tab._refresh_state()
+        if self._accounts_tab is not None:
+            self._accounts_tab._refresh_state()
 
     def _update_sidebar_account(self) -> None:
         if auth_manager.is_logged_in:
@@ -289,8 +301,23 @@ class MainWindow(QMainWindow):
     # Tab switching (200ms fade-in)
     # ------------------------------------------------------------------
 
-    def _switch_tab(self, key: str) -> None:
+    def _get_tab(self, key: str) -> QWidget | None:
         widget = self._tabs.get(key)
+        if widget is not None:
+            return widget
+        factory = self._tab_factories.get(key)
+        if factory is None:
+            return None
+        widget = factory()
+        widget.setVisible(True)
+        widget.setGraphicsEffect(None)
+        self._content.stack.addWidget(widget)
+        self._tabs[key] = widget
+        setattr(self, f"_{key}_tab", widget)
+        return widget
+
+    def _switch_tab(self, key: str) -> None:
+        widget = self._get_tab(key)
         if widget is None or widget is self._content.stack.currentWidget():
             return
 
@@ -299,9 +326,9 @@ class MainWindow(QMainWindow):
         widget.setVisible(True)
         widget.setGraphicsEffect(None)
         if key == "mods":
-            self._mods_tab.refresh_instances()
+            widget.refresh_instances()
         elif key == "shaders":
-            self._shaders_tab._reload_instances()
+            widget._reload_instances()
         widget.update()
 
     # ------------------------------------------------------------------

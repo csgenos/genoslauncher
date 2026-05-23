@@ -21,11 +21,13 @@ import logging
 import os
 import re
 import shutil
+import socket
+import tempfile
 import threading
 import time
 import urllib.parse
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
 import requests
@@ -93,9 +95,21 @@ def _is_blocked_host(hostname: str) -> bool:
         return True
     try:
         ip = ipaddress.ip_address(host)
-        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+        return not ip.is_global
     except ValueError:
-        return False
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return True
+    for info in infos:
+        addr = info[4][0]
+        try:
+            if not ipaddress.ip_address(addr).is_global:
+                return True
+        except ValueError:
+            return True
+    return False
 
 
 def _validate_download_url(url: str, allow_external_hosts: bool = False) -> urllib.parse.ParseResult:
@@ -111,6 +125,22 @@ def _validate_download_url(url: str, allow_external_hosts: bool = False) -> urll
     ):
         raise ModrinthError(f"Refusing unapproved download host: {hostname}")
     return parsed
+
+
+def _open_validated_download(url: str, allow_external_hosts: bool, timeout: int = 30) -> requests.Response:
+    current_url = url
+    for _ in range(6):
+        _validate_download_url(current_url, allow_external_hosts=allow_external_hosts)
+        resp = _session.get(current_url, stream=True, timeout=timeout, allow_redirects=False)
+        if 300 <= resp.status_code < 400:
+            location = resp.headers.get("Location", "")
+            resp.close()
+            if not location:
+                raise ModrinthError(f"Download redirect missing Location header: {current_url}")
+            current_url = urllib.parse.urljoin(current_url, location)
+            continue
+        return resp
+    raise ModrinthError(f"Too many redirects while downloading: {url}")
 
 
 def verify_file_hash(path: Path, expected_sha1: str = "", expected_sha512: str = "") -> bool:
@@ -239,7 +269,7 @@ def search_projects(
         "facets": json.dumps(facets),
         "limit":  limit,
         "offset": offset,
-        "index":  sort_index,
+        "index":  sort_index if sort_index in {"relevance", "downloads", "follows", "newest", "updated"} else "downloads",
     }
     data = _get("/search", params)
     hits = [_project_from_hit(h) for h in data.get("hits", [])]
@@ -326,24 +356,27 @@ def download_file(
 
     Raises ModrinthError on network failure or hash mismatch.
     """
-    _validate_download_url(url, allow_external_hosts=allow_external_hosts or allow_unverified)
+    external_ok = allow_external_hosts or allow_unverified
+    _validate_download_url(url, allow_external_hosts=external_ok)
     if not allow_unverified and not (expected_sha1 or expected_sha512):
         raise ModrinthError(f"Refusing unverified download with no hash: {url}")
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dest_path.with_suffix(dest_path.suffix + ".download_tmp")
+    tmp_path: Path | None = None
 
     sha1_h   = hashlib.sha1(usedforsecurity=False) if expected_sha1 else None
     sha512_h = hashlib.sha512() if expected_sha512 else None
 
     try:
-        with _session.get(url, stream=True, timeout=30) as resp:
+        resp = _open_validated_download(url, allow_external_hosts=external_ok, timeout=30)
+        with resp:
             resp.raise_for_status()
             total = int(resp.headers.get("Content-Length", 0))
             if total > max_bytes:
                 raise ModrinthError(f"Download too large: {total} bytes")
             done  = 0
-            with open(tmp_path, "wb") as fh:
+            with tempfile.NamedTemporaryFile(delete=False, dir=dest_path.parent, suffix=".download_tmp") as fh:
+                tmp_path = Path(fh.name)
                 for chunk in resp.iter_content(chunk_size=chunk_size):
                     if not chunk:
                         continue
@@ -357,28 +390,35 @@ def download_file(
                         on_progress(done, total)
 
         if expected_sha1 and sha1_h and sha1_h.hexdigest() != expected_sha1:
-            tmp_path.unlink(missing_ok=True)
+            if tmp_path:
+                tmp_path.unlink(missing_ok=True)
             raise ModrinthError(
                 f"SHA1 mismatch for {dest_path.name}: "
                 f"got {sha1_h.hexdigest()}, expected {expected_sha1}"
             )
         if expected_sha512 and sha512_h and sha512_h.hexdigest() != expected_sha512:
-            tmp_path.unlink(missing_ok=True)
+            if tmp_path:
+                tmp_path.unlink(missing_ok=True)
             raise ModrinthError(
                 f"SHA512 mismatch for {dest_path.name}: "
                 f"got {sha512_h.hexdigest()}, expected {expected_sha512}"
             )
 
+        if tmp_path is None:
+            raise ModrinthError("Download did not create a temporary file")
         tmp_path.replace(dest_path)
 
     except requests.RequestException as exc:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
         raise ModrinthError(f"Download failed: {exc}") from exc
     except ModrinthError:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
         raise
     except Exception as exc:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
         raise ModrinthError(f"Unexpected error downloading {url}: {exc}") from exc
 
 
@@ -459,8 +499,7 @@ def extract_mrpack_overrides(mrpack_path: Path, dest_dir: Path) -> None:
             relative = member[len("overrides/"):]
             target = _safe_path(dest_dir, relative)
             if target is None:
-                log.warning("Skipping unsafe path in overrides: %s", member)
-                continue
+                raise ModrinthError(f"Unsafe override path in archive: {member}")
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -489,17 +528,23 @@ def install_mrpack_mods(
     failures: list[str] = []
 
     for i, file_entry in enumerate(files):
-        raw_path = file_entry.get("path", "").lstrip("/")
+        raw_path = str(file_entry.get("path", "")).replace("\\", "/")
 
         # Sanitize path components — strip traversal sequences while keeping
         # the intended subdirectory structure (mods/, config/, resourcepacks/ …)
-        parts = [p for p in Path(raw_path).parts if p not in (".", "..")]
-        if not parts:
+        rel = PurePosixPath(raw_path)
+        if rel.is_absolute() or any(p in ("", ".", "..") for p in rel.parts):
+            log.warning("Skipping unsafe mod path: %s", raw_path)
+            failures.append(raw_path or "<empty path>")
             continue
-        rel_path = Path(*parts)
+        if not rel.parts:
+            failures.append("<empty path>")
+            continue
+        rel_path = Path(*rel.parts)
         dest = _safe_path(instance_dir, str(rel_path))
         if dest is None:
             log.warning("Skipping unsafe mod path: %s", raw_path)
+            failures.append(raw_path or "<empty path>")
             continue
 
         filename = rel_path.name

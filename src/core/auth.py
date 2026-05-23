@@ -31,6 +31,7 @@ import logging
 import os
 import re as _re
 import secrets
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -107,6 +108,7 @@ from .._version import __version__ as _VERSION
 _HTTP.headers.update({"User-Agent": f"GenosLauncher/{_VERSION}"})
 _STORAGE_WARNING = ""
 _STORAGE_WARNING_LOCK = threading.Lock()
+_INSECURE_FALLBACK_ENV = "GENOS_ALLOW_INSECURE_SECRET_FALLBACK"
 
 
 def _set_storage_warning(message: str) -> None:
@@ -119,6 +121,20 @@ def _set_storage_warning(message: str) -> None:
 def credential_storage_warning() -> str:
     with _STORAGE_WARNING_LOCK:
         return _STORAGE_WARNING
+
+
+def _insecure_fallback_allowed() -> bool:
+    """Return True only when the user explicitly opts into local fallback files."""
+    return os.environ.get(_INSECURE_FALLBACK_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _credential_store_unavailable(detail: Exception) -> RuntimeError:
+    return RuntimeError(
+        "System credential storage is unavailable, so GenosLauncher refused to "
+        "write account tokens to a local fallback file. Enable your OS keyring "
+        f"or set {_INSECURE_FALLBACK_ENV}=1 to opt into weaker local fallback storage. "
+        f"Details: {detail}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +214,7 @@ def _secure_delete(path: Path) -> None:
 
 def _store_account(data: dict) -> None:
     payload = json.dumps(data)
+    keyring_error: Exception | None = None
     if _KEYRING_OK:
         try:
             keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, payload)
@@ -205,9 +222,12 @@ def _store_account(data: dict) -> None:
                 _secure_delete(_FALLBACK_STORE)
             return
         except Exception as exc:
+            keyring_error = exc
             _set_storage_warning(
-                f"System keyring write failed; using encrypted fallback credential file: {exc}"
+                f"System keyring write failed for Microsoft credentials: {exc}"
             )
+    if not _insecure_fallback_allowed():
+        raise _credential_store_unavailable(keyring_error or RuntimeError("keyring module is unavailable"))
     ciphertext = _encrypt(payload)
     atomic_write_bytes(_FALLBACK_STORE, ciphertext)
 
@@ -261,6 +281,7 @@ def _store_account_for(data: dict) -> None:
     key      = _account_key(username)
     fallback = _fallback_path_for(username)
     payload  = json.dumps(data)
+    keyring_error: Exception | None = None
     if _KEYRING_OK:
         try:
             keyring.set_password(_KEYRING_SERVICE, key, payload)
@@ -268,9 +289,12 @@ def _store_account_for(data: dict) -> None:
                 _secure_delete(fallback)
             return
         except Exception as exc:
+            keyring_error = exc
             _set_storage_warning(
-                f"System keyring write failed for {username}; using encrypted fallback: {exc}"
+                f"System keyring write failed for {username}: {exc}"
             )
+    if not _insecure_fallback_allowed():
+        raise _credential_store_unavailable(keyring_error or RuntimeError("keyring module is unavailable"))
     ciphertext = _encrypt(payload)
     atomic_write_bytes(fallback, ciphertext)
 
@@ -809,6 +833,7 @@ class AuthManager:
         if not data:
             return False
         with self._lock:
+            self._generation += 1
             self._account = data
             self._token_acquired_at = 0.0  # force proactive refresh on next launch
         _store_account(data)
@@ -887,7 +912,12 @@ class AuthManager:
         self._add_cancel_event.set()
         with self._lock:
             self._generation += 1
+            username = (self._account or {}).get("name", "")
             self._account = None
+        if username:
+            _delete_account_for(username)
+            usernames = [u for u in config.get("ms_usernames", []) if u != username]
+            config.update({"ms_usernames": usernames, "active_ms_username": "", "last_account": ""})
         _delete_account()
 
     # ------------------------------------------------------------------
@@ -904,20 +934,33 @@ class AuthManager:
         if not url:
             return False
         try:
-            resp = _HTTP.get(url, timeout=10, stream=True)
-            if not resp.ok:
-                return False
-            max_bytes = 2 * 1024 * 1024
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in resp.iter_content(chunk_size=64 * 1024):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > max_bytes:
+            with _HTTP.get(url, timeout=10, stream=True) as resp:
+                if not resp.ok:
                     return False
-                chunks.append(chunk)
-            atomic_write_bytes(dest, b"".join(chunks))
+                max_bytes = 2 * 1024 * 1024
+                total = 0
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp_name = ""
+                too_large = False
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, dir=dest.parent, suffix=".avatar_tmp") as fh:
+                        tmp_name = fh.name
+                        for chunk in resp.iter_content(chunk_size=64 * 1024):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > max_bytes:
+                                too_large = True
+                                break
+                            fh.write(chunk)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    if too_large:
+                        return False
+                    Path(tmp_name).replace(dest)
+                finally:
+                    if tmp_name:
+                        Path(tmp_name).unlink(missing_ok=True)
             return True
         except Exception:
             pass
