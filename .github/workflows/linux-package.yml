@@ -104,7 +104,7 @@ jobs:
       - name: Install flatpak + flatpak-builder
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y flatpak flatpak-builder
+          sudo apt-get install -y flatpak flatpak-builder appstream
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
@@ -120,6 +120,7 @@ jobs:
             --force-clean \
             --repo=flatpak-repo \
             --disable-rofiles-fuse \
+            --disable-updates \
             flatpak-build-dir \
             packaging/flatpak/com.github.csgenos.GenosLauncher.yml
 
