@@ -444,6 +444,12 @@ class ModApplyUpdateWorker(QObject):
             if old_name:
                 old = mr.safe_download_path(mods_dir, old_name)
                 if old.exists() and old != dest:
+                    backup_dir = instance_dir / ".mod_backups" / info["project_id"]
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(old, backup_dir / old.name)
+                    except OSError:
+                        pass
                     old.unlink(missing_ok=True)
             index = _load_index(instance_dir)
             pid = info["project_id"]
@@ -486,6 +492,44 @@ class ModApplyAllUpdatesWorker(QObject):
         self.finished.emit(succeeded, failed)
 
 
+class ModRollbackWorker(QObject):
+    finished = Signal(bool, str)
+
+    def __init__(self, info: dict) -> None:
+        super().__init__()
+        self._info = info
+
+    def run(self) -> None:
+        try:
+            instance_dir = Path(self._info["instance_dir"])
+            project_id = self._info["project_id"]
+            backup_dir = instance_dir / ".mod_backups" / project_id
+            if not backup_dir.exists():
+                self.finished.emit(False, "No backup found for this mod.")
+                return
+            backups = sorted(backup_dir.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True)
+            if not backups:
+                self.finished.emit(False, "Backup directory is empty.")
+                return
+            backup_file = backups[0]
+            mods_dir = instance_dir / "mods"
+            mods_dir.mkdir(parents=True, exist_ok=True)
+            current_filename = self._info.get("current_filename", "")
+            if current_filename:
+                current = mods_dir / current_filename
+                if current.exists():
+                    current.unlink(missing_ok=True)
+            dest = mods_dir / backup_file.name
+            shutil.copy2(backup_file, dest)
+            index = _load_index(instance_dir)
+            if project_id in index:
+                index[project_id]["filename"] = backup_file.name
+            _save_index(instance_dir, index)
+            self.finished.emit(True, f"Rolled back {self._info.get('title', project_id)}.")
+        except Exception as exc:
+            self.finished.emit(False, f"Rollback failed: {exc}")
+
+
 class _IconLoader(QObject):
     done = Signal(str, str)  # project_id, path
 
@@ -507,6 +551,7 @@ class _IconLoader(QObject):
 
 class ModUpdateCard(QFrame):
     update_requested = Signal(dict)
+    rollback_requested = Signal(dict)
 
     def __init__(self, info: dict, parent=None) -> None:
         super().__init__(parent)
@@ -542,6 +587,20 @@ class ModUpdateCard(QFrame):
                 changelog_lbl.setOpenExternalLinks(False)
                 changelog_lbl.linkActivated.connect(lambda url: webbrowser.open(url))
                 layout.addWidget(changelog_lbl)
+
+        instance_dir = Path(info.get("instance_dir", ""))
+        has_backup = (instance_dir / ".mod_backups" / info.get("project_id", "")).exists()
+        if has_backup:
+            self._rollback_btn = QPushButton("Rollback")
+            self._rollback_btn.setFixedSize(72, 28)
+            self._rollback_btn.setCursor(Qt.PointingHandCursor)
+            self._rollback_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: 1px solid " + C["border_strong"] +
+                "; border-radius: 5px; font-size: " + _XS + "; color: " + C["text_secondary"] + "; }"
+                "QPushButton:hover { background: " + C["bg_hover"] + "; }"
+            )
+            self._rollback_btn.clicked.connect(lambda: self.rollback_requested.emit(self._info))
+            layout.addWidget(self._rollback_btn)
 
         self._btn = QPushButton("Update")
         self._btn.setFixedSize(72, 28)
@@ -800,6 +859,17 @@ class ModsTab(QWidget):
         self._status.setStyleSheet("font-size: " + _SM + "; color: " + C["text_secondary"] + ";")
         root.addWidget(self._status)
 
+        # Conflict warning (hidden unless duplicates detected)
+        self._conflict_banner = QLabel("")
+        self._conflict_banner.setStyleSheet(
+            f"font-size: {_XS}; color: {C['danger']}; "
+            f"background: {C['bg_secondary']}; border: 1px solid {C['danger']}; "
+            f"border-radius: 6px; padding: 6px 12px;"
+        )
+        self._conflict_banner.setWordWrap(True)
+        self._conflict_banner.setVisible(False)
+        root.addWidget(self._conflict_banner)
+
         # Updates section (hidden until check runs)
         self._updates_section = QWidget()
         self._updates_section.setVisible(False)
@@ -848,6 +918,7 @@ class ModsTab(QWidget):
         self._instance_combo.blockSignals(False)
         self._populate_versions()
         self._refresh_profiles()
+        self._check_mod_conflicts()
         self._execute_search()
 
     def _refresh_profiles(self) -> None:
@@ -928,7 +999,30 @@ class ModsTab(QWidget):
         set_selected_instance(self._instance_combo.itemData(index) or "")
         self._populate_versions()
         self._refresh_profiles()
+        self._check_mod_conflicts()
         self._execute_search()
+
+    def _check_mod_conflicts(self) -> None:
+        instance = selected_instance()
+        if not instance:
+            self._conflict_banner.setVisible(False)
+            return
+        instance_dir = Path(instance.get("directory", ""))
+        index = _load_index(instance_dir)
+        seen_ids: dict[str, list[str]] = {}
+        for pid, entry in index.items():
+            title = entry.get("title", pid)
+            seen_ids.setdefault(pid, []).append(title)
+        duplicates = [pid for pid, titles in seen_ids.items() if len(titles) > 1]
+        if duplicates:
+            names = ", ".join(seen_ids[pid][0] for pid in duplicates[:5])
+            self._conflict_banner.setText(
+                f"⚠ Duplicate mod IDs detected: {names}. "
+                "This may cause conflicts. Check your mods folder."
+            )
+            self._conflict_banner.setVisible(True)
+        else:
+            self._conflict_banner.setVisible(False)
 
     def _on_source_changed(self) -> None:
         source = self._source_combo.currentData()
@@ -943,8 +1037,9 @@ class ModsTab(QWidget):
     def _execute_search(self) -> None:
         if self._active_search_thread is not None and self._active_search_thread.isRunning():
             self._search_generation += 1
-            self._search_pending = True
-            self._status.setText("Search queued...")
+            if not self._search_pending:
+                self._search_pending = True
+                self._status.setText("Search queued…")
             return
         query        = self._search_box.text().strip() if hasattr(self, "_search_box") else ""
         game_version = self._version_filter.currentData() if hasattr(self, "_version_filter") else ""
@@ -1097,6 +1192,7 @@ class ModsTab(QWidget):
         for info in updates:
             card = ModUpdateCard(info, self._updates_section)
             card.update_requested.connect(self._execute_mod_update)
+            card.rollback_requested.connect(self._execute_mod_rollback)
             self._updates_list.addWidget(card)
 
     def _run_update_all(self) -> None:
@@ -1137,18 +1233,40 @@ class ModsTab(QWidget):
         thread.start()
 
     def _execute_mod_update(self, info: dict) -> None:
+        target_card = None
         for i in range(self._updates_list.count()):
             item = self._updates_list.itemAt(i)
             if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
                 card = item.widget()
                 if card._info.get("project_id") == info.get("project_id"):
-                    card.set_updated()
+                    target_card = card
                     break
         thread = QThread(self)
         worker = ModApplyUpdateWorker(info)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(lambda ok, msg, _info: self._status.setText(msg))
+
+        def _on_update_finished(ok: bool, msg: str, _info: dict) -> None:
+            self._status.setText(msg)
+            if ok and target_card is not None:
+                target_card.set_updated()
+
+        worker.finished.connect(_on_update_finished)
+        worker.finished.connect(thread.quit)
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _execute_mod_rollback(self, info: dict) -> None:
+        thread = QThread(self)
+        worker = ModRollbackWorker(info)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda ok, msg: self._status.setText(msg))
         worker.finished.connect(thread.quit)
         self._threads.append(thread)
         self._workers.append(worker)

@@ -10,6 +10,7 @@ import json
 import socket
 import time
 import urllib.parse
+from datetime import datetime, timezone
 
 import requests
 from PySide6.QtCore import QObject, QThread, Qt, Signal
@@ -216,11 +217,13 @@ class AccountRow(QFrame):
         is_active: bool = False,
         on_select=None,
         on_remove=None,
+        last_used: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("AccountRow")
-        self.setFixedHeight(72)
+        has_last_used = bool(last_used and _relative_time(last_used))
+        self.setFixedHeight(86 if has_last_used else 72)
         border_color = C["accent_blue"] if is_active else C["border"]
         self.setStyleSheet(
             f"""
@@ -246,6 +249,12 @@ class AccountRow(QFrame):
         type_lbl = QLabel(account_type)
         type_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
         info.addWidget(type_lbl)
+        if last_used:
+            rel = _relative_time(last_used)
+            if rel:
+                used_lbl = QLabel(f"Last used: {rel}")
+                used_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+                info.addWidget(used_lbl)
         layout.addLayout(info)
         layout.addStretch()
 
@@ -436,22 +445,26 @@ class AccountsTab(QWidget):
         active_ms = auth_manager.username if auth_manager.is_logged_in else ""
         for ms_name in auth_manager.list_ms_accounts():
             is_active = ms_name == active_ms
+            last_used = config.get(_account_last_used_key(ms_name), "")
             row = AccountRow(
                 ms_name,
                 "Microsoft | Online" if is_active else "Microsoft | Saved",
                 is_active=is_active,
                 on_select=lambda n=ms_name: self._switch_ms_account(n),
                 on_remove=lambda n=ms_name: self._remove_ms_account(n),
+                last_used=last_used,
             )
             self._accounts_layout.addWidget(row)
 
         for name in self._offline_accounts:
+            last_used = config.get(_account_last_used_key(name), "")
             row = AccountRow(
                 name,
                 "Offline | Unverified",
                 is_active=(name == active and not auth_manager.is_logged_in),
                 on_select=lambda n=name: self._select_account(n),
                 on_remove=lambda n=name: self._remove_offline(n),
+                last_used=last_used,
             )
             self._accounts_layout.addWidget(row)
 
@@ -472,7 +485,10 @@ class AccountsTab(QWidget):
         dlg.exec()
 
     def _on_login_success(self, account: dict) -> None:
-        config.update({"last_account": account.get("name", "")})
+        name = account.get("name", "")
+        config.update({"last_account": name})
+        if name:
+            record_account_used(name)
         self._refresh_state()
 
     def _logout_ms(self) -> None:
@@ -496,6 +512,7 @@ class AccountsTab(QWidget):
     def _switch_ms_account(self, username: str) -> None:
         if auth_manager.switch_account(username):
             config.update({"last_account": username})
+            record_account_used(username)
             self._refresh_state()
         else:
             QMessageBox.warning(
@@ -531,6 +548,7 @@ class AccountsTab(QWidget):
 
     def _select_account(self, name: str) -> None:
         config.update({"last_account": name})
+        record_account_used(name)
         self._refresh_state()
 
     def _remove_offline(self, name: str) -> None:
@@ -547,3 +565,30 @@ def _lbl(text: str, size: str, color: str, bold: bool = False) -> QLabel:
     weight = "700" if bold else "400"
     w.setStyleSheet(f"font-size: {size}; font-weight: {weight}; color: {color};")
     return w
+
+
+def _account_last_used_key(username: str) -> str:
+    return f"account_last_used_{username}"
+
+
+def record_account_used(username: str) -> None:
+    config.set(_account_last_used_key(username), datetime.now(timezone.utc).isoformat())
+
+
+def _relative_time(iso_str: str) -> str:
+    try:
+        ts = datetime.fromisoformat(iso_str)
+        now = datetime.now(timezone.utc)
+        delta = int((now - ts).total_seconds())
+        if delta < 60:
+            return "just now"
+        if delta < 3600:
+            m = delta // 60
+            return f"{m} minute{'s' if m != 1 else ''} ago"
+        if delta < 86400:
+            h = delta // 3600
+            return f"{h} hour{'s' if h != 1 else ''} ago"
+        d = delta // 86400
+        return f"{d} day{'s' if d != 1 else ''} ago"
+    except Exception:
+        return ""

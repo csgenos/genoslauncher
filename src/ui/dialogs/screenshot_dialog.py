@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QObject, QThread, QUrl
 from PySide6.QtGui import QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -49,19 +51,15 @@ class _ThumbLoader(QObject):
 
 
 class ScreenshotTile(QFrame):
+    selection_changed = Signal(str, bool)  # path, selected
+
     def __init__(self, path: Path, parent=None) -> None:
         super().__init__(parent)
         self._path = path
+        self._selected = False
         self.setFixedSize(THUMB_SIZE + 8, THUMB_SIZE + 30)
         self.setObjectName("SSTile")
-        self.setStyleSheet(f"""
-            #SSTile {{
-                background: {C["bg_primary"]};
-                border: 1px solid {C["border"]};
-                border-radius: 8px;
-            }}
-            #SSTile:hover {{ border-color: {C["border_strong"]}; }}
-        """)
+        self._update_style()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
@@ -78,9 +76,35 @@ class ScreenshotTile(QFrame):
         name.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_secondary']};")
         layout.addWidget(name)
 
+    def _update_style(self) -> None:
+        if self._selected:
+            self.setStyleSheet(f"""
+                #SSTile {{
+                    background: {C["accent_blue_soft"]};
+                    border: 2px solid {C["accent_blue"]};
+                    border-radius: 8px;
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                #SSTile {{
+                    background: {C["bg_primary"]};
+                    border: 1px solid {C["border"]};
+                    border-radius: 8px;
+                }}
+                #SSTile:hover {{ border-color: {C["border_strong"]}; }}
+            """)
+
     def set_pixmap(self, px: QPixmap) -> None:
         self._img.setPixmap(px)
         self._img.setText("")
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and event.modifiers() & Qt.ControlModifier:
+            self._selected = not self._selected
+            self._update_style()
+            self.selection_changed.emit(str(self._path), self._selected)
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, _event) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._path)))
@@ -94,8 +118,10 @@ class ScreenshotGalleryDialog(QDialog):
         self._thumb_threads: list[QThread] = []
         self._thumb_workers: list[_ThumbLoader] = []
         self._tiles_by_path: dict[str, ScreenshotTile] = {}
+        self._selected_paths: set[str] = set()
+        self._all_paths: list[Path] = []
         self.setWindowTitle(f"Screenshots — {instance.get('name', 'Instance')}")
-        self.resize(860, 580)
+        self.resize(860, 600)
         self._build_ui()
         self._load_screenshots()
 
@@ -130,13 +156,27 @@ class ScreenshotGalleryDialog(QDialog):
         scroll.setWidget(self._grid_widget)
         layout.addWidget(scroll, 1)
 
+        self._storage_lbl = QLabel("")
+        self._storage_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        layout.addWidget(self._storage_lbl)
+
+        btn_row = QHBoxLayout()
+        self._delete_sel_btn = QPushButton("Delete Selected")
+        self._delete_sel_btn.setFixedHeight(32)
+        self._delete_sel_btn.setEnabled(False)
+        self._delete_sel_btn.clicked.connect(self._delete_selected)
+        btn_row.addWidget(self._delete_sel_btn)
+        self._export_sel_btn = QPushButton("Export Selected")
+        self._export_sel_btn.setFixedHeight(32)
+        self._export_sel_btn.setEnabled(False)
+        self._export_sel_btn.clicked.connect(self._export_selected)
+        btn_row.addWidget(self._export_sel_btn)
+        btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(90)
         close_btn.clicked.connect(self.accept)
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(close_btn)
-        layout.addLayout(row)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
     def _load_screenshots(self) -> None:
         if not self._screenshots_dir.exists():
@@ -154,15 +194,54 @@ class ScreenshotGalleryDialog(QDialog):
             self._status.setText("No screenshots found in this instance.")
             return
 
+        self._all_paths = imgs
+        total_bytes = sum(p.stat().st_size for p in imgs if p.exists())
+        total_mb = total_bytes / (1024 * 1024)
+        self._storage_lbl.setText(
+            f"Total: {total_mb:.1f} MB across {len(imgs)} screenshot(s)  ·  Ctrl+click to select"
+        )
         self._status.setText(f"{len(imgs)} screenshot(s) — double-click to open")
         cols = 4
         self._tiles: list[ScreenshotTile] = []
         for i, path in enumerate(imgs):
             tile = ScreenshotTile(path, self._grid_widget)
+            tile.selection_changed.connect(self._on_tile_selection_changed)
             self._grid.addWidget(tile, i // cols, i % cols)
             self._tiles.append(tile)
             self._tiles_by_path[str(path)] = tile
             self._load_thumb_async(tile, path)
+
+    def _on_tile_selection_changed(self, path: str, selected: bool) -> None:
+        if selected:
+            self._selected_paths.add(path)
+        else:
+            self._selected_paths.discard(path)
+        has_sel = bool(self._selected_paths)
+        self._delete_sel_btn.setEnabled(has_sel)
+        self._export_sel_btn.setEnabled(has_sel)
+
+    def _delete_selected(self) -> None:
+        for path_str in list(self._selected_paths):
+            try:
+                Path(path_str).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._selected_paths.clear()
+        self._load_screenshots()
+
+    def _export_selected(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Export to Folder")
+        if not folder:
+            return
+        dest_dir = Path(folder)
+        for path_str in self._selected_paths:
+            src = Path(path_str)
+            if src.exists():
+                try:
+                    shutil.copy2(src, dest_dir / src.name)
+                except OSError:
+                    pass
+        self._status.setText(f"Exported {len(self._selected_paths)} screenshot(s) to {folder}.")
 
     def _load_thumb_async(self, _tile: ScreenshotTile, path: Path) -> None:
         loader = _ThumbLoader(str(path))

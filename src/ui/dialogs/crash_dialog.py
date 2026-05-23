@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -29,7 +32,7 @@ class CrashReportDialog(QDialog):
         self._instance = instance
         self._crash_dir = Path(instance.get("directory", "")) / "crash-reports"
         self.setWindowTitle(f"Crash Reports — {instance.get('name', 'Instance')}")
-        self.resize(820, 560)
+        self.resize(820, 580)
         self._build_ui()
         self._load_reports()
 
@@ -49,6 +52,28 @@ class CrashReportDialog(QDialog):
         hdr.addWidget(self._selector)
         layout.addLayout(hdr)
 
+        search_row = QHBoxLayout()
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("Search in report…")
+        self._search_box.setFixedHeight(32)
+        self._search_box.setStyleSheet(f"""
+            QLineEdit {{
+                background: {C["bg_secondary"]};
+                border: 1px solid {C["border"]};
+                border-radius: 6px;
+                padding: 0 10px;
+                font-size: {FONT["sm"]};
+                color: {C["text_primary"]};
+            }}
+        """)
+        self._search_box.textChanged.connect(self._on_search)
+        search_row.addWidget(self._search_box)
+        find_next_btn = QPushButton("Find Next")
+        find_next_btn.setFixedSize(90, 32)
+        find_next_btn.clicked.connect(self._find_next)
+        search_row.addWidget(find_next_btn)
+        layout.addLayout(search_row)
+
         self._viewer = QPlainTextEdit()
         self._viewer.setReadOnly(True)
         self._viewer.setStyleSheet(f"""
@@ -64,13 +89,39 @@ class CrashReportDialog(QDialog):
         """)
         layout.addWidget(self._viewer, 1)
 
+        btn_row = QHBoxLayout()
+        copy_btn = QPushButton("Copy to Clipboard")
+        copy_btn.setFixedHeight(34)
+        copy_btn.clicked.connect(self._copy_to_clipboard)
+        btn_row.addWidget(copy_btn)
+        btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(90)
         close_btn.clicked.connect(self.accept)
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(close_btn)
-        layout.addLayout(row)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _copy_to_clipboard(self) -> None:
+        text = self._viewer.toPlainText()
+        QApplication.clipboard().setText(text)
+
+    def _on_search(self, text: str) -> None:
+        if not text:
+            cursor = self._viewer.textCursor()
+            cursor.clearSelection()
+            self._viewer.setTextCursor(cursor)
+            return
+        self._viewer.moveCursor(QTextCursor.MoveOperation.Start)
+        self._viewer.find(text)
+
+    def _find_next(self) -> None:
+        text = self._search_box.text()
+        if not text:
+            return
+        found = self._viewer.find(text)
+        if not found:
+            self._viewer.moveCursor(QTextCursor.MoveOperation.Start)
+            self._viewer.find(text)
 
     def _load_reports(self) -> None:
         if not self._crash_dir.exists():

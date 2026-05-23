@@ -5,6 +5,7 @@ Instances tab - browse, install, and manage Minecraft versions.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
@@ -50,6 +51,33 @@ from ...core.launcher import InstallWorker, get_available_versions, get_installe
 from ...core.validators import validate_version_id
 
 log = logging.getLogger(__name__)
+
+
+def _dir_size_mb(path: Path) -> float:
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total / (1024 * 1024)
+
+
+class _DiskSizeWorker(QObject):
+    done = Signal(str, float)  # instance_id, mb
+
+    def __init__(self, instance_id: str, directory: str) -> None:
+        super().__init__()
+        self._id = instance_id
+        self._dir = directory
+
+    def run(self) -> None:
+        mb = _dir_size_mb(Path(self._dir)) if self._dir else 0.0
+        self.done.emit(self._id, mb)
 
 
 class _VersionLoader(QObject):
@@ -119,6 +147,9 @@ class InstancesTab(QWidget):
         self._install_workers: dict[str, InstallWorker] = {}
         self._repair_threads: list[QThread] = []
         self._repair_workers: list[_RepairWorker] = []
+        self._selected_instances: set[str] = set()
+        self._disk_size_threads: list[QThread] = []
+        self._disk_labels: dict[str, QLabel] = {}
         self._build_ui()
         QTimer.singleShot(100, self._load_versions)
 
@@ -170,6 +201,26 @@ class InstancesTab(QWidget):
         self._group_filter_combo.currentTextChanged.connect(self._on_group_filter_changed)
         instance_filter_row.addWidget(self._group_filter_combo)
         root.addLayout(instance_filter_row)
+
+        bulk_row = QHBoxLayout()
+        bulk_row.setSpacing(8)
+        self._select_all_cb = QCheckBox("Select All")
+        self._select_all_cb.toggled.connect(self._on_select_all)
+        bulk_row.addWidget(self._select_all_cb)
+        bulk_row.addStretch()
+        validate_all_btn = OutlineButton("Validate All")
+        validate_all_btn.setFixedHeight(30)
+        validate_all_btn.clicked.connect(self._bulk_validate)
+        bulk_row.addWidget(validate_all_btn)
+        repair_all_btn = OutlineButton("Repair All")
+        repair_all_btn.setFixedHeight(30)
+        repair_all_btn.clicked.connect(self._bulk_repair)
+        bulk_row.addWidget(repair_all_btn)
+        export_all_btn = OutlineButton("Export All")
+        export_all_btn.setFixedHeight(30)
+        export_all_btn.clicked.connect(self._bulk_export)
+        bulk_row.addWidget(export_all_btn)
+        root.addLayout(bulk_row)
 
         self._instances_container = QWidget()
         self._instances_container.setStyleSheet("background: transparent;")
@@ -284,6 +335,12 @@ class InstancesTab(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+        self._disk_labels.clear()
+        for t in self._disk_size_threads:
+            if t.isRunning():
+                t.quit()
+        self._disk_size_threads.clear()
+
         all_instances = list_instances()
         self._refresh_group_filter_options()
         instances = self._filter_instances(all_instances)
@@ -310,11 +367,18 @@ class InstancesTab(QWidget):
             self._instances_layout.addWidget(section)
             rows = sorted(grouped[group_name], key=lambda i: str(i.get("name", "")).lower())
             for instance in rows:
+                inst_id = instance.get("id", "")
                 row = QWidget()
                 row.setStyleSheet(f"background: {C['bg_primary']}; border: 1px solid {C['border']}; border-radius: 8px;")
                 layout = QHBoxLayout(row)
                 layout.setContentsMargins(14, 10, 14, 10)
-                active = "Active - " if instance.get("id") == active_id else ""
+
+                cb = QCheckBox()
+                cb.setChecked(inst_id in self._selected_instances)
+                cb.toggled.connect(lambda checked, iid=inst_id: self._on_instance_cb_toggled(iid, checked))
+                layout.addWidget(cb)
+
+                active = "Active - " if inst_id == active_id else ""
                 detail = (
                     f"{active}{instance.get('name', 'Instance')} - {instance.get('mc_version', '?')} - "
                     f"{str(instance.get('type', 'custom')).title()}"
@@ -322,6 +386,13 @@ class InstancesTab(QWidget):
                 name = QLabel(detail)
                 name.setStyleSheet(f"color: {C['text_primary']}; font-size: {FONT['md']}; font-weight: 600;")
                 layout.addWidget(name, 1)
+
+                disk_lbl = QLabel("…MB")
+                disk_lbl.setStyleSheet(f"color: {C['text_tertiary']}; font-size: {FONT['xs']}; min-width: 60px;")
+                self._disk_labels[inst_id] = disk_lbl
+                layout.addWidget(disk_lbl)
+                self._start_disk_size_worker(inst_id, instance.get("directory", ""))
+
                 select = QPushButton("Use")
                 select.setFixedWidth(58)
                 select.clicked.connect(lambda _=False, i=instance: self._select_instance(i))
@@ -360,6 +431,94 @@ class InstancesTab(QWidget):
         menu.addAction("Import Prism/MultiMC Folder...", self._import_instances)
         menu.addAction("Import ZIP/MRPACK Archive...", self._import_archive)
         menu.exec(QCursor.pos())
+
+    def _on_instance_cb_toggled(self, instance_id: str, checked: bool) -> None:
+        if checked:
+            self._selected_instances.add(instance_id)
+        else:
+            self._selected_instances.discard(instance_id)
+
+    def _on_select_all(self, checked: bool) -> None:
+        instances = list_instances()
+        if checked:
+            self._selected_instances = {i.get("id", "") for i in instances}
+        else:
+            self._selected_instances.clear()
+        self._render_instances()
+
+    def _start_disk_size_worker(self, instance_id: str, directory: str) -> None:
+        if not directory:
+            if instance_id in self._disk_labels:
+                self._disk_labels[instance_id].setText("—")
+            return
+        thread = QThread(self)
+        worker = _DiskSizeWorker(instance_id, directory)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_disk_size_done)
+        worker.done.connect(thread.quit)
+        self._disk_size_threads.append(thread)
+        thread.finished.connect(lambda: self._disk_size_threads.remove(thread) if thread in self._disk_size_threads else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_disk_size_done(self, instance_id: str, mb: float) -> None:
+        lbl = self._disk_labels.get(instance_id)
+        if lbl:
+            if mb >= 1024:
+                lbl.setText(f"{mb/1024:.1f} GB")
+            else:
+                lbl.setText(f"{mb:.0f} MB")
+
+    def _get_selected_or_all(self) -> list[dict]:
+        instances = list_instances()
+        if self._selected_instances:
+            return [i for i in instances if i.get("id") in self._selected_instances]
+        return instances
+
+    def _bulk_validate(self) -> None:
+        targets = self._get_selected_or_all()
+        if not targets:
+            self._count_label.setText("No instances to validate.")
+            return
+        results = []
+        for instance in targets:
+            ok, issues = validate_instance(instance)
+            if ok:
+                results.append(f"{instance.get('name', '?')}: OK")
+            else:
+                results.append(f"{instance.get('name', '?')}: {'; '.join(issues[:2])}")
+        self._count_label.setText(f"Validated {len(targets)}: " + " | ".join(results[:3]))
+
+    def _bulk_repair(self) -> None:
+        targets = self._get_selected_or_all()
+        if not targets:
+            self._count_label.setText("No instances to repair.")
+            return
+        self._count_label.setText(f"Repairing {len(targets)} instance(s)…")
+        for instance in targets:
+            self._repair_instance(instance)
+
+    def _bulk_export(self) -> None:
+        targets = self._get_selected_or_all()
+        if not targets:
+            self._count_label.setText("No instances to export.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Choose Export Folder")
+        if not folder:
+            return
+        folder_path = Path(folder)
+        success = 0
+        for instance in targets:
+            name = instance.get("name", "instance").replace(" ", "_")
+            dest = folder_path / f"{name}.zip"
+            try:
+                export_instance_zip(instance, dest)
+                success += 1
+            except Exception as exc:
+                log.warning("Export failed for %s: %s", instance.get("name"), exc)
+        self._count_label.setText(f"Exported {success}/{len(targets)} instances to {folder}.")
 
     def _view_crashes(self, instance: dict) -> None:
         CrashReportDialog(instance, self).exec()

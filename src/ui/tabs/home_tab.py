@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (
 
 from ..._version import __version__ as _VER
 from ...core.config import APP_DIR, config
+from ...core.instances import list_instances
 from ...core.launcher import get_available_versions, get_installed_versions
-from ..components.animated_button import LaunchButton, OutlineButton
+from ..components.animated_button import LaunchButton, OutlineButton, PrimaryButton
 from ..components.progress_widget import LaunchProgressPanel
 from ..components.version_card import VersionCard
 from ..styles import COLORS as C, FONT
@@ -187,6 +188,7 @@ class HomeTab(QWidget):
     launch_requested = Signal(str)
     install_requested = Signal(str)
     view_all_requested = Signal()
+    continue_requested = Signal(str, str)  # version_id, instance_id
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -197,9 +199,11 @@ class HomeTab(QWidget):
         self._workers: list[QObject] = []
         self._quick_play_layout: QHBoxLayout | None = None
         self._news_layout: QVBoxLayout | None = None
+        self._continue_btn: PrimaryButton | None = None
         self._build_ui()
         QTimer.singleShot(0, self._load_versions)
         QTimer.singleShot(0, self._load_news)
+        QTimer.singleShot(0, self._refresh_continue_btn)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -277,6 +281,14 @@ class HomeTab(QWidget):
         self._play_btn.setGraphicsEffect(shadow)
         self._play_btn.clicked.connect(self._on_play_clicked)
         launch_row.addWidget(self._play_btn)
+
+        self._continue_btn = PrimaryButton("▶ Continue")
+        self._continue_btn.setMinimumWidth(200)
+        self._continue_btn.setFixedHeight(52)
+        self._continue_btn.clicked.connect(self._on_continue_clicked)
+        self._continue_btn.setVisible(False)
+        launch_row.addWidget(self._continue_btn)
+
         launch_row.addStretch()
         hero_layout.addLayout(launch_row)
 
@@ -474,3 +486,33 @@ class HomeTab(QWidget):
         if not vid:
             return
         self.launch_requested.emit(vid)
+
+    def _refresh_continue_btn(self) -> None:
+        if self._continue_btn is None:
+            return
+        instance_id = config.get("selected_instance_id", "")
+        last_account = config.get("last_account", "")
+        if not instance_id or not last_account:
+            self._continue_btn.setVisible(False)
+            return
+        instances = list_instances()
+        instance = next((i for i in instances if i.get("id") == instance_id), None)
+        if instance is None:
+            self._continue_btn.setVisible(False)
+            return
+        name = instance.get("name", "Instance")
+        self._continue_btn.setText(f"▶ Continue — {name}")
+        self._continue_btn.setVisible(True)
+
+    def _on_continue_clicked(self) -> None:
+        instance_id = config.get("selected_instance_id", "")
+        if not instance_id:
+            return
+        instances = list_instances()
+        instance = next((i for i in instances if i.get("id") == instance_id), None)
+        if instance is None:
+            return
+        version_id = instance.get("mc_version", "")
+        if not version_id:
+            return
+        self.continue_requested.emit(version_id, instance_id)
