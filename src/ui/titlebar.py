@@ -7,6 +7,9 @@ app logo mark + name. Styled to match the premium light aesthetic.
 
 from __future__ import annotations
 
+import os
+import sys
+
 from PySide6.QtCore import (
     Property,
     QEasingCurve,
@@ -15,7 +18,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
 )
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from .styles import COLORS, FONT
@@ -24,29 +27,42 @@ C = COLORS
 TITLEBAR_HEIGHT = 48
 
 
-class LogoMark(QWidget):
-    """Small navy rounded-square with a white 'G' letter, drawn via QPainter."""
+def _asset(name: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "assets", name)
+
+
+class LogoMark(QLabel):
+    """App logo mark shown in the title bar."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(28, 28)
+        self.setStyleSheet("background: transparent;")
+        self.setAlignment(Qt.AlignCenter)
+        logo_path = _asset("glauncherlogo.png")
+        if os.path.exists(logo_path):
+            pix = QPixmap(logo_path).scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.setPixmap(pix)
+        else:
+            self._draw_fallback()
 
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
+    def _draw_fallback(self) -> None:
+        pix = QPixmap(28, 28)
+        pix.fill(Qt.transparent)
+        painter = QPainter(pix)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        # Navy rounded square background
         path = QPainterPath()
         path.addRoundedRect(0, 0, 28, 28, 6, 6)
         painter.fillPath(path, QColor(C['accent']))
-
-        # White "G" letter
         painter.setPen(QColor(C['text_inverse']))
-        font = QFont("Segoe UI", 13, QFont.Weight.Bold)
-        painter.setFont(font)
+        painter.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         painter.drawText(0, 0, 28, 28, Qt.AlignCenter, "G")
-
         painter.end()
+        self.setPixmap(pix)
 
 
 class WindowControlButton(QWidget):

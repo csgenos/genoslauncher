@@ -8,17 +8,21 @@ Public API: close_animated(callback) — fades opacity 1→0 over 250 ms.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
+    QSize,
     Qt,
     QTimer,
 )
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QMovie,
     QPainter,
     QPixmap,
 )
@@ -33,6 +37,14 @@ from PySide6.QtWidgets import (
 )
 
 from src.ui.styles import C, FONT
+
+
+def _asset(name: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "assets", name)
 
 
 class SplashScreen(QWidget):
@@ -77,11 +89,22 @@ class SplashScreen(QWidget):
         content_layout.setSpacing(0)
         content_layout.setAlignment(Qt.AlignCenter)
 
-        # G icon box — 44×44 dark rounded square
-        icon_box = self._make_icon_box(44)
+        # Animated logo — 80×80
         icon_row = QHBoxLayout()
         icon_row.setAlignment(Qt.AlignCenter)
-        icon_row.addWidget(icon_box)
+        gif_path = _asset("animationlauncher.gif")
+        if os.path.exists(gif_path):
+            icon_label = QLabel()
+            icon_label.setFixedSize(80, 80)
+            icon_label.setAlignment(Qt.AlignCenter)
+            icon_label.setStyleSheet("background: transparent;")
+            self._gif_movie = QMovie(gif_path)
+            self._gif_movie.setScaledSize(QSize(80, 80))
+            icon_label.setMovie(self._gif_movie)
+            self._gif_movie.start()
+        else:
+            icon_label = self._make_icon_box(80)
+        icon_row.addWidget(icon_label)
         content_layout.addLayout(icon_row)
         content_layout.addSpacing(20)
 

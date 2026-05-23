@@ -13,6 +13,7 @@ Thread safety: all callbacks from auth_manager arrive on a background thread.
 from __future__ import annotations
 
 import ctypes
+import os
 import platform
 import re
 import sys
@@ -52,6 +53,14 @@ from src.core.java_manager import find_java_installations
 from src.core.validators import normalize_offline_username
 from src.ui.styles import C, FONT
 from src.ui.qt_dispatch import run_on_ui_thread
+
+
+def _asset(name: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "assets", name)
 
 
 # ---------------------------------------------------------------------------
@@ -181,11 +190,20 @@ class _WelcomePage(QWidget):
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignCenter)
 
-        # Large G icon
-        icon = _make_icon_box(56)
+        # Logo
+        logo_path = _asset("glauncherlogo.png")
+        icon_label = QLabel()
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("background: transparent;")
+        if os.path.exists(logo_path):
+            pix = QPixmap(logo_path).scaled(72, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            icon_label.setPixmap(pix)
+            icon_label.setFixedSize(72, 72)
+        else:
+            icon_label = _make_icon_box(56)
         icon_row = QHBoxLayout()
         icon_row.setAlignment(Qt.AlignCenter)
-        icon_row.addWidget(icon)
+        icon_row.addWidget(icon_label)
         layout.addLayout(icon_row)
         layout.addSpacing(24)
 
@@ -840,10 +858,15 @@ class SetupWizard(QDialog):
         top_row.setContentsMargins(20, 12, 20, 8)
         top_row.setSpacing(0)
 
-        # Invisible spacer to balance the X button
-        spacer_l = QWidget()
-        spacer_l.setFixedWidth(28)
-        top_row.addWidget(spacer_l)
+        # Logo mark in top-left to balance the X button
+        logo_path = _asset("glauncherlogo.png")
+        logo_lbl = QLabel()
+        logo_lbl.setFixedSize(28, 28)
+        logo_lbl.setStyleSheet("background: transparent;")
+        if os.path.exists(logo_path):
+            pix = QPixmap(logo_path).scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            logo_lbl.setPixmap(pix)
+        top_row.addWidget(logo_lbl)
 
         top_row.addStretch()
 
