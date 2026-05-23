@@ -39,19 +39,21 @@ def analyze_crash_text(text: str) -> list[CrashSuggestion]:
             "Mod Mixin Conflict",
             "A mod mixin failed to apply. Update the affected modpack/mod versions and ensure loader compatibility.",
             "high",
+            "update_modpack",
         )
     if "modresolutionexception" in blob or "missing mandatory dependencies" in blob:
         add(
             "Missing Mod Dependencies",
             "One or more required dependencies are missing or wrong version. Reinstall/repair the instance.",
             "high",
-            "repair_instance",
+            "update_modpack",
         )
     if "nosuchmethoderror" in blob or "noclassdeffounderror" in blob:
         add(
             "Binary Incompatibility",
             "A mod likely targets a different game/loader/API version. Check recent mod updates and roll back if needed.",
             "high",
+            "update_modpack",
         )
     if "java.lang.unsatisfiedlinkerror" in blob or "opengl" in blob and "error" in blob:
         add(

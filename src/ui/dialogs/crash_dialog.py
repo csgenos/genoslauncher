@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 from ...core.crash_analyzer import analyze_crash_text
 from ...core.instances import repair_instance_layout, update_instance
+from ...core.modpack_update import update_modpack_instance
 
 
 MAX_CRASH_BYTES = 2 * 1024 * 1024
@@ -125,6 +126,10 @@ class CrashReportDialog(QDialog):
         self._fix_logs_btn.setFixedHeight(30)
         self._fix_logs_btn.clicked.connect(self._apply_clear_logs)
         fix_row.addWidget(self._fix_logs_btn)
+        self._fix_update_modpack_btn = QPushButton("Apply: Update Modpack")
+        self._fix_update_modpack_btn.setFixedHeight(30)
+        self._fix_update_modpack_btn.clicked.connect(self._apply_update_modpack)
+        fix_row.addWidget(self._fix_update_modpack_btn)
         fix_row.addStretch()
         layout.addLayout(fix_row)
 
@@ -223,6 +228,12 @@ class CrashReportDialog(QDialog):
         self._fix_ram_btn.setEnabled("increase_ram" in self._suggestion_actions)
         self._fix_repair_btn.setEnabled("repair_instance" in self._suggestion_actions)
         self._fix_logs_btn.setEnabled("clear_runtime_logs" in self._suggestion_actions)
+        can_update_modpack = (
+            "update_modpack" in self._suggestion_actions
+            and str(self._instance.get("type", "")).strip().lower() == "modpack"
+            and bool(str(self._instance.get("source_project_id", "")).strip())
+        )
+        self._fix_update_modpack_btn.setEnabled(can_update_modpack)
 
     def _apply_increase_ram(self) -> None:
         try:
@@ -259,3 +270,9 @@ class CrashReportDialog(QDialog):
         QMessageBox.information(self, "Applied", f"Cleared: {', '.join(cleared) if cleared else 'nothing'}")
         self._load_reports()
 
+    def _apply_update_modpack(self) -> None:
+        ok, msg = update_modpack_instance(self._instance)
+        if ok:
+            QMessageBox.information(self, "Modpack Update", msg)
+        else:
+            QMessageBox.warning(self, "Modpack Update", msg)
