@@ -91,8 +91,12 @@ if _CF_KEY:
 def _pkg_dir(name):
     spec = importlib.util.find_spec(name)
     if spec is None:
+        import site
         raise RuntimeError(
-            f"{name} is not installed. Run: pip install -r requirements.txt"
+            f"{name} not found in sys.path.\n"
+            f"site-packages dirs: {site.getsitepackages()}\n"
+            f"Likely cause: requirements.lock is missing the Windows wheel hash for {name}. "
+            f"Re-run pip-compile on Windows or add the win_amd64 hash manually."
         )
     if spec.submodule_search_locations:
         return list(spec.submodule_search_locations)[0]
