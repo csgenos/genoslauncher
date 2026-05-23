@@ -579,14 +579,28 @@ class ModpacksTab(QWidget):
         self._clear_results()
         self._current_cards.clear()
 
-        installed = {i.get("source", "") for i in config.get("instances", [])}
+        installed_project_ids: set[str] = set()
+        for instance in config.get("instances", []):
+            if not isinstance(instance, dict):
+                continue
+            src_project = str(instance.get("source_project_id", "")).strip()
+            if src_project:
+                installed_project_ids.add(src_project)
+            raw_source = str(instance.get("source", "")).strip()
+            if ":" in raw_source:
+                _src_name, _sep, src_id = raw_source.partition(":")
+                src_id = src_id.strip()
+                if src_id:
+                    installed_project_ids.add(src_id)
+            elif raw_source and raw_source not in {"vanilla", "custom", "prism", "imported-mrpack"}:
+                installed_project_ids.add(raw_source)
 
         for project in hits:
             card = ModpackCard(project, self._results_widget)
             card.install_requested.connect(self._on_install_requested)
             if project.get("source") == "curseforge":
                 card.set_unavailable()
-            elif project["id"] in installed:
+            elif str(project["id"]) in installed_project_ids:
                 card.set_installed()
             self._results_layout.insertWidget(self._results_layout.count() - 1, card)
             self._current_cards[project["id"]] = card

@@ -252,6 +252,10 @@ class ServersTab(QWidget):
             QMessageBox.warning(self, "Invalid Port", "Port must be an integer between 1 and 65535.")
             return
         servers = list(config.get("servers", []))
+        for srv in servers:
+            if str(srv.get("ip", "")).strip() == ip.strip() and int(srv.get("port", _DEFAULT_PORT)) == port:
+                QMessageBox.information(self, "Already Added", "That server is already in your list.")
+                return
         servers.append({"name": name.strip(), "ip": ip.strip(), "port": port})
         config.set("servers", servers)
         self._refresh()

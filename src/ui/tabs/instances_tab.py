@@ -662,17 +662,21 @@ class InstancesTab(QWidget):
             self._count_label.setText(f"Import failed: {exc}")
 
     def _remove_instance(self, instance: dict) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Remove Instance",
-            f"Remove {instance.get('name', 'this instance')} from the launcher list?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            remove_instance(instance.get("id", ""))
-            if config.get("selected_instance_id", "") == instance.get("id", ""):
-                config.set("selected_instance_id", "")
-            self._render_instances()
+        box = QMessageBox(self)
+        box.setWindowTitle("Remove Instance")
+        box.setText(f"How do you want to remove {instance.get('name', 'this instance')}?")
+        remove_only = box.addButton("Remove from List", QMessageBox.AcceptRole)
+        remove_and_delete = box.addButton("Remove and Delete Files", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in {remove_only, remove_and_delete}:
+            return
+        delete_files = clicked is remove_and_delete
+        remove_instance(instance.get("id", ""), delete_files=delete_files)
+        if config.get("selected_instance_id", "") == instance.get("id", ""):
+            config.set("selected_instance_id", "")
+        self._render_instances()
 
     def _on_search(self, text: str) -> None:
         self._search_text = text.lower()

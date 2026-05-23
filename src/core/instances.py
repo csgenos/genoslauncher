@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 _SAFE_GROUP_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+_MAX_INSTANCES = 2000
 
 
 def safe_instance_name(name: str) -> str:
@@ -59,7 +60,7 @@ def list_instances() -> list[dict]:
 
 
 def save_instances(instances: list[dict]) -> None:
-    config.set("instances", [_normalize_instance(i) for i in instances[:200] if isinstance(i, dict)])
+    config.set("instances", [_normalize_instance(i) for i in instances[:_MAX_INSTANCES] if isinstance(i, dict)])
 
 
 def upsert_instance(instance: dict) -> dict:
@@ -172,7 +173,8 @@ def clone_instance(instance_id: str) -> dict | None:
     src_dir = Path(source["directory"])
     if src_dir.exists():
         ignore = shutil.ignore_patterns("logs", "crash-reports", "*.log")
-        shutil.copytree(src_dir, clone_dir, ignore=ignore, symlinks=True)
+        # Copy real files into the clone so it stays independent of the source.
+        shutil.copytree(src_dir, clone_dir, ignore=ignore, symlinks=False)
     else:
         clone_dir.mkdir(parents=True, exist_ok=True)
     name = safe_instance_name(f"{source.get('name', 'Instance')} Copy")
@@ -194,12 +196,14 @@ def create_modpack_instance(
     pack_version_id: str = "",
     launch_version_id: str | None = None,
 ) -> dict:
-    project_id = safe_path_segment(project.get("id", str(uuid.uuid4())), "project", 48)
+    raw_project_id = str(project.get("id", "")).strip() or str(uuid.uuid4())
+    project_id = safe_path_segment(raw_project_id, "project", 48)
     pack_id = safe_path_segment(pack_version_id or "version", "version", 48)
     mc_segment = safe_path_segment(mc_version, "minecraft", 32)
     launch_id = validate_version_id(launch_version_id or mc_version)
     display = safe_instance_name(project.get("title", "Modpack"))
     instance_id = f"modpack-{project_id[:16]}-{pack_id[:16]}-{mc_segment}"
+    source_name = safe_path_segment(str(project.get("source", "modrinth")).strip() or "modrinth", "source", 24)
     return upsert_instance({
         "id": instance_id,
         "name": f"{display} ({mc_version})",
@@ -209,7 +213,8 @@ def create_modpack_instance(
         "pack_version_id": pack_version_id,
         "directory": str(directory),
         "type": "modpack",
-        "source": project_id,
+        "source": f"{source_name}:{raw_project_id}",
+        "source_project_id": raw_project_id,
         "group": "Modpacks",
         "jvm_args": "",
     })
@@ -229,8 +234,22 @@ def find_instance_for_version(version_id: str) -> dict | None:
     return None
 
 
-def remove_instance(instance_id: str) -> None:
+def remove_instance(instance_id: str, delete_files: bool = False) -> None:
+    removed = find_instance(instance_id)
     save_instances([i for i in list_instances() if i.get("id") != instance_id])
+    if not delete_files or not removed:
+        return
+    directory = Path(str(removed.get("directory", "")).strip())
+    if not directory:
+        return
+    try:
+        resolved = directory.resolve()
+        resolved.relative_to(INSTANCES_DIR.resolve())
+    except (OSError, ValueError):
+        log.warning("Refusing to delete non-managed instance directory: %s", directory)
+        return
+    if resolved.exists():
+        shutil.rmtree(resolved, ignore_errors=True)
 
 
 def validate_instance(instance: dict) -> tuple[bool, list[str]]:
