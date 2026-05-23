@@ -48,6 +48,7 @@ from ...core.instances import (
 )
 from ...core.modpack_archive import export_instance_mrpack, export_instance_zip, import_instance_archive
 from ...core.launcher import InstallWorker, get_available_versions, get_installed_versions, install_minecraft_base
+from ...core.modpack_update import update_modpack_instance
 from ...core.validators import validate_version_id
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,22 @@ class _RepairWorker(QObject):
             self.finished.emit(False, str(exc))
 
 
+class _ModpackUpdateWorker(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(bool, str)
+
+    def __init__(self, instance: dict) -> None:
+        super().__init__()
+        self._instance = instance
+
+    def run(self) -> None:
+        try:
+            ok, msg = update_modpack_instance(self._instance, self.progress.emit)
+            self.finished.emit(ok, msg)
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
+
+
 class InstancesTab(QWidget):
     launch_requested = Signal(str)
     instance_launch_requested = Signal(str, str)
@@ -151,6 +168,8 @@ class InstancesTab(QWidget):
         self._selected_instances: set[str] = set()
         self._disk_size_threads: list[QThread] = []
         self._disk_labels: dict[str, QLabel] = {}
+        self._modpack_update_threads: list[QThread] = []
+        self._modpack_update_workers: list[_ModpackUpdateWorker] = []
         self._build_ui()
         QTimer.singleShot(100, self._load_versions)
 
@@ -442,6 +461,8 @@ class InstancesTab(QWidget):
         menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
         menu.addAction("Clone", lambda: self._clone_instance(instance))
         menu.addAction("Repair", lambda: self._repair_instance(instance))
+        if instance.get("type") == "modpack":
+            menu.addAction("Update Modpack", lambda: self._update_modpack(instance))
         menu.addAction("Export ZIP...", lambda: self._export_instance_zip(instance))
         menu.addAction("Export MRPACK...", lambda: self._export_instance_mrpack(instance))
         menu.addSeparator()
@@ -733,6 +754,34 @@ class InstancesTab(QWidget):
         if worker in self._repair_workers:
             self._repair_workers.remove(worker)
         self._count_label.setText(message if ok else f"Repair failed: {message}")
+        self._load_versions()
+
+    def _update_modpack(self, instance: dict) -> None:
+        thread = QThread(self)
+        worker = _ModpackUpdateWorker(instance)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda _c, _t, status: self._count_label.setText(status or "Updating modpack..."))
+        worker.finished.connect(lambda ok, msg: self._on_modpack_update_finished(thread, worker, ok, msg))
+        worker.finished.connect(thread.quit)
+        self._modpack_update_threads.append(thread)
+        self._modpack_update_workers.append(worker)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_modpack_update_finished(
+        self,
+        thread: QThread,
+        worker: _ModpackUpdateWorker,
+        ok: bool,
+        message: str,
+    ) -> None:
+        if thread in self._modpack_update_threads:
+            self._modpack_update_threads.remove(thread)
+        if worker in self._modpack_update_workers:
+            self._modpack_update_workers.remove(worker)
+        self._count_label.setText(message if ok else f"Modpack update failed: {message}")
         self._load_versions()
 
     def _import_instances(self) -> None:
