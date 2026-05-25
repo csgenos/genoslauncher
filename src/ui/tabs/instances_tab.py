@@ -33,6 +33,7 @@ from ..dialogs.crash_dialog import CrashReportDialog
 from ..dialogs.instance_health_dialog import InstanceHealthDialog
 from ..dialogs.prism_migration_dialog import PrismMigrationDialog
 from ..dialogs.screenshot_dialog import ScreenshotGalleryDialog
+from ..components.themed_controls import GComboBox, GMenu
 from ..styles import COLORS as C, FONT
 from ...core.config import config
 from ...core.instances import (
@@ -86,13 +87,18 @@ class _DiskSizeWorker(QObject):
 class _VersionLoader(QObject):
     done = Signal(list, list)  # all_versions, installed_ids
 
-    def __init__(self, include_snapshots: bool, include_old: bool) -> None:
+    def __init__(self, include_snapshots: bool, include_old: bool, force_refresh: bool = False) -> None:
         super().__init__()
         self._snapshots = include_snapshots
         self._old = include_old
+        self._force_refresh = force_refresh
 
     def run(self) -> None:
-        versions = get_available_versions(include_snapshots=self._snapshots, include_old=self._old)
+        versions = get_available_versions(
+            include_snapshots=self._snapshots,
+            include_old=self._old,
+            force_refresh=self._force_refresh,
+        )
         try:
             installed = get_installed_versions()
         except Exception as exc:
@@ -173,7 +179,11 @@ class InstancesTab(QWidget):
         self._modpack_update_threads: list[QThread] = []
         self._modpack_update_workers: list[_ModpackUpdateWorker] = []
         self._build_ui()
-        QTimer.singleShot(100, self._load_versions)
+        QTimer.singleShot(100, lambda: self._load_versions(force_refresh=False))
+        self._version_refresh_timer = QTimer(self)
+        self._version_refresh_timer.setInterval(10 * 60 * 1000)
+        self._version_refresh_timer.timeout.connect(lambda: self._load_versions(force_refresh=True))
+        self._version_refresh_timer.start()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -189,7 +199,7 @@ class InstancesTab(QWidget):
         refresh_btn = OutlineButton("Refresh")
         refresh_btn.setFixedHeight(34)
         refresh_btn.setFixedWidth(110)
-        refresh_btn.clicked.connect(self._load_versions)
+        refresh_btn.clicked.connect(lambda _checked=False: self._load_versions(force_refresh=True))
         header_row.addWidget(refresh_btn)
 
         new_btn = OutlineButton("New Instance")
@@ -227,12 +237,12 @@ class InstancesTab(QWidget):
         self._instance_search_box.setFixedHeight(34)
         self._instance_search_box.textChanged.connect(self._on_instance_search_changed)
         instance_filter_row.addWidget(self._instance_search_box, 1)
-        self._group_filter_combo = QComboBox()
+        self._group_filter_combo = GComboBox()
         self._group_filter_combo.setFixedHeight(34)
         self._group_filter_combo.setMinimumWidth(180)
         self._group_filter_combo.currentTextChanged.connect(self._on_group_filter_changed)
         instance_filter_row.addWidget(self._group_filter_combo)
-        self._sort_combo = QComboBox()
+        self._sort_combo = GComboBox()
         self._sort_combo.setFixedHeight(34)
         self._sort_combo.setMinimumWidth(180)
         self._sort_combo.addItems(["Name (A-Z)", "Recently Played", "Minecraft Version"])
@@ -310,10 +320,10 @@ class InstancesTab(QWidget):
         self._scroll.setWidget(self._versions_container)
         root.addWidget(self._scroll)
 
-    def _load_versions(self) -> None:
+    def _load_versions(self, force_refresh: bool = False) -> None:
         self._count_label.setText("Loading versions...")
         thread = QThread(self)
-        worker = _VersionLoader(self._show_snapshots, self._show_old)
+        worker = _VersionLoader(self._show_snapshots, self._show_old, force_refresh=force_refresh)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_versions_loaded)
@@ -461,7 +471,7 @@ class InstancesTab(QWidget):
                 self._instances_layout.addWidget(row)
 
     def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
-        menu = QMenu(self)
+        menu = GMenu(self)
         menu.addAction("Edit", lambda: self._edit_instance(instance))
         menu.addAction("Edit Metadata", lambda: self._edit_instance_metadata(instance))
         menu.addAction("Validate", lambda: self._validate_instance(instance))
@@ -482,7 +492,7 @@ class InstancesTab(QWidget):
         menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _import_menu(self) -> None:
-        menu = QMenu(self)
+        menu = GMenu(self)
         menu.addAction("Import Prism/MultiMC Folder...", self._import_instances)
         menu.addAction("Import ZIP/MRPACK Archive...", self._import_archive)
         menu.exec(QCursor.pos())
@@ -881,7 +891,7 @@ class InstancesTab(QWidget):
         filtered = [v for v in self._all_versions if self._search_text in v["id"].lower()]
         self._count_label.setText(f"{len(filtered)} versions found")
 
-        for v in filtered[:60]:
+        for v in filtered:
             vid = v["id"]
             card = VersionCard(
                 version_id=vid,

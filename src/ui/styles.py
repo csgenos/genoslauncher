@@ -6,75 +6,120 @@ Light / white premium theme, with optional dark mode.
 from __future__ import annotations
 
 COLORS: dict[str, str] = {
-    'bg_window':        '#F0F2F5',
+    'bg_window':        '#F3F4F6',
     'bg_primary':       '#FFFFFF',
-    'bg_secondary':     '#F8F9FA',
-    'bg_tertiary':      '#EEF0F3',
-    'bg_sidebar':       '#FAFBFC',
+    'bg_secondary':     '#F8FAFC',
+    'bg_tertiary':      '#EEF2F7',
+    'bg_sidebar':       '#F7F8FA',
     'bg_card':          '#FFFFFF',
-    'bg_hover':         '#F4F6F8',
-    'bg_pressed':       '#E8ECF0',
+    'bg_hover':         '#F1F3F5',
+    'bg_pressed':       '#E5E7EB',
     'bg_input':         '#FFFFFF',
+    'bg_elevated':      '#FFFFFF',
     'accent':           '#111827',
-    'accent_blue':      '#2563EB',
-    'accent_blue_soft': '#EFF6FF',
-    'accent_green':     '#059669',
+    'accent_hover':     '#1F2937',
+    'accent_pressed':   '#030712',
+    'accent_blue':      '#D97706',
+    'accent_blue_soft': '#FFF7ED',
+    'accent_green':     '#047857',
     'accent_green_soft':'#ECFDF5',
     'accent_red':       '#DC2626',
     'accent_orange':    '#D97706',
+    'accent_orange_soft':'#FFF7ED',
     'text_primary':     '#111827',
     'text_secondary':   '#4B5563',
-    'text_tertiary':    '#9CA3AF',
-    'text_disabled':    '#D1D5DB',
+    'text_tertiary':    '#8A94A6',
+    'text_disabled':    '#C7CED8',
     'text_inverse':     '#FFFFFF',
-    'border':           '#E5E7EB',
-    'border_strong':    '#D1D5DB',
-    'border_focus':     '#2563EB',
+    'border':           '#E2E8F0',
+    'border_strong':    '#CBD5E1',
+    'border_focus':     '#D97706',
     'danger':           '#DC2626',
     'warning':          '#D97706',
-    'success':          '#059669',
+    'success':          '#047857',
 }
 
 _LIGHT_COLORS: dict[str, str] = dict(COLORS)
 
 _DARK_COLORS: dict[str, str] = {
-    'bg_window':        '#0F1117',
-    'bg_primary':       '#1A1D27',
-    'bg_secondary':     '#13151F',
-    'bg_tertiary':      '#21253A',
-    'bg_sidebar':       '#12141E',
-    'bg_card':          '#1A1D27',
-    'bg_hover':         '#252940',
-    'bg_pressed':       '#2E334E',
-    'bg_input':         '#1A1D27',
-    'accent':           '#E2E8F0',
-    'accent_blue':      '#3B82F6',
-    'accent_blue_soft': '#1E293B',
-    'accent_green':     '#10B981',
+    'bg_window':        '#0B0F14',
+    'bg_primary':       '#111827',
+    'bg_secondary':     '#0F172A',
+    'bg_tertiary':      '#1F2937',
+    'bg_sidebar':       '#0D131D',
+    'bg_card':          '#111827',
+    'bg_hover':         '#1F2937',
+    'bg_pressed':       '#263244',
+    'bg_input':         '#0F172A',
+    'bg_elevated':      '#172033',
+    'accent':           '#F8FAFC',
+    'accent_hover':     '#E5E7EB',
+    'accent_pressed':   '#CBD5E1',
+    'accent_blue':      '#F59E0B',
+    'accent_blue_soft': '#2A1B08',
+    'accent_green':     '#34D399',
     'accent_green_soft':'#052E21',
-    'accent_red':       '#EF4444',
+    'accent_red':       '#F87171',
     'accent_orange':    '#F59E0B',
-    'text_primary':     '#F1F5F9',
-    'text_secondary':   '#94A3B8',
-    'text_tertiary':    '#64748B',
-    'text_disabled':    '#334155',
-    'text_inverse':     '#0F172A',
-    'border':           '#252940',
-    'border_strong':    '#374060',
-    'border_focus':     '#3B82F6',
-    'danger':           '#EF4444',
+    'accent_orange_soft':'#2A1B08',
+    'text_primary':     '#F8FAFC',
+    'text_secondary':   '#CBD5E1',
+    'text_tertiary':    '#94A3B8',
+    'text_disabled':    '#475569',
+    'text_inverse':     '#111827',
+    'border':           '#233044',
+    'border_strong':    '#334155',
+    'border_focus':     '#F59E0B',
+    'danger':           '#F87171',
     'warning':          '#F59E0B',
-    'success':          '#10B981',
+    'success':          '#34D399',
 }
 
 
-def apply_theme(dark: bool) -> None:
+_THEME_MODE = "light"
+
+
+def normalize_theme_mode(mode: str | bool | None) -> str:
+    if isinstance(mode, bool):
+        return "dark" if mode else "light"
+    value = str(mode or "light").strip().lower()
+    return value if value in {"light", "dark", "system"} else "light"
+
+
+def resolve_theme_mode(mode: str | bool | None) -> str:
+    normalized = normalize_theme_mode(mode)
+    if normalized != "system":
+        return normalized
+    try:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        scheme = app.styleHints().colorScheme() if app else None
+        return "dark" if str(scheme).lower().endswith("dark") else "light"
+    except Exception:
+        return "light"
+
+
+def current_theme_mode() -> str:
+    return _THEME_MODE
+
+
+def is_dark_theme() -> bool:
+    return _THEME_MODE == "dark"
+
+
+def apply_theme(mode: str | bool | None) -> None:
     """Switch COLORS in-place and re-apply the global QSS stylesheet."""
     from PySide6.QtWidgets import QApplication
-    COLORS.update(_DARK_COLORS if dark else _LIGHT_COLORS)
+    global _THEME_MODE
+    _THEME_MODE = resolve_theme_mode(mode)
+    COLORS.update(_DARK_COLORS if _THEME_MODE == "dark" else _LIGHT_COLORS)
     app = QApplication.instance()
     if app:
         app.setStyleSheet(get_stylesheet())
+        for widget in app.allWidgets():
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
 
 FONT: dict[str, str] = {
     'xs':  '11px',
@@ -109,6 +154,10 @@ QMainWindow, QDialog {{
 
 QWidget {{
     background-color: transparent;
+    color: {c['text_primary']};
+}}
+
+QFrame {{
     color: {c['text_primary']};
 }}
 
@@ -157,11 +206,11 @@ QPushButton[class="primary"] {{
 }}
 
 QPushButton[class="primary"]:hover {{
-    background-color: #1F2937;
+    background-color: {c['accent_hover']};
 }}
 
 QPushButton[class="primary"]:pressed {{
-    background-color: #0F172A;
+    background-color: {c['accent_pressed']};
 }}
 
 QPushButton[class="primary"]:disabled {{
@@ -252,7 +301,8 @@ QComboBox::down-arrow {{
 }}
 
 QComboBox QAbstractItemView {{
-    background-color: {c['bg_primary']};
+    background-color: {c['bg_elevated']};
+    color: {c['text_primary']};
     border: 1px solid {c['border']};
     border-radius: 8px;
     selection-background-color: {c['accent_blue_soft']};
@@ -262,6 +312,7 @@ QComboBox QAbstractItemView {{
 }}
 
 QComboBox QAbstractItemView::item {{
+    color: {c['text_primary']};
     padding: 6px 10px;
     border-radius: 6px;
     min-height: 28px;
@@ -269,6 +320,11 @@ QComboBox QAbstractItemView::item {{
 
 QComboBox QAbstractItemView::item:hover {{
     background-color: {c['bg_hover']};
+}}
+
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {c['accent_orange_soft']};
+    color: {c['text_primary']};
 }}
 
 /* ── QScrollBar ───────────────────────────────────────────────────────── */
@@ -369,13 +425,13 @@ QCheckBox::indicator:hover {{
 }}
 
 QCheckBox::indicator:checked {{
-    background: {c['accent']};
-    border-color: {c['accent']};
+    background: {c['accent_orange']};
+    border-color: {c['accent_orange']};
     image: none;
 }}
 
 QCheckBox::indicator:checked:hover {{
-    background: #1F2937;
+    background: {c['accent_orange']};
 }}
 
 QCheckBox:disabled {{
@@ -398,7 +454,7 @@ QProgressBar {{
 }}
 
 QProgressBar::chunk {{
-    background: {c['accent']};
+    background: {c['accent_orange']};
     border-radius: 3px;
 }}
 
@@ -466,7 +522,7 @@ QLabel#heading {{
     font-size: 22px;
     font-weight: 700;
     color: {c['text_primary']};
-    letter-spacing: -0.3px;
+    letter-spacing: 0px;
 }}
 
 QLabel#subheading {{
@@ -514,20 +570,22 @@ QSplitter::handle {{
 
 /* ── QMenu ────────────────────────────────────────────────────────────── */
 QMenu {{
-    background-color: {c['bg_primary']};
+    background-color: {c['bg_elevated']};
+    color: {c['text_primary']};
     border: 1px solid {c['border']};
     border-radius: 8px;
     padding: 4px;
 }}
 
 QMenu::item {{
+    color: {c['text_primary']};
     padding: 6px 32px 6px 12px;
     border-radius: 6px;
     font-size: 13px;
 }}
 
 QMenu::item:selected {{
-    background-color: {c['bg_hover']};
+    background-color: {c['accent_orange_soft']};
 }}
 
 QMenu::separator {{
@@ -604,10 +662,10 @@ def primary_button_style() -> str:
             min-height: 36px;
         }}
         QPushButton:hover {{
-            background-color: #1F2937;
+            background-color: {c['accent_hover']};
         }}
         QPushButton:pressed {{
-            background-color: #0F172A;
+            background-color: {c['accent_pressed']};
         }}
         QPushButton:disabled {{
             background-color: {c['text_disabled']};

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT
 from ...core.crash_analyzer import analyze_crash_text
 from ...core.instances import repair_instance_layout, update_instance
@@ -52,7 +53,7 @@ class CrashReportDialog(QDialog):
         title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
         hdr.addWidget(title)
         hdr.addStretch()
-        self._selector = QComboBox()
+        self._selector = GComboBox()
         self._selector.setFixedWidth(360)
         self._selector.currentIndexChanged.connect(self._show_selected)
         hdr.addWidget(self._selector)

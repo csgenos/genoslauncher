@@ -107,7 +107,7 @@ class _InstalledRow(QFrame):
             "; border: none; border-radius: 5px; font-size: " + _XS + "; font-weight: 600; }"
             "QPushButton:hover:!disabled { background: " + C["accent_blue"] + "; color: " + C["text_inverse"] + "; }"
         )
-        use_btn.clicked.connect(lambda: self.use_requested.emit(info["path"]))
+        use_btn.clicked.connect(lambda _checked=False: self.use_requested.emit(info["path"]))
         layout.addWidget(use_btn)
 
         major = info["major"]
@@ -120,7 +120,7 @@ class _InstalledRow(QFrame):
                 "; border: 1px solid " + C["danger"] + "; border-radius: 5px; font-size: " + _XS + "; }"
                 "QPushButton:hover { background: " + C["danger"] + "; color: " + C["text_inverse"] + "; }"
             )
-            rm_btn.clicked.connect(lambda: self.remove_requested.emit(major))
+            rm_btn.clicked.connect(lambda _checked=False: self.remove_requested.emit(major))
             layout.addWidget(rm_btn)
 
 
@@ -179,7 +179,7 @@ class _DownloadRow(QFrame):
             "QPushButton:hover { background: " + C["accent"] + "; }"
             "QPushButton:disabled { background: " + C["bg_tertiary"] + "; color: " + C["text_disabled"] + "; }"
         )
-        self._btn.clicked.connect(lambda: self.download_requested.emit(self._major))
+        self._btn.clicked.connect(lambda _checked=False: self.download_requested.emit(self._major))
         layout.addWidget(self._btn)
 
     def set_downloading(self, done: int, total: int) -> None:

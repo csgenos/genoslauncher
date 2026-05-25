@@ -7,16 +7,20 @@ Routes sidebar navigation, orchestrates launch/install workers.
 
 from __future__ import annotations
 
+import os
+import sys
 import webbrowser
+import math
 
 from PySide6.QtCore import Qt, QRect, QTimer
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QPainter, QPen, QMovie
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizeGrip,
     QStackedWidget,
@@ -27,6 +31,7 @@ from PySide6.QtWidgets import (
 from .styles import COLORS as C, get_stylesheet
 from .titlebar import TitleBar
 from .components.sidebar import Sidebar
+from .components.animated_button import OutlineButton
 from .tabs.home_tab import HomeTab
 from .tabs.instances_tab import InstancesTab
 from .tabs.mods_tab import ModsTab
@@ -45,6 +50,14 @@ from ..core.updater import check_async
 _RESIZE_MARGIN = 6
 
 
+def _asset(name: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "assets", name)
+
+
 class ContentArea(QWidget):
     """Right pane — stacked tabs on a light background."""
 
@@ -61,9 +74,50 @@ class ContentArea(QWidget):
         self.stack.setStyleSheet("background: transparent;")
         layout.addWidget(self.stack)
 
+    def refresh_theme(self) -> None:
+        self.setStyleSheet(f"#ContentArea {{ background-color: {C['bg_secondary']}; }}")
+        self.update()
+
+    def _draw_hex_fade(self, painter: QPainter) -> None:
+        dark = C["text_primary"] != "#111827"
+        line = QColor("#111827" if not dark else "#94A3B8")
+        line.setAlpha(16 if not dark else 22)
+        pen = QPen(line, 1.0)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        # Top-right faint hex field that fades into content.
+        size = 16
+        cols = 8
+        rows = 6
+        start_x = self.width() - 220
+        start_y = 22
+
+        for r in range(rows):
+            for c in range(cols):
+                cx = start_x + c * (size * 1.5)
+                cy = start_y + r * (size * 1.35)
+                if r % 2:
+                    cx += size * 0.75
+                alpha_scale = max(0.0, 1.0 - ((c / cols) * 0.7 + (r / rows) * 0.6))
+                if alpha_scale <= 0.02:
+                    continue
+                current = QColor(line)
+                current.setAlpha(int(current.alpha() * alpha_scale))
+                painter.setPen(QPen(current, 1.0))
+                points = []
+                for i in range(6):
+                    angle = (60 * i + 30) * math.pi / 180.0
+                    points.append((cx + size * 0.5 * math.cos(angle), cy + size * 0.5 * math.sin(angle)))
+                for i in range(6):
+                    x1, y1 = points[i]
+                    x2, y2 = points[(i + 1) % 6]
+                    painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(C["bg_secondary"]))
+        self._draw_hex_fade(painter)
         painter.end()
 
 
@@ -110,6 +164,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         root = QWidget(self)
+        self._root = root
         root.setObjectName("RootWidget")
         root.setStyleSheet(f"#RootWidget {{ background-color: {C['bg_primary']}; }}")
         self.setCentralWidget(root)
@@ -139,6 +194,9 @@ class MainWindow(QMainWindow):
         body.addWidget(self._content, 1)
 
         root_layout.addLayout(body, 1)
+
+        self._status_strip = self._build_status_strip()
+        root_layout.addWidget(self._status_strip)
 
         # Instantiate launch-critical tabs; heavier browsers/settings are loaded on first use.
         self._home_tab      = HomeTab()
@@ -183,11 +241,70 @@ class MainWindow(QMainWindow):
         grip.setStyleSheet("background: transparent;")
         root_layout.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
 
+    def _build_status_strip(self) -> QWidget:
+        strip = QWidget()
+        strip.setObjectName("StatusStrip")
+        strip.setFixedHeight(32)
+        strip.setStyleSheet(f"""
+            #StatusStrip {{
+                background: {C["bg_primary"]};
+                border-top: 1px solid {C["border"]};
+            }}
+        """)
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setSpacing(8)
+
+        self._status_spinner = QLabel()
+        self._status_spinner.setFixedSize(16, 16)
+        self._status_spinner.setVisible(False)
+        gif_path = _asset("animationlauncher.gif")
+        self._status_movie = None
+        if os.path.exists(gif_path):
+            self._status_movie = QMovie(gif_path)
+            self._status_movie.setScaledSize(self._status_spinner.size())
+            self._status_spinner.setMovie(self._status_movie)
+        layout.addWidget(self._status_spinner)
+
+        self._status_label = QLabel("Ready")
+        self._status_label.setStyleSheet(f"font-size: 12px; color: {C['text_secondary']};")
+        layout.addWidget(self._status_label, 1)
+
+        self._status_progress = QProgressBar()
+        self._status_progress.setFixedSize(180, 6)
+        self._status_progress.setRange(0, 100)
+        self._status_progress.setValue(0)
+        self._status_progress.setTextVisible(False)
+        self._status_progress.setVisible(False)
+        layout.addWidget(self._status_progress)
+
+        self._status_action = OutlineButton("View")
+        self._status_action.setFixedSize(64, 24)
+        self._status_action.clicked.connect(lambda _checked=False: self._switch_tab("home"))
+        self._status_action.setVisible(False)
+        layout.addWidget(self._status_action)
+        return strip
+
+    def _set_global_status(self, text: str, progress: int | None = None, action_visible: bool = False) -> None:
+        self._status_label.setText(text)
+        if progress is None:
+            self._status_progress.setVisible(False)
+            self._status_spinner.setVisible(False)
+            if self._status_movie is not None:
+                self._status_movie.stop()
+        else:
+            self._status_progress.setVisible(True)
+            self._status_progress.setValue(max(0, min(100, int(progress))))
+            self._status_spinner.setVisible(True)
+            if self._status_movie is not None:
+                self._status_movie.start()
+        self._status_action.setVisible(action_visible)
+
     def _build_update_bar(self) -> QWidget:
         bar = QWidget()
         bar.setFixedHeight(38)
         bar.setStyleSheet(f"""
-            background: {C["accent_blue_soft"]};
+            background: {C["accent_orange_soft"]};
             border-bottom: 1px solid {C["border_focus"]};
         """)
         layout = QHBoxLayout(bar)
@@ -213,10 +330,10 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{ background: #1F2937; }}
         """)
-        dl_btn.clicked.connect(lambda: webbrowser.open(self._update_url) if self._update_url else None)
+        dl_btn.clicked.connect(lambda _checked=False: webbrowser.open(self._update_url) if self._update_url else None)
         layout.addWidget(dl_btn)
 
-        dismiss = QPushButton("✕")
+        dismiss = QPushButton("x")
         dismiss.setFixedSize(26, 26)
         dismiss.setCursor(Qt.PointingHandCursor)
         dismiss.setStyleSheet(f"""
@@ -228,10 +345,30 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{ color: {C["text_primary"]}; }}
         """)
-        dismiss.clicked.connect(lambda: self._update_bar.setVisible(False))
+        dismiss.clicked.connect(lambda _checked=False: self._update_bar.setVisible(False))
         layout.addWidget(dismiss)
 
         return bar
+
+    def refresh_theme(self) -> None:
+        self.setStyleSheet(get_stylesheet())
+        self._root.setStyleSheet(f"#RootWidget {{ background-color: {C['bg_primary']}; }}")
+        self._content.refresh_theme()
+        if hasattr(self._title_bar, "refresh_theme"):
+            self._title_bar.refresh_theme()
+        self._sidebar.update()
+        self._status_strip.setStyleSheet(f"""
+            #StatusStrip {{
+                background: {C["bg_primary"]};
+                border-top: 1px solid {C["border"]};
+            }}
+        """)
+        self._status_label.setStyleSheet(f"font-size: 12px; color: {C['text_secondary']};")
+        self._update_bar.setStyleSheet(f"""
+            background: {C["accent_orange_soft"]};
+            border-bottom: 1px solid {C["border_focus"]};
+        """)
+        self.update()
 
     def _check_for_update(self) -> None:
         def _on_result(result):
@@ -242,7 +379,7 @@ class MainWindow(QMainWindow):
     def _show_update_bar(self, result: dict) -> None:
         self._update_url = result.get("url", "")
         self._update_label.setText(
-            f"⬆  GenosLauncher {result['version']} is available"
+            f"Update available: GenosLauncher {result['version']}"
         )
         self._update_bar.setVisible(True)
 
@@ -265,6 +402,7 @@ class MainWindow(QMainWindow):
         self._home_tab.launch_requested.connect(self._on_launch_requested)
         self._home_tab.install_requested.connect(self._on_install_requested)
         self._home_tab.view_all_requested.connect(lambda: self._switch_tab("instances"))
+        self._home_tab.navigate_requested.connect(self._switch_tab)
         self._home_tab.continue_requested.connect(self._on_instance_launch_requested)
         self._instances_tab.launch_requested.connect(self._on_launch_requested)
         self._instances_tab.instance_launch_requested.connect(self._on_instance_launch_requested)
@@ -302,7 +440,7 @@ class MainWindow(QMainWindow):
     def _update_sidebar_account(self) -> None:
         if auth_manager.is_logged_in:
             self._sidebar.account_widget.set_logged_in(
-                auth_manager.username, "Microsoft · Online"
+                auth_manager.username, "Microsoft - Online"
             )
         else:
             self._sidebar.account_widget.set_logged_out()
@@ -357,10 +495,12 @@ class MainWindow(QMainWindow):
 
     def _start_launch(self, version_id: str, instance_id: str, server_ip: str = "", server_port: str = "") -> None:
         if self._launch_worker is not None:
+            self._set_global_status("Launch already in progress.", action_visible=True)
             return
 
         self._home_tab.set_launch_state(True)
-        self._home_tab.update_progress(0, 100, f"Preparing {version_id}…")
+        self._home_tab.update_progress(0, 100, f"Preparing {version_id}...")
+        self._set_global_status(f"Preparing {version_id}...", 8, True)
 
         if auth_manager.is_logged_in:
             username = auth_manager.username
@@ -380,15 +520,18 @@ class MainWindow(QMainWindow):
 
     def _on_launch_status(self, status: str) -> None:
         self._home_tab.update_progress(0, 100, status)
+        self._set_global_status(status, 40, True)
 
     def _on_process_started(self) -> None:
         self._home_tab.update_progress(100, 100, "Minecraft is running!")
+        self._set_global_status("Minecraft is running.", 100, False)
         if config.get("close_on_launch", False):
             self.hide()
 
     def _on_process_ended(self, _exit_code: int) -> None:
         self._launch_worker = None
         self._home_tab.set_launch_state(False)
+        self._set_global_status("Ready")
         if self.isHidden():
             self.show()
 
@@ -396,26 +539,36 @@ class MainWindow(QMainWindow):
         self._launch_worker = None
         self._home_tab.set_launch_state(False)
         self._home_tab.update_progress(0, 100, "Launch failed.")
+        self._set_global_status("Launch failed.", action_visible=True)
         QMessageBox.critical(self, "Launch Error", f"Failed to start Minecraft:\n\n{message}")
 
     def _on_install_requested(self, version_id: str) -> None:
         if self._install_worker is not None:
+            self._set_global_status("Install already in progress.", action_visible=True)
             return
         self._home_tab.set_launch_state(True)
         self._home_tab.update_progress(0, 100, f"Installing {version_id}...")
+        self._set_global_status(f"Installing {version_id}...", 0, True)
         self._install_worker = InstallWorker(version_id, self)
         self._install_worker.progress_changed.connect(self._home_tab.update_progress)
+        self._install_worker.progress_changed.connect(self._on_install_progress)
         self._install_worker.finished.connect(self._on_install_finished)
         self._install_worker.start()
+
+    def _on_install_progress(self, current: int, maximum: int, status: str) -> None:
+        pct = int((current / maximum) * 100) if maximum else None
+        self._set_global_status(status or "Installing...", pct, True)
 
     def _on_install_finished(self, ok: bool, message: str) -> None:
         self._install_worker = None
         self._home_tab.set_launch_state(False)
         if ok:
             self._home_tab.update_progress(100, 100, message)
+            self._set_global_status(message or "Install complete.", 100, False)
             self._instances_tab._load_versions()
             self._instances_tab._render_instances()
         else:
+            self._set_global_status("Install failed.", action_visible=True)
             QMessageBox.critical(self, "Install Error", message)
 
     # ------------------------------------------------------------------

@@ -7,11 +7,22 @@ LaunchProgressPanel — status label + bar + percentage, hidden by default
 
 from __future__ import annotations
 
+import os
+import sys
+
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QMovie
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ..styles import COLORS as C, FONT
+
+
+def _asset(name: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    return os.path.join(base, "assets", name)
 
 
 class CleanProgressBar(QWidget):
@@ -105,7 +116,17 @@ class LaunchProgressPanel(QWidget):
         # Top row: status + percentage
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(0)
+        top_row.setSpacing(6)
+
+        self._spinner = QLabel(self)
+        self._spinner.setFixedSize(14, 14)
+        self._movie = None
+        gif_path = _asset("animationlauncher.gif")
+        if os.path.exists(gif_path):
+            self._movie = QMovie(gif_path)
+            self._movie.setScaledSize(self._spinner.size())
+            self._spinner.setMovie(self._movie)
+        top_row.addWidget(self._spinner)
 
         self._status_label = QLabel("Preparing...", self)
         self._status_label.setStyleSheet(
@@ -146,8 +167,12 @@ class LaunchProgressPanel(QWidget):
         self._bar.reset()
         self._pct_label.setText("0%")
         self._status_label.setText("Preparing...")
+        if self._movie is not None:
+            self._movie.start()
         self.setVisible(True)
 
     def hide_panel(self) -> None:
         """Hide the panel."""
+        if self._movie is not None:
+            self._movie.stop()
         self.setVisible(False)

@@ -10,6 +10,7 @@
 #define AppURL         "https://github.com/csgenos/genoslauncher"
 #define AppExeName     "GenosLauncher.exe"
 #define BuildDir       "dist\GenosLauncher"
+#define AppUserModelID "csgenos.GenosLauncher"
 
 [Setup]
 AppId={{F4A1C2D3-8B9E-4F0A-B2C1-D3E4F5A6B7C8}
@@ -20,6 +21,7 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
+AppUserModelID={#AppUserModelID}
 
 ; Installation directory — LocalAppData means no UAC prompt (like Discord, Slack, Cursor)
 DefaultDirName={localappdata}\{#AppName}
@@ -78,14 +80,14 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 
 [Icons]
 ; Start Menu
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 ; Desktop (optional)
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"; Tasks: desktopicon
 
 ; Quick Launch (legacy Windows XP/Vista, optional)
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: quicklaunchicon
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\{#AppExeName}"; Tasks: quicklaunchicon
 
 [Run]
 ; Offer to launch after install

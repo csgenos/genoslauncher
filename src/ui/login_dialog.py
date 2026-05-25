@@ -12,6 +12,7 @@ States:
 from __future__ import annotations
 
 import webbrowser
+import urllib.parse
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -224,7 +225,8 @@ class LoginDialog(QDialog):
         if self._state in ("idle", "error"):
             self._start_login()
         elif self._state == "waiting" and self._auth_url:
-            webbrowser.open(self._auth_url)
+            parsed = urllib.parse.urlparse(self._auth_url)
+            webbrowser.open(urllib.parse.urlunparse(parsed._replace(fragment="")))
         elif self._state == "success":
             self.accept()
 
@@ -251,6 +253,14 @@ class LoginDialog(QDialog):
     def _apply_browser_opened(self, auth_url: str) -> None:
         self._auth_url = auth_url
         self._set_state("waiting")
+        parsed = urllib.parse.urlparse(auth_url)
+        fragment = urllib.parse.parse_qs(parsed.fragment)
+        code = (fragment.get("genos_device_code") or [""])[0]
+        if code:
+            self._state_title.setText("Enter this Microsoft code")
+            self._state_body.setText(
+                f"Code: {code}\nYour browser is open at microsoft.com/link. Complete sign-in there, then return here."
+            )
 
     def _on_success(self, account: dict) -> None:
         name = account.get("name", "Unknown")

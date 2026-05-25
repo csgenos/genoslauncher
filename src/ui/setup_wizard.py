@@ -215,7 +215,7 @@ class _WelcomePage(QWidget):
             f"color: {C['text_primary']};"
             f"font-size: {FONT['2xl']};"
             "font-weight: 700;"
-            "letter-spacing: -0.3px;"
+            "letter-spacing: 0px;"
         )
         layout.addWidget(heading)
         layout.addSpacing(12)

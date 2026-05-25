@@ -17,6 +17,7 @@ from src.core.validators import (
     safe_path_segment,
     validate_version_id,
 )
+from src.core import auth as auth_core
 
 
 class JavaRequirementTests(unittest.TestCase):
@@ -123,6 +124,31 @@ class ArchiveRoundTripTests(unittest.TestCase):
                 self.assertIn("modrinth.index.json", zf.namelist())
                 idx = json.loads(zf.read("modrinth.index.json").decode("utf-8"))
                 self.assertEqual(idx["dependencies"]["minecraft"], "1.21.4")
+
+
+class AuthFlowTests(unittest.TestCase):
+    def test_pkce_auth_url_uses_supplied_redirect_and_state(self) -> None:
+        url = auth_core._build_auth_url("client", "http://127.0.0.1:1234/callback", "challenge", "state")
+        self.assertIn("client_id=client", url)
+        self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A1234%2Fcallback", url)
+        self.assertIn("state=state", url)
+        self.assertIn("code_challenge=challenge", url)
+
+    def test_shared_client_uses_device_code_path(self) -> None:
+        with patch.object(auth_core.config, "get", side_effect=lambda key, default="": "" if key == "azure_client_id" else default):
+            self.assertTrue(auth_core._uses_shared_client_id(auth_core._BUILTIN_CLIENT_ID))
+
+    def test_device_code_request_validates_payload(self) -> None:
+        class _Resp:
+            ok = True
+            content = b"{}"
+
+            def json(self) -> dict:
+                return {"device_code": "device", "user_code": "ABCD-EFGH", "verification_uri": "https://www.microsoft.com/link"}
+
+        with patch.object(auth_core._HTTP, "post", return_value=_Resp()):
+            data = auth_core._request_device_code("client")
+        self.assertEqual(data["user_code"], "ABCD-EFGH")
 
 
 if __name__ == "__main__":

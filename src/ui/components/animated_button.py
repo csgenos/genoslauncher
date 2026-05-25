@@ -37,6 +37,7 @@ class CleanButton(QPushButton):
         super().__init__(text, parent)
         self._icon_char = icon_char
         self._hover_progress: float = 0.0
+        self._click_progress: float = 0.0
         self._pressed: bool = False
 
         self.setMinimumHeight(36)
@@ -47,6 +48,9 @@ class CleanButton(QPushButton):
         self._hover_anim = QPropertyAnimation(self, b"hover_progress", self)
         self._hover_anim.setDuration(150)
         self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._click_anim = QPropertyAnimation(self, b"click_progress", self)
+        self._click_anim.setDuration(180)
+        self._click_anim.setEasingCurve(QEasingCurve.OutCubic)
 
     # --- Qt property -------------------------------------------------------
 
@@ -58,6 +62,15 @@ class CleanButton(QPushButton):
         self.update()
 
     hover_progress = Property(float, _get_hover, _set_hover)
+
+    def _get_click(self) -> float:
+        return self._click_progress
+
+    def _set_click(self, val: float) -> None:
+        self._click_progress = val
+        self.update()
+
+    click_progress = Property(float, _get_click, _set_click)
 
     # --- Events ------------------------------------------------------------
 
@@ -77,6 +90,10 @@ class CleanButton(QPushButton):
 
     def mousePressEvent(self, event) -> None:
         self._pressed = True
+        self._click_anim.stop()
+        self._click_anim.setStartValue(0.55)
+        self._click_anim.setEndValue(0.0)
+        self._click_anim.start()
         self.update()
         super().mousePressEvent(event)
 
@@ -125,6 +142,10 @@ class CleanButton(QPushButton):
         path.addRoundedRect(0, 0, w, h, r, r)
 
         painter.fillPath(path, bg)
+        if self._click_progress > 0.01:
+            splash = QColor(C['accent_orange'])
+            splash.setAlpha(int(self._click_progress * 75))
+            painter.fillPath(path, splash)
 
         # Border
         border_col = QColor(self._BORDER)
@@ -158,6 +179,14 @@ class PrimaryButton(CleanButton):
     _TEXT_COLOR = '#FFFFFF'
     _BORDER     = '#111827'
 
+    def _resolve_bg(self) -> QColor:
+        normal = C['accent_orange'] if C['accent'] == '#F8FAFC' else C['accent']
+        hover = C['accent_orange'] if C['accent_hover'] == '#E5E7EB' else C['accent_hover']
+        press = C['accent_pressed']
+        if self._pressed:
+            return QColor(press)
+        return self._lerp_color(QColor(normal), QColor(hover), self._hover_progress)
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -175,7 +204,7 @@ class PrimaryButton(CleanButton):
         path.addRoundedRect(0, 0, w, h, r, r)
         painter.fillPath(path, bg)
 
-        painter.setPen(QColor(self._TEXT_COLOR))
+        painter.setPen(QColor(C['text_inverse']))
         font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         painter.setFont(font)
         label = f"{self._icon_char} {self.text()}" if self._icon_char else self.text()
@@ -200,6 +229,7 @@ class LaunchButton(QPushButton):
         self._launch_text = text
         self._is_launching: bool = False
         self._hover_progress: float = 0.0
+        self._click_progress: float = 0.0
         self._pressed: bool = False
 
         self.setFixedHeight(56)
@@ -211,6 +241,9 @@ class LaunchButton(QPushButton):
         self._hover_anim = QPropertyAnimation(self, b"hover_progress", self)
         self._hover_anim.setDuration(150)
         self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._click_anim = QPropertyAnimation(self, b"click_progress", self)
+        self._click_anim.setDuration(220)
+        self._click_anim.setEasingCurve(QEasingCurve.OutCubic)
 
     def _get_hover(self) -> float:
         return self._hover_progress
@@ -220,6 +253,15 @@ class LaunchButton(QPushButton):
         self.update()
 
     hover_progress = Property(float, _get_hover, _set_hover)
+
+    def _get_click(self) -> float:
+        return self._click_progress
+
+    def _set_click(self, val: float) -> None:
+        self._click_progress = val
+        self.update()
+
+    click_progress = Property(float, _get_click, _set_click)
 
     def set_launching(self, launching: bool) -> None:
         """Toggle the launching state (disables button, changes label)."""
@@ -244,6 +286,10 @@ class LaunchButton(QPushButton):
 
     def mousePressEvent(self, event) -> None:
         self._pressed = True
+        self._click_anim.stop()
+        self._click_anim.setStartValue(0.62)
+        self._click_anim.setEndValue(0.0)
+        self._click_anim.start()
         self.update()
         super().mousePressEvent(event)
 
@@ -272,11 +318,10 @@ class LaunchButton(QPushButton):
         if self._is_launching or not self.isEnabled():
             bg = QColor(C['text_disabled'])
         elif self._pressed:
-            bg = QColor('#0F172A')
+            bg = QColor(C['accent_pressed'])
         else:
-            # lerp between #111827 and #1F2937
-            c1 = QColor('#111827')
-            c2 = QColor('#1F2937')
+            c1 = QColor(C['accent'])
+            c2 = QColor(C['accent_hover'])
             bg = QColor(
                 int(c1.red()   + (c2.red()   - c1.red())   * t),
                 int(c1.green() + (c2.green() - c1.green()) * t),
@@ -287,6 +332,9 @@ class LaunchButton(QPushButton):
         path = QPainterPath()
         path.addRoundedRect(0, 0, w, h, r, r)
         painter.fillPath(path, bg)
+        if self._click_progress > 0.01:
+            overlay = QColor(255, 255, 255, int(self._click_progress * 70))
+            painter.fillPath(path, overlay)
 
         # Subtle inset shadow at bottom edge
         if not self._is_launching:
@@ -297,7 +345,7 @@ class LaunchButton(QPushButton):
         # Label
         painter.setPen(QColor(C['text_inverse']))
         font = QFont("Segoe UI", 12, QFont.Weight.Bold)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0)
         painter.setFont(font)
         label = "LAUNCHING..." if self._is_launching else self._launch_text
         painter.drawText(0, 0, w, h, Qt.AlignCenter, label)
