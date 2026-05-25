@@ -119,7 +119,10 @@ def apply_theme(mode: str | bool | None) -> None:
         for widget in app.allWidgets():
             widget.style().unpolish(widget)
             widget.style().polish(widget)
-            widget.update()
+            # Some Qt classes (for example QListView) expose overloaded `update`
+            # methods where the no-arg QWidget overload is not callable via PySide.
+            # Repaint explicitly instead of calling `update()`.
+            widget.repaint()
 
 FONT: dict[str, str] = {
     'xs':  '11px',
