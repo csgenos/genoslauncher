@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
 from ...core import modrinth as mr
@@ -531,7 +532,7 @@ class ModpacksTab(QWidget):
         src_lbl = QLabel("Source:")
         src_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
         header_row.addWidget(src_lbl)
-        self._source_combo = QComboBox()
+        self._source_combo = GComboBox()
         self._source_combo.addItem("Modrinth", "modrinth")
         self._source_combo.addItem("CurseForge", "curseforge")
         self._source_combo.setFixedSize(140, 32)
@@ -635,7 +636,7 @@ class ModpacksTab(QWidget):
         self._search_box.textChanged.connect(self._on_search_changed)
         search_row.addWidget(self._search_box)
 
-        self._version_filter = QComboBox()
+        self._version_filter = GComboBox()
         self._version_filter.setFixedSize(130, 40)
         self._version_filter.setStyleSheet(f"""
             QComboBox {{

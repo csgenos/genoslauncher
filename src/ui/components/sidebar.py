@@ -21,15 +21,15 @@ from PySide6.QtWidgets import (
 from ..styles import COLORS as C, FONT
 from .account_widget import AccountWidget
 
-SIDEBAR_WIDTH = 200
-ITEM_HEIGHT   = 40
+SIDEBAR_WIDTH = 186
+ITEM_HEIGHT   = 36
 
 
 class SidebarItem(QWidget):
     """
     A single navigation row.
 
-    Active state: #EFF6FF bg, accent-blue text, 2px solid left indicator.
+    Active state: soft orange bg, orange marker, 2px solid left indicator.
     Hover (inactive): #F4F6F8 bg.
     All drawn via paintEvent, animated at 150ms on hover_progress.
     """
@@ -116,7 +116,7 @@ class SidebarItem(QWidget):
         if self._active:
             # Active background
             bg_path = QPainterPath()
-            bg_path.addRoundedRect(8, 2, w - 16, h - 4, 6, 6)
+            bg_path.addRoundedRect(8, 2, w - 14, h - 4, 6, 6)
             painter.fillPath(bg_path, QColor(C['accent_blue_soft']))
 
             # Left 2px indicator
@@ -129,18 +129,16 @@ class SidebarItem(QWidget):
             bg = QColor(C['bg_hover'])
             bg.setAlpha(int(self._hover_progress * 255))
             bg_path = QPainterPath()
-            bg_path.addRoundedRect(8, 2, w - 16, h - 4, 6, 6)
+            bg_path.addRoundedRect(8, 2, w - 14, h - 4, 6, 6)
             painter.fillPath(bg_path, bg)
 
-        # Icon
-        icon_color = QColor(C['accent_blue'] if self._active else C['text_tertiary'])
+        # Compact marker replaces emoji glyphs so rows align consistently.
+        marker_color = QColor(C['accent_orange'] if self._active else C['border_strong'])
         if not self._active:
-            alpha = int(180 + self._hover_progress * 75)
-            icon_color.setAlpha(min(255, alpha))
-        painter.setPen(icon_color)
-        icon_font = QFont("Segoe UI Emoji", 14)
-        painter.setFont(icon_font)
-        painter.drawText(8, 0, 36, h, Qt.AlignCenter, self._icon)
+            marker_color.setAlpha(int(110 + self._hover_progress * 80))
+        painter.setBrush(marker_color)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(18, h // 2 - 3, 6, 6, 3, 3)
 
         # Label
         if self._active:
@@ -155,7 +153,7 @@ class SidebarItem(QWidget):
             QFont.Weight.DemiBold if self._active else QFont.Weight.Medium
         )
         painter.setFont(label_font)
-        painter.drawText(44, 0, w - 44 - 8, h, Qt.AlignVCenter | Qt.AlignLeft, self._label)
+        painter.drawText(34, 0, w - 40, h, Qt.AlignVCenter | Qt.AlignLeft, self._label)
 
         painter.end()
 
@@ -173,7 +171,7 @@ class SidebarSection(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QColor(C['text_tertiary']))
         font = QFont("Segoe UI", 8, QFont.Weight.Bold)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0)
         painter.setFont(font)
         painter.drawText(16, 0, self.width() - 16, self.height(), Qt.AlignVCenter | Qt.AlignLeft, self._text)
         painter.end()
@@ -193,14 +191,14 @@ class Sidebar(QWidget):
     logout_requested = Signal()
 
     NAV_ITEMS: list[tuple[str, str, str]] = [
-        ("home",      "⌂", "Home"),
-        ("instances", "⊞", "Instances"),
-        ("mods",      "◆", "Mods"),
-        ("modpacks",  "⬡", "Modpacks"),
-        ("shaders",   "◈", "Shaders"),
-        ("servers",   "⊙", "Servers"),
-        ("accounts",  "◉", "Accounts"),
-        ("settings",  "⚙", "Settings"),
+        ("home",      "", "Home"),
+        ("instances", "", "Instances"),
+        ("mods",      "", "Mods"),
+        ("modpacks",  "", "Modpacks"),
+        ("shaders",   "", "Shaders"),
+        ("servers",   "", "Servers"),
+        ("accounts",  "", "Accounts"),
+        ("settings",  "", "Settings"),
     ]
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -226,8 +224,8 @@ class Sidebar(QWidget):
         nav_widget = QWidget()
         nav_widget.setStyleSheet("background: transparent;")
         nav = QVBoxLayout(nav_widget)
-        nav.setContentsMargins(0, 12, 0, 12)
-        nav.setSpacing(1)
+        nav.setContentsMargins(0, 10, 0, 10)
+        nav.setSpacing(0)
 
         nav.addWidget(SidebarSection("Navigation", nav_widget))
         nav.addSpacing(4)

@@ -38,7 +38,7 @@ class VersionCard(QWidget):
     _TYPE_META: dict[str, tuple[str, str, str]] = {
         # type: (label, text-color, bg-color)
         'release':   ('Release',  C['accent_green'],  C['accent_green_soft']),
-        'snapshot':  ('Snapshot', C['accent_orange'], '#FFF7ED'),
+        'snapshot':  ('Snapshot', C['accent_orange'], C['accent_orange_soft']),
         'old_alpha': ('Alpha',    C['accent_blue'],   C['accent_blue_soft']),
         'old_beta':  ('Beta',     C['accent_blue'],   C['accent_blue_soft']),
     }
@@ -112,7 +112,7 @@ class VersionCard(QWidget):
         ver_label = QLabel(self._version_id, self)
         ver_label.setStyleSheet(
             f"font-size: 16px; font-weight: 700; color: {C['text_primary']}; "
-            f"letter-spacing: -0.2px;"
+            f"letter-spacing: 0px;"
         )
         left.addWidget(ver_label)
 
@@ -139,7 +139,7 @@ class VersionCard(QWidget):
         # Subtitle
         subtitle_map = {
             'release':   'Official stable release',
-            'snapshot':  'Development preview · may be unstable',
+            'snapshot':  'Development preview - may be unstable',
             'old_alpha': 'Classic Alpha era',
             'old_beta':  'Classic Beta era',
         }
@@ -185,7 +185,7 @@ class VersionCard(QWidget):
             self._badge("  Installed", C['accent_green'], C['accent_green_soft']),
         )
 
-    def set_installing(self, label: str = "Installing…") -> None:
+    def set_installing(self, label: str = "Installing...") -> None:
         """Disable the button and show a progress label."""
         self._action_btn.setEnabled(False)
         self._action_btn.setText(label)

@@ -30,8 +30,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..styles import COLORS as C, FONT, apply_theme
 from ..components.animated_button import OutlineButton, PrimaryButton
+from ..components.themed_controls import GComboBox
+from ..styles import COLORS as C, FONT, apply_theme, normalize_theme_mode
 from ...core.config import config, APP_DIR
 from ...core.java_manager import JVM_PRESETS, find_java_installations
 from ...core.secure_store import get_secret, set_secret
@@ -553,7 +554,7 @@ class SettingsTab(QWidget):
         self._java_detect_lbl.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
         java_layout.addWidget(self._java_detect_lbl)
 
-        self._java_combo = QComboBox()
+        self._java_combo = GComboBox()
         self._java_combo.setFixedHeight(36)
         self._java_combo.setEnabled(False)
         self._java_combo.currentIndexChanged.connect(self._on_java_selected)
@@ -600,7 +601,7 @@ class SettingsTab(QWidget):
         win_layout.addWidget(SettingRow("Game Resolution", res_widget, hint="Initial window size"))
 
         # Preset
-        preset_combo = QComboBox()
+        preset_combo = GComboBox()
         preset_combo.setFixedHeight(36)
         for label in ["Custom", "1280 × 720 (HD)", "1920 × 1080 (FHD)", "2560 × 1440 (QHD)", "3840 × 2160 (4K)"]:
             preset_combo.addItem(label)
@@ -644,7 +645,7 @@ class SettingsTab(QWidget):
         self._show_old.toggled.connect(lambda v: config.set("show_old_versions", v))
         behav_layout.addWidget(self._show_old)
 
-        self._modpack_update_policy = QComboBox()
+        self._modpack_update_policy = GComboBox()
         self._modpack_update_policy.setFixedHeight(34)
         self._modpack_update_policy.addItem("Manual", "manual")
         self._modpack_update_policy.addItem("Notify", "notify")
@@ -663,10 +664,21 @@ class SettingsTab(QWidget):
             )
         )
 
-        self._dark_mode = QCheckBox("Dark mode")
-        self._dark_mode.setChecked(config.get("dark_mode", False))
-        self._dark_mode.toggled.connect(self._on_dark_mode_toggled)
-        behav_layout.addWidget(self._dark_mode)
+        self._theme_mode = GComboBox()
+        self._theme_mode.setFixedHeight(34)
+        self._theme_mode.addItem("Light", "light")
+        self._theme_mode.addItem("Dark", "dark")
+        self._theme_mode.addItem("System", "system")
+        current_theme = normalize_theme_mode(config.get("theme_mode", "dark" if config.get("dark_mode", False) else "light"))
+        self._theme_mode.setCurrentIndex(max(0, self._theme_mode.findData(current_theme)))
+        self._theme_mode.currentIndexChanged.connect(self._on_theme_mode_changed)
+        behav_layout.addWidget(
+            SettingRow(
+                "Theme",
+                self._theme_mode,
+                hint="Light is the flagship white/slate look. Dark and System keep the same spacing and controls.",
+            )
+        )
 
         # Azure Client ID override (advanced users / self-builds)
         az_lbl = QLabel("Microsoft Authentication — Client ID Override")
@@ -865,12 +877,16 @@ class SettingsTab(QWidget):
         dlg.exec()
         self._load_java_installs_async()
 
-    def _on_dark_mode_toggled(self, dark: bool) -> None:
-        config.set("dark_mode", dark)
-        apply_theme(dark)
+    def _on_theme_mode_changed(self, index: int) -> None:
+        mode = self._theme_mode.itemData(index) or "light"
+        config.update({"theme_mode": mode, "dark_mode": mode == "dark"})
+        apply_theme(mode)
         # Force repaint of all widgets to pick up paintEvent color changes
         app = QApplication.instance()
         if app:
+            for window in app.topLevelWidgets():
+                if hasattr(window, "refresh_theme"):
+                    window.refresh_theme()
             for widget in app.allWidgets():
                 widget.update()
 

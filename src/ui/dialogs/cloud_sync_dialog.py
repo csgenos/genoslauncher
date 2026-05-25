@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from ..styles import COLORS as C, FONT
 from ..components.animated_button import OutlineButton, PrimaryButton
+from ..components.themed_controls import GMenu
 from ...core.config import config, APP_DIR
 from ...core.instances import list_instances
 from ...core.cloud_sync import (
@@ -251,7 +252,7 @@ class CloudSyncDialog(QDialog):
             return
         instance_id = instance.get("id", "")
         backups = list_remote_backups(instance_id, sync_dir)
-        menu = QMenu(self)
+        menu = GMenu(self)
         if not backups:
             menu.addAction("No backups available").setEnabled(False)
         else:

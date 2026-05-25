@@ -124,6 +124,13 @@ def main() -> int:
         return 0
 
     setup_logging()
+    if sys.platform.startswith("win"):
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "csgenos.GenosLauncher"
+            )
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName("GenosLauncher")
     app.setApplicationDisplayName("GenosLauncher")
@@ -137,8 +144,9 @@ def main() -> int:
     app.setFont(font)
 
     icon_candidates = [
-        _resource_path(os.path.join("src", "resources", "icons", "app_icon.png")),
         _resource_path(os.path.join("assets", "icon.ico")),
+        _resource_path(os.path.join("assets", "glauncherlogo.png")),
+        _resource_path(os.path.join("src", "resources", "icons", "app_icon.png")),
     ]
     for icon_path in icon_candidates:
         if os.path.exists(icon_path):
@@ -149,7 +157,7 @@ def main() -> int:
 
     # Apply saved theme before any windows open
     from src.ui.styles import apply_theme
-    apply_theme(config.get("dark_mode", False))
+    apply_theme(config.get("theme_mode", "dark" if config.get("dark_mode", False) else "light"))
 
     # ── Splash screen ────────────────────────────────────────────────────
     from src.ui.splash_screen import SplashScreen

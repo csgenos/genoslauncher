@@ -115,7 +115,7 @@ class SplashScreen(QWidget):
             f"color: {C['text_primary']};"
             "font-size: 26px;"
             "font-weight: 700;"
-            "letter-spacing: -0.5px;"
+            "letter-spacing: 0px;"
             "background: transparent;"
         )
         content_layout.addWidget(title)

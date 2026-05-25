@@ -70,7 +70,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "window_width": 1280,
     "window_height": 760,
     "dark_mode": False,
+    "theme_mode": "light",
+    "accent_color": "#D97706",
+    "last_ui_version": "",
     "azure_client_id": "",
+    "auth_redirect_host": "127.0.0.1",
+    "auth_redirect_path": "/callback",
+    "auth_fallback_flow": "device_code",
     "servers": [],
     "ms_usernames": [],
     "active_ms_username": "",
@@ -91,8 +97,14 @@ _SCHEMA: dict[str, type | tuple] = {
     "show_old_versions":  bool,
     "modpack_update_policy": str,
     "dark_mode":          bool,
+    "theme_mode":         str,
+    "accent_color":       str,
+    "last_ui_version":    str,
     "first_run":          bool,
     "auth_redirect_port": int,
+    "auth_redirect_host": str,
+    "auth_redirect_path": str,
+    "auth_fallback_flow": str,
     "window_width":       int,
     "window_height":      int,
     "jvm_args":           str,
@@ -252,10 +264,42 @@ class Config:
             if policy not in {"manual", "notify", "auto-on-launch"}:
                 return "manual"
             return policy
+        if key == "theme_mode":
+            mode = str(val or "").strip().lower()
+            if mode not in {"light", "dark", "system"}:
+                return "light"
+            return mode
+        if key == "accent_color":
+            color = str(val or "").strip()
+            if len(color) == 7 and color.startswith("#"):
+                try:
+                    int(color[1:], 16)
+                    return color.upper()
+                except ValueError:
+                    pass
+            return DEFAULT_CONFIG["accent_color"]
+        if key == "auth_redirect_host":
+            host = str(val or "").strip().lower()
+            if host not in {"127.0.0.1", "localhost"}:
+                return "127.0.0.1"
+            return host
+        if key == "auth_redirect_path":
+            path = "/" + str(val or "").strip().lstrip("/")
+            if not path or len(path) > 64 or any(ch in path for ch in "?#\\"):
+                return "/callback"
+            return path
+        if key == "auth_fallback_flow":
+            flow = str(val or "").strip().lower()
+            if flow not in {"device_code", "off"}:
+                return "device_code"
+            return flow
         return val
 
     def _validate(self, data: dict) -> dict:
         """Apply a strict known-key schema; fall back to defaults on error."""
+        if "theme_mode" not in data and data.get("dark_mode") is True:
+            data = dict(data)
+            data["theme_mode"] = "dark"
         out = dict(DEFAULT_CONFIG)
         for key, val in data.items():
             if key in _SENSITIVE_KEYS or key in _SECRET_CONFIG_KEYS:

@@ -191,7 +191,7 @@ class _VersionRow(QFrame):
             "; border: none; border-radius: 5px; font-size: " + _XS + "; font-weight: 700; }"
             "QPushButton:hover { background: " + C["accent_blue"] + "; }"
         )
-        btn.clicked.connect(lambda: self.install_requested.emit(self._ver))
+        btn.clicked.connect(lambda _checked=False: self.install_requested.emit(self._ver))
         layout.addWidget(btn)
 
 
@@ -252,7 +252,7 @@ class _DepRow(QFrame):
                 "; border: none; border-radius: 5px; font-size: " + _XS + "; font-weight: 700; }"
                 "QPushButton:hover { background: " + C["accent"] + "; }"
             )
-            btn.clicked.connect(lambda: self.install_requested.emit(self._node))
+            btn.clicked.connect(lambda _checked=False: self.install_requested.emit(self._node))
             layout.addWidget(btn)
 
 

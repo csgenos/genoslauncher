@@ -1,8 +1,7 @@
 """
-Custom frameless title bar for GenosLauncher — light / white theme.
+Custom frameless title bar for GenosLauncher.
 
-Handles window dragging, minimize/maximize/close, and displays the
-app logo mark + name. Styled to match the premium light aesthetic.
+Desktop-first layout with compact controls and right-aligned branding.
 """
 
 from __future__ import annotations
@@ -20,12 +19,12 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
-from .styles import COLORS, FONT
+from .styles import COLORS
 
 C = COLORS
-TITLEBAR_HEIGHT = 48
+TITLEBAR_HEIGHT = 46
 
 
 def _asset(name: str) -> str:
@@ -58,8 +57,8 @@ class LogoMark(QLabel):
         painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(0, 0, 28, 28, 6, 6)
-        painter.fillPath(path, QColor(C['accent']))
-        painter.setPen(QColor(C['text_inverse']))
+        painter.fillPath(path, QColor(C["accent"]))
+        painter.setPen(QColor(C["text_inverse"]))
         painter.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         painter.drawText(0, 0, 28, 28, Qt.AlignCenter, "G")
         painter.end()
@@ -67,12 +66,7 @@ class LogoMark(QLabel):
 
 
 class WindowControlButton(QWidget):
-    """
-    A single window control button (minimize / maximize / close).
-
-    Renders as a transparent circle that reveals a colored background on hover,
-    animated with a 150ms QPropertyAnimation on the hover_progress float property.
-    """
+    """Custom minimize / maximize / close control with hover animation."""
 
     clicked = Signal()
 
@@ -80,7 +74,7 @@ class WindowControlButton(QWidget):
         self,
         symbol: str,
         hover_bg: str,
-        symbol_color: str = C['text_secondary'],
+        symbol_color: str = C["text_secondary"],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -89,15 +83,13 @@ class WindowControlButton(QWidget):
         self._symbol_color = QColor(symbol_color)
         self._hover_progress: float = 0.0
 
-        self.setFixedSize(QSize(32, 32))
+        self.setFixedSize(QSize(30, 30))
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
 
         self._anim = QPropertyAnimation(self, b"hover_progress", self)
-        self._anim.setDuration(150)
+        self._anim.setDuration(120)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
-
-    # --- Qt property -------------------------------------------------------
 
     def _get_hover(self) -> float:
         return self._hover_progress
@@ -107,8 +99,6 @@ class WindowControlButton(QWidget):
         self.update()
 
     hover_progress = Property(float, _get_hover, _set_hover)
-
-    # --- Events ------------------------------------------------------------
 
     def enterEvent(self, event) -> None:
         self._anim.stop()
@@ -129,98 +119,90 @@ class WindowControlButton(QWidget):
             self.clicked.emit()
         super().mousePressEvent(event)
 
-    # --- Paint -------------------------------------------------------------
-
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
         t = self._hover_progress
         cx, cy = self.width() // 2, self.height() // 2
-
-        # Hover circle background
         if t > 0.01:
             bg = QColor(self._hover_bg)
             bg.setAlpha(int(t * 255))
             painter.setBrush(bg)
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(cx - 13, cy - 13, 26, 26)
+            painter.drawEllipse(cx - 12, cy - 12, 24, 24)
 
-        # Symbol
         color = QColor(self._symbol_color)
         color.setAlpha(int(180 + t * 75))
         painter.setPen(color)
-        font = QFont("Segoe UI", 12, QFont.Weight.Normal)
+        font = QFont("Segoe UI", 10, QFont.Weight.Medium)
         painter.setFont(font)
         painter.drawText(self.rect(), Qt.AlignCenter, self._symbol)
-
         painter.end()
 
 
 class TitleBar(QWidget):
-    """
-    Frameless custom title bar — 48px tall, white background.
-
-    The parent window must have Qt.FramelessWindowHint set.
-    Supports drag-to-move and double-click-to-maximize.
-    """
+    """Frameless custom title bar with drag support."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedHeight(TITLEBAR_HEIGHT)
         self.setObjectName("TitleBar")
-        self.setStyleSheet(
-            f"#TitleBar {{ "
-            f"background-color: {C['bg_primary']}; "
-            f"border-bottom: 1px solid {C['border']}; "
-            f"}}"
-        )
-
         self._drag_start: QPoint | None = None
         self._win_start_pos: QPoint | None = None
         self._maximized: bool = False
-
         self._build_ui()
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        self.setStyleSheet(
+            f"#TitleBar {{ background-color: {C['bg_primary']}; border-bottom: 1px solid {C['border']}; }}"
+        )
+        self._app_name.setStyleSheet(
+            f"font-size: 13px; font-weight: 700; color: {C['text_primary']}; letter-spacing: 0px;"
+        )
+        self._status_badge.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {C['text_secondary']};
+                background: {C['bg_secondary']};
+                border: 1px solid {C['border']};
+                border-radius: 8px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            """
+        )
+        self._logo_text.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {C['text_secondary']};")
+        self.update()
 
     def _build_ui(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 8, 0)
+        layout.setContentsMargins(14, 0, 8, 0)
         layout.setSpacing(0)
 
-        # Logo mark
-        logo = LogoMark(self)
-        layout.addWidget(logo)
+        self._app_name = QLabel("GenosLauncher", self)
+        layout.addWidget(self._app_name)
         layout.addSpacing(10)
 
-        # App name
-        name_label = QLabel("GenosLauncher", self)
-        name_label.setStyleSheet(
-            f"font-size: 14px; font-weight: 700; color: {C['text_primary']}; "
-            f"letter-spacing: -0.2px;"
-        )
-        layout.addWidget(name_label)
-
+        self._status_badge = QLabel("Desktop Mode", self)
+        layout.addWidget(self._status_badge)
         layout.addStretch()
 
-        # Window control buttons
-        self._btn_min = WindowControlButton(
-            "−",
-            hover_bg="#F3F4F6",
-            symbol_color=C['text_secondary'],
-            parent=self,
-        )
-        self._btn_max = WindowControlButton(
-            "⬜",
-            hover_bg="#F3F4F6",
-            symbol_color=C['text_secondary'],
-            parent=self,
-        )
-        self._btn_close = WindowControlButton(
-            "×",
-            hover_bg="#FEE2E2",
-            symbol_color=C['accent_red'],
-            parent=self,
-        )
+        right_logo = LogoMark(self)
+        right_logo.setFixedSize(22, 22)
+        layout.addWidget(right_logo)
+        layout.addSpacing(6)
+        self._logo_text = QLabel("Genos", self)
+        layout.addWidget(self._logo_text)
+        layout.addSpacing(8)
+
+        hover_bg = C["bg_hover"]
+        close_hover = "#FECACA" if C["text_primary"] == "#111827" else "#7F1D1D"
+        self._btn_min = WindowControlButton("-", hover_bg, C["text_secondary"], self)
+        self._btn_max = WindowControlButton("[]", hover_bg, C["text_secondary"], self)
+        self._btn_close = WindowControlButton("x", close_hover, C["accent_red"], self)
 
         self._btn_min.clicked.connect(self._on_minimize)
         self._btn_max.clicked.connect(self._on_maximize_restore)
@@ -232,8 +214,6 @@ class TitleBar(QWidget):
         layout.addSpacing(4)
         layout.addWidget(self._btn_close)
         layout.addSpacing(4)
-
-    # --- Window actions ----------------------------------------------------
 
     def _window(self) -> QWidget:
         return self.window()
@@ -252,19 +232,13 @@ class TitleBar(QWidget):
     def _on_close(self) -> None:
         self._window().close()
 
-    # --- Drag support ------------------------------------------------------
-
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self._drag_start = event.globalPosition().toPoint()
             self._win_start_pos = self._window().pos()
 
     def mouseMoveEvent(self, event) -> None:
-        if (
-            self._drag_start is not None
-            and event.buttons() == Qt.LeftButton
-            and not self._maximized
-        ):
+        if self._drag_start is not None and event.buttons() == Qt.LeftButton and not self._maximized:
             delta = event.globalPosition().toPoint() - self._drag_start
             self._window().move(self._win_start_pos + delta)
 

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT
 from ...core import modrinth as mr
 from ...core.config import APP_DIR, config
@@ -599,7 +600,7 @@ class ModUpdateCard(QFrame):
                 "; border-radius: 5px; font-size: " + _XS + "; color: " + C["text_secondary"] + "; }"
                 "QPushButton:hover { background: " + C["bg_hover"] + "; }"
             )
-            self._rollback_btn.clicked.connect(lambda: self.rollback_requested.emit(self._info))
+            self._rollback_btn.clicked.connect(lambda _checked=False: self.rollback_requested.emit(self._info))
             layout.addWidget(self._rollback_btn)
 
         self._btn = QPushButton("Update")
@@ -611,7 +612,7 @@ class ModUpdateCard(QFrame):
             "QPushButton:hover { background: #1F2937; }"
             "QPushButton:disabled { background: " + C["bg_tertiary"] + "; color: " + C["text_disabled"] + "; }"
         )
-        self._btn.clicked.connect(lambda: self.update_requested.emit(self._info))
+        self._btn.clicked.connect(lambda _checked=False: self.update_requested.emit(self._info))
         layout.addWidget(self._btn)
 
     def set_updated(self) -> None:
@@ -701,7 +702,7 @@ class ModCard(QFrame):
             "; border: none; border-radius: 6px; font-size: " + _XS + "; font-weight: 700; }"
             "QPushButton:hover { background: " + C["accent_blue"] + "; }"
         )
-        install.clicked.connect(lambda: self.install_requested.emit(self._project))
+        install.clicked.connect(lambda _checked=False: self.install_requested.emit(self._project))
         btn_col.addWidget(install)
 
         details = QPushButton("Details")
@@ -712,7 +713,7 @@ class ModCard(QFrame):
             "; border: 1px solid " + C["border"] + "; border-radius: 5px; font-size: " + _XS + "; }"
             "QPushButton:hover { border-color: " + C["border_strong"] + "; color: " + C["text_primary"] + "; }"
         )
-        details.clicked.connect(lambda: self.view_details_requested.emit(self._project))
+        details.clicked.connect(lambda _checked=False: self.view_details_requested.emit(self._project))
         btn_col.addWidget(details)
 
         layout.addLayout(btn_col)
@@ -786,7 +787,7 @@ class ModsTab(QWidget):
         self._update_all_btn.clicked.connect(self._run_update_all)
         header.addWidget(self._update_all_btn)
 
-        self._instance_combo = QComboBox()
+        self._instance_combo = GComboBox()
         self._instance_combo.setFixedSize(260, 36)
         self._instance_combo.currentIndexChanged.connect(self._on_instance_changed)
         header.addWidget(self._instance_combo)
@@ -797,7 +798,7 @@ class ModsTab(QWidget):
         src_lbl = QLabel("Source:")
         src_lbl.setStyleSheet("font-size: " + _SM + "; color: " + C["text_secondary"] + ";")
         src_row.addWidget(src_lbl)
-        self._source_combo = QComboBox()
+        self._source_combo = GComboBox()
         self._source_combo.addItem("Modrinth", "modrinth")
         self._source_combo.addItem("CurseForge", "curseforge")
         self._source_combo.setFixedSize(140, 30)
@@ -808,7 +809,7 @@ class ModsTab(QWidget):
         prof_lbl = QLabel("Profile:")
         prof_lbl.setStyleSheet("font-size: " + _SM + "; color: " + C["text_secondary"] + ";")
         src_row.addWidget(prof_lbl)
-        self._profile_combo = QComboBox()
+        self._profile_combo = GComboBox()
         self._profile_combo.setFixedSize(160, 30)
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         src_row.addWidget(self._profile_combo)
@@ -830,12 +831,12 @@ class ModsTab(QWidget):
         self._search_box.textChanged.connect(lambda _: self._search_timer.start(400))
         search_row.addWidget(self._search_box, 2)
 
-        self._version_filter = QComboBox()
+        self._version_filter = GComboBox()
         self._version_filter.setFixedSize(140, 38)
         self._version_filter.currentIndexChanged.connect(lambda _: self._search_timer.start(400))
         search_row.addWidget(self._version_filter)
 
-        self._loader_filter = QComboBox()
+        self._loader_filter = GComboBox()
         self._loader_filter.setFixedWidth(120)
         self._loader_filter.setFixedHeight(38)
         self._loader_filter.addItem("All loaders", "")
@@ -844,7 +845,7 @@ class ModsTab(QWidget):
         self._loader_filter.currentIndexChanged.connect(lambda _: self._search_timer.start(400))
         search_row.addWidget(self._loader_filter)
 
-        self._sort_combo = QComboBox()
+        self._sort_combo = GComboBox()
         self._sort_combo.setFixedWidth(120)
         self._sort_combo.setFixedHeight(38)
         self._sort_combo.addItem("Downloads", "downloads")

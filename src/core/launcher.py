@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
+import requests
 
 from .config import config
 from .config import APP_DIR, LOGS_DIR
@@ -76,20 +77,82 @@ def invalidate_installed_cache(mc_dir: str | None = None) -> None:
 # Version helpers
 # ---------------------------------------------------------------------------
 
+_VERSION_MANIFEST_URLS = (
+    "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
+    "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json",
+)
+_VERSION_CACHE_MAX_AGE = 300
+
 def get_available_versions(
     include_snapshots: bool = False,
     include_old: bool = False,
+    force_refresh: bool = False,
+    max_age_seconds: int = _VERSION_CACHE_MAX_AGE,
 ) -> list[dict]:
-    if not MLL_AVAILABLE:
-        return _load_cached_versions(include_snapshots, include_old)
-    try:
-        all_versions = mll.utils.get_version_list()
-        _save_versions_cache(all_versions)
-    except Exception as exc:
-        log.warning("Version list fetch failed: %s", exc)
-        return _load_cached_versions(include_snapshots, include_old)
+    if not force_refresh:
+        cached = _load_cached_versions(
+            include_snapshots,
+            include_old,
+            max_age_seconds=max_age_seconds,
+        )
+        if cached:
+            return cached
 
-    return _filter_versions(all_versions, include_snapshots, include_old)
+    if MLL_AVAILABLE:
+        try:
+            all_versions = mll.utils.get_version_list()
+            if _is_valid_version_list(all_versions):
+                _save_versions_cache(all_versions, source="mll")
+                return _filter_versions(all_versions, include_snapshots, include_old)
+        except Exception as exc:
+            log.warning("Version list fetch from mll failed: %s", exc)
+
+    try:
+        all_versions = _fetch_mojang_versions()
+        _save_versions_cache(all_versions, source="mojang")
+        return _filter_versions(all_versions, include_snapshots, include_old)
+    except Exception as exc:
+        log.warning("Version list fetch from Mojang failed: %s", exc)
+        cached_any_age = _load_cached_versions(include_snapshots, include_old, max_age_seconds=None)
+        if cached_any_age:
+            return cached_any_age
+
+    return _demo_versions()
+
+
+def _fetch_mojang_versions(timeout_seconds: int = 10) -> list[dict]:
+    last_error = RuntimeError("No version manifest sources available.")
+    for url in _VERSION_MANIFEST_URLS:
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "GenosLauncher/versions"},
+                timeout=timeout_seconds,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            versions = payload.get("versions", [])
+            if _is_valid_version_list(versions):
+                return versions
+            last_error = RuntimeError(f"Invalid manifest payload from {url}")
+        except Exception as exc:
+            last_error = exc
+    raise last_error
+
+
+def _is_valid_version_list(versions: object) -> bool:
+    if not isinstance(versions, list) or not versions:
+        return False
+    for item in versions:
+        if not isinstance(item, dict):
+            return False
+        vid = item.get("id")
+        vtype = item.get("type")
+        if not isinstance(vid, str) or not vid.strip():
+            return False
+        if not isinstance(vtype, str) or not vtype.strip():
+            return False
+    return True
 
 
 def _filter_versions(all_versions: list[dict], include_snapshots: bool, include_old: bool) -> list[dict]:
@@ -109,28 +172,55 @@ def _versions_cache_path() -> Path:
     return APP_DIR / "cache" / "versions.json"
 
 
-def _save_versions_cache(versions: list[dict]) -> None:
+def _save_versions_cache(versions: list[dict], source: str = "unknown") -> None:
     try:
         path = _versions_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "source": source,
+            "versions": versions,
+        }
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(versions), encoding="utf-8")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
     except OSError as exc:
         log.warning("Version cache save failed: %s", exc.__class__.__name__)
 
 
-def _load_cached_versions(include_snapshots: bool, include_old: bool) -> list[dict]:
+def _load_cached_versions(
+    include_snapshots: bool,
+    include_old: bool,
+    max_age_seconds: int | None = _VERSION_CACHE_MAX_AGE,
+    allow_demo_fallback: bool = False,
+) -> list[dict]:
     try:
         path = _versions_cache_path()
         if path.exists():
-            versions = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(versions, list):
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            versions: list[dict] | None = None
+            fetched_at = None
+
+            if isinstance(raw, list):
+                versions = raw
+            elif isinstance(raw, dict) and isinstance(raw.get("versions"), list):
+                versions = raw["versions"]
+                fetched_at = raw.get("fetched_at")
+
+            if versions and _is_valid_version_list(versions):
+                if max_age_seconds is not None and fetched_at:
+                    try:
+                        ts = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
+                        age = (datetime.now(timezone.utc) - ts).total_seconds()
+                        if age > max_age_seconds:
+                            return []
+                    except Exception:
+                        pass
                 return _filter_versions(versions, include_snapshots, include_old)
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("Version cache read failed: %s", exc.__class__.__name__)
 
-    return _demo_versions()
+    return _demo_versions() if allow_demo_fallback else []
 
 
 def _demo_versions() -> list[dict]:

@@ -223,7 +223,7 @@ class PrismMigrationDialog(QDialog):
         btn_row = QHBoxLayout()
         back_btn = OutlineButton("← Back")
         back_btn.setFixedHeight(36)
-        back_btn.clicked.connect(lambda: self._stack.setCurrentIndex(0))
+        back_btn.clicked.connect(lambda _checked=False: self._stack.setCurrentIndex(0))
         btn_row.addWidget(back_btn)
         btn_row.addStretch()
         self._import_btn = PrimaryButton("Import →")

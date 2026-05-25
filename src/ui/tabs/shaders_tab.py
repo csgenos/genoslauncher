@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
 from ...core.instances import create_custom_instance, list_instances, selected_instance_dir, set_selected_instance
@@ -261,7 +262,7 @@ class InstalledShaderRow(QFrame):
                 color: {C["danger"]};
             }}
         """)
-        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self._filename))
+        remove_btn.clicked.connect(lambda _checked=False: self.remove_requested.emit(self._filename))
         layout.addWidget(remove_btn)
 
 
@@ -349,7 +350,7 @@ class ShaderCard(QFrame):
             QPushButton:hover {{ background: #1F2937; }}
             QPushButton:pressed {{ background: #0F172A; }}
         """)
-        install_btn.clicked.connect(lambda: self.install_requested.emit(self._project))
+        install_btn.clicked.connect(lambda _checked=False: self.install_requested.emit(self._project))
         layout.addWidget(install_btn)
 
         outer.addWidget(main_row)
@@ -526,7 +527,7 @@ class ShadersTab(QWidget):
         title_col.addWidget(sub)
         page_header.addLayout(title_col)
         page_header.addStretch()
-        self._instance_combo = QComboBox()
+        self._instance_combo = GComboBox()
         self._instance_combo.setFixedSize(240, 36)
         self._instance_combo.currentIndexChanged.connect(self._on_instance_changed)
         page_header.addWidget(self._instance_combo)
@@ -546,7 +547,7 @@ class ShadersTab(QWidget):
         open_sh_btn.setFixedHeight(32)
         open_sh_btn.setCursor(Qt.PointingHandCursor)
         open_sh_btn.setStyleSheet(self._outline_btn_style())
-        open_sh_btn.clicked.connect(lambda: self._open_folder(self._shaderpacks_dir()))
+        open_sh_btn.clicked.connect(lambda _checked=False: self._open_folder(self._shaderpacks_dir()))
         sh_header.addWidget(open_sh_btn)
         cl.addLayout(sh_header)
 
@@ -570,7 +571,7 @@ class ShadersTab(QWidget):
         open_rp_btn.setFixedHeight(32)
         open_rp_btn.setCursor(Qt.PointingHandCursor)
         open_rp_btn.setStyleSheet(self._outline_btn_style())
-        open_rp_btn.clicked.connect(lambda: self._open_folder(self._resourcepacks_dir()))
+        open_rp_btn.clicked.connect(lambda _checked=False: self._open_folder(self._resourcepacks_dir()))
         rp_header.addWidget(open_rp_btn)
         cl.addLayout(rp_header)
 
@@ -595,7 +596,7 @@ class ShadersTab(QWidget):
         self._shader_search.textChanged.connect(lambda _: self._search_timer.start(400))
         search_row.addWidget(self._shader_search)
 
-        self._shader_ver = QComboBox()
+        self._shader_ver = GComboBox()
         self._shader_ver.setFixedSize(130, 38)
         for v in ["Any version", "1.21.4", "1.21.1", "1.20.1", "1.19.4", "1.18.2"]:
             self._shader_ver.addItem(v)
@@ -697,7 +698,7 @@ class ShadersTab(QWidget):
         right_col.setSpacing(6)
         right_col.setContentsMargins(0, 0, 0, 0)
 
-        self._iris_version_combo = QComboBox()
+        self._iris_version_combo = GComboBox()
         self._iris_version_combo.setFixedSize(130, 30)
         self._iris_version_combo.setStyleSheet(f"""
             QComboBox {{
