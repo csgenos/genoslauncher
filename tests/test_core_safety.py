@@ -11,6 +11,7 @@ from unittest.mock import patch
 from src.core import instances as instances_core
 from src.core import modpack_archive
 from src.core import config as config_core
+from src.core import cloud_sync as cloud_sync_core
 from src.core.java_manager import required_java_for_mc
 from src.core.modrinth import ModrinthError, safe_download_path, verify_file_hash
 from src.core.validators import (
@@ -125,6 +126,58 @@ class ArchiveRoundTripTests(unittest.TestCase):
                 self.assertIn("modrinth.index.json", zf.namelist())
                 idx = json.loads(zf.read("modrinth.index.json").decode("utf-8"))
                 self.assertEqual(idx["dependencies"]["minecraft"], "1.21.4")
+
+
+class CloudSyncSafetyTests(unittest.TestCase):
+    def test_push_instance_filters_sensitive_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            inst_dir = base / "instance"
+            (inst_dir / "mods").mkdir(parents=True)
+            (inst_dir / "mods" / "ok.jar").write_bytes(b"jar")
+            (inst_dir / "logs").mkdir()
+            (inst_dir / "logs" / "latest.log").write_text("secret", encoding="utf-8")
+            (inst_dir / "access_token.txt").write_text("token", encoding="utf-8")
+
+            zip_path = cloud_sync_core.push_instance(
+                {"id": "custom-abc123", "directory": str(inst_dir)},
+                str(base / "sync"),
+            )
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = set(zf.namelist())
+            self.assertIn("mods/ok.jar", names)
+            self.assertNotIn("logs/latest.log", names)
+            self.assertNotIn("access_token.txt", names)
+
+    def test_pull_instance_rejects_unsafe_instance_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            archive = base / "safe.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("mods/a.jar", b"jar")
+            with self.assertRaises(ValueError):
+                cloud_sync_core.pull_instance("../evil", str(archive), str(base / "instances"))
+
+    def test_pull_instance_rejects_unsafe_archive_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            archive = base / "unsafe.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("../escape.txt", "bad")
+            with self.assertRaises(ValueError):
+                cloud_sync_core.pull_instance("custom-safe", str(archive), str(base / "instances"))
+
+    def test_pull_instance_rejects_symlink_members(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            archive = base / "symlink.zip"
+            info = zipfile.ZipInfo("mods/link.jar")
+            info.create_system = 3
+            info.external_attr = 0o120777 << 16
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr(info, "target")
+            with self.assertRaises(ValueError):
+                cloud_sync_core.pull_instance("custom-safe", str(archive), str(base / "instances"))
 
 
 class AuthFlowTests(unittest.TestCase):

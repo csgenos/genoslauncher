@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 import webbrowser
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +41,8 @@ _MD  = FONT["md"]
 _2XL = FONT["2xl"]
 
 _ICON_CACHE = APP_DIR / "cache" / "mod_icons"
+_KNOWN_LOADERS = {"fabric", "forge", "quilt", "neoforge"}
+_FORGE_MODID_RE = re.compile(r'^\s*modId\s*=\s*"([^"]+)"', re.MULTILINE)
 
 # ---------------------------------------------------------------------------
 # Mod metadata helpers
@@ -85,6 +89,93 @@ def _register_mod(instance_dir: Path, project: dict, version: dict, filename: st
         "installed_at":   datetime.now(timezone.utc).isoformat(),
     }
     _save_index(instance_dir, index)
+
+
+def _loader_from_version_id(version_id: str) -> str:
+    value = str(version_id or "").strip().lower()
+    if value.startswith("fabric-loader-"):
+        return "fabric"
+    if value.startswith("quilt-loader-"):
+        return "quilt"
+    if value.startswith("neoforge-") or "-neoforge-" in value:
+        return "neoforge"
+    if value.startswith("forge-") or "-forge-" in value:
+        return "forge"
+    return ""
+
+
+def _infer_instance_loader(instance: dict | None) -> str:
+    data = instance or {}
+    for key in ("loader", "loader_type", "type"):
+        val = str(data.get(key, "")).strip().lower()
+        if val in _KNOWN_LOADERS:
+            return val
+    for key in ("mc_version", "launch_version_id"):
+        inferred = _loader_from_version_id(str(data.get(key, "")))
+        if inferred:
+            return inferred
+    source = str(data.get("source", "")).strip().lower()
+    for loader in _KNOWN_LOADERS:
+        if source.startswith(f"{loader}:"):
+            return loader
+    return ""
+
+
+def _mod_ids_from_fabric_json(payload: object) -> set[str]:
+    out: set[str] = set()
+    entries: list[dict] = []
+    if isinstance(payload, dict):
+        entries = [payload]
+    elif isinstance(payload, list):
+        entries = [item for item in payload if isinstance(item, dict)]
+    for item in entries:
+        mod_id = str(item.get("id", "")).strip()
+        if mod_id:
+            out.add(mod_id)
+        provides = item.get("provides", [])
+        if isinstance(provides, list):
+            out.update(str(p).strip() for p in provides if str(p).strip())
+    return out
+
+
+def _extract_mod_ids_from_jar(jar_path: Path) -> set[str]:
+    mod_ids: set[str] = set()
+    try:
+        with zipfile.ZipFile(jar_path, "r") as zf:
+            if "fabric.mod.json" in zf.namelist():
+                try:
+                    payload = json.loads(zf.read("fabric.mod.json").decode("utf-8", errors="replace"))
+                    mod_ids.update(_mod_ids_from_fabric_json(payload))
+                except (OSError, ValueError, TypeError):
+                    pass
+
+            if "quilt.mod.json" in zf.namelist():
+                try:
+                    payload = json.loads(zf.read("quilt.mod.json").decode("utf-8", errors="replace"))
+                    if isinstance(payload, dict):
+                        ql = payload.get("quilt_loader", {})
+                        if isinstance(ql, dict):
+                            ql_id = str(ql.get("id", "")).strip()
+                            if ql_id:
+                                mod_ids.add(ql_id)
+                        top_id = str(payload.get("id", "")).strip()
+                        if top_id:
+                            mod_ids.add(top_id)
+                except (OSError, ValueError, TypeError):
+                    pass
+
+            if "META-INF/mods.toml" in zf.namelist():
+                try:
+                    text = zf.read("META-INF/mods.toml").decode("utf-8", errors="replace")
+                    for match in _FORGE_MODID_RE.findall(text):
+                        value = str(match).strip()
+                        if value:
+                            mod_ids.add(value)
+                except OSError:
+                    pass
+    except (OSError, zipfile.BadZipFile):
+        return set()
+    return mod_ids
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +346,7 @@ class ModInstallWorker(QObject):
     def run(self) -> None:
         try:
             mc_version   = (self.instance or {}).get("mc_version", "")
-            loader       = (self.instance or {}).get("type", "")
+            loader       = _infer_instance_loader(self.instance)
             instance_dir = Path((self.instance or {}).get("directory", str(self.fallback_dir)))
             mods_dir     = instance_dir / "mods"
             mods_dir.mkdir(parents=True, exist_ok=True)
@@ -469,6 +560,7 @@ class ModApplyUpdateWorker(QObject):
 class ModApplyAllUpdatesWorker(QObject):
     """Applies all pending updates sequentially, emitting progress signals."""
     progress = Signal(int, int, str)   # current, total, title
+    item_finished = Signal(str, bool)  # project_id, success
     finished = Signal(int, int)        # succeeded, failed
 
     def __init__(self, updates: list[dict]) -> None:
@@ -486,7 +578,9 @@ class ModApplyAllUpdatesWorker(QObject):
             ok_holder: list[bool] = []
             worker.finished.connect(lambda ok, msg, _info, h=ok_holder: h.append(ok))
             worker.run()
-            if ok_holder and ok_holder[0]:
+            ok = bool(ok_holder and ok_holder[0])
+            self.item_finished.emit(str(info.get("project_id", "")), ok)
+            if ok:
                 succeeded += 1
             else:
                 failed += 1
@@ -1009,14 +1103,15 @@ class ModsTab(QWidget):
             self._conflict_banner.setVisible(False)
             return
         instance_dir = Path(instance.get("directory", ""))
-        index = _load_index(instance_dir)
+        mods_dir = instance_dir / "mods"
         seen_ids: dict[str, list[str]] = {}
-        for pid, entry in index.items():
-            title = entry.get("title", pid)
-            seen_ids.setdefault(pid, []).append(title)
-        duplicates = [pid for pid, titles in seen_ids.items() if len(titles) > 1]
+        if mods_dir.exists():
+            for jar in mods_dir.glob("*.jar"):
+                for mod_id in _extract_mod_ids_from_jar(jar):
+                    seen_ids.setdefault(mod_id, []).append(jar.name)
+        duplicates = [mod_id for mod_id, jars in seen_ids.items() if len(jars) > 1]
         if duplicates:
-            names = ", ".join(seen_ids[pid][0] for pid in duplicates[:5])
+            names = ", ".join(duplicates[:5])
             self._conflict_banner.setText(
                 f"⚠ Duplicate mod IDs detected: {names}. "
                 "This may cause conflicts. Check your mods folder."
@@ -1024,6 +1119,15 @@ class ModsTab(QWidget):
             self._conflict_banner.setVisible(True)
         else:
             self._conflict_banner.setVisible(False)
+
+    def _find_update_card(self, project_id: str) -> ModUpdateCard | None:
+        for i in range(self._updates_list.count()):
+            item = self._updates_list.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
+                card = item.widget()
+                if card._info.get("project_id") == project_id:
+                    return card
+        return None
 
     def _on_source_changed(self) -> None:
         source = self._source_combo.currentData()
@@ -1215,13 +1319,15 @@ class ModsTab(QWidget):
                 f"Updated {ok} mod(s)." + (f" {fail} failed." if fail else "")
             )
         )
-        # Mark all cards as done only after updates complete
-        def _mark_all_done():
-            for i in range(self._updates_list.count()):
-                item = self._updates_list.itemAt(i)
-                if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
-                    item.widget().set_updated()
-        worker.finished.connect(lambda ok, fail: _mark_all_done())
+        def _mark_item(project_id: str, ok: bool) -> None:
+            if not ok:
+                return
+            card = self._find_update_card(project_id)
+            if card is not None:
+                card.set_updated()
+        worker.item_finished.connect(
+            _mark_item
+        )
         worker.finished.connect(thread.quit)
         self._threads.append(thread)
         self._workers.append(worker)
@@ -1235,14 +1341,7 @@ class ModsTab(QWidget):
         thread.start()
 
     def _execute_mod_update(self, info: dict) -> None:
-        target_card = None
-        for i in range(self._updates_list.count()):
-            item = self._updates_list.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), ModUpdateCard):
-                card = item.widget()
-                if card._info.get("project_id") == info.get("project_id"):
-                    target_card = card
-                    break
+        target_card = self._find_update_card(str(info.get("project_id", "")))
         thread = QThread(self)
         worker = ModApplyUpdateWorker(info)
         worker.moveToThread(thread)
