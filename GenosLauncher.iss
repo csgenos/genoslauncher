@@ -21,7 +21,6 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
-AppUserModelID={#AppUserModelID}
 
 ; Installation directory — LocalAppData means no UAC prompt (like Discord, Slack, Cursor)
 DefaultDirName={localappdata}\{#AppName}

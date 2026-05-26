@@ -39,7 +39,7 @@ jobs:
           pip install -r requirements-build.lock
 
       - name: Audit dependencies
-        run: pip-audit --disable-pip -r requirements.lock
+        run: pip-audit --disable-pip --no-deps -r requirements.lock
 
       - name: Run source checks
         run: |
