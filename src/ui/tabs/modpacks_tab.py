@@ -520,6 +520,7 @@ class ModpacksTab(QWidget):
         self._outdated_instances: dict[str, str] = {}
         self._active_update_threads: list[QThread] = []
         self._active_update_workers: list[ModpackInstanceUpdateWorker] = []
+        self._active_installs: set[str] = set()
         self._update_policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
         self._startup_policy_ran = False
         self._discovery_threads: list[QThread] = []
@@ -939,16 +940,40 @@ class ModpacksTab(QWidget):
         if project_id in self._discovery_cards:
             self._discovery_cards[project_id].set_icon(pixmap)
 
+    def _set_project_install_state(self, project_id: str, state: str, status: str = "") -> None:
+        for card_map in (self._current_cards, self._discovery_cards):
+            card = card_map.get(project_id)
+            if card is None:
+                continue
+            if state == "installing":
+                card.set_installing(status or "Installing...")
+            elif state == "installed":
+                card.set_installed()
+            elif state == "unavailable":
+                card.set_unavailable()
+            else:
+                card.set_ready()
+
     # ------------------------------------------------------------------
     # Install
     # ------------------------------------------------------------------
 
     def _on_install_requested(self, project: dict) -> None:
+        project_id = str(project.get("id", "")).strip()
+        if not project_id:
+            self._status_label.setText("Install failed: missing project id.")
+            return
         if project.get("source") == "curseforge":
             self._status_label.setText(
                 "CurseForge modpack installation is not supported yet. Use Modrinth modpacks for one-click installs."
             )
+            self._set_project_install_state(project_id, "unavailable")
             return
+        if project_id in self._active_installs:
+            self._status_label.setText("Install already in progress for this modpack.")
+            return
+        self._active_installs.add(project_id)
+        self._set_project_install_state(project_id, "installing", "Fetching...")
         # Fetch versions on background thread, then start install
         thread = QThread(self)
         ver_text = self._version_filter.currentText()
@@ -969,11 +994,11 @@ class ModpacksTab(QWidget):
                     ))
                 except mr.ModrinthError as e: self.err.emit(str(e))
 
-        fetcher = VersionFetcher(project["id"], game_version)
+        fetcher = VersionFetcher(project_id, game_version)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
         fetcher.done.connect(lambda versions, gv=game_version: self._start_install(project, versions, gv))
-        fetcher.err.connect(lambda e, pid=project["id"]: self._on_version_fetch_error(pid, e))
+        fetcher.err.connect(lambda e, pid=project_id: self._on_version_fetch_error(pid, e))
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
         self._search_threads.append(thread)
@@ -984,16 +1009,12 @@ class ModpacksTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-        card = self._current_cards.get(project["id"])
-        if card:
-            card.set_installing("Fetching...")
-
     def _start_install(self, project: dict, versions: list[dict], game_version: str = "") -> None:
-        card = self._current_cards.get(project["id"])
+        project_id = str(project.get("id", "")).strip()
         if not versions:
             self._status_label.setText("No versions available for this modpack.")
-            if card:
-                card.set_ready()
+            self._active_installs.discard(project_id)
+            self._set_project_install_state(project_id, "ready")
             return
 
         # Pick the latest version
@@ -1006,18 +1027,14 @@ class ModpacksTab(QWidget):
         thread.started.connect(worker.run)
 
         def on_progress(current, total, status):
-            if card:
-                pct = int(current / max(total, 1) * 100)
-                card.set_installing(f"{pct}%")
+            pct = int(current / max(total, 1) * 100)
+            self._set_project_install_state(project_id, "installing", f"{pct}%")
             self._status_label.setText(status)
 
         def on_finish(success, msg):
             self._status_label.setText(msg)
-            if card:
-                if success:
-                    card.set_installed()
-                else:
-                    card.set_ready()
+            self._active_installs.discard(project_id)
+            self._set_project_install_state(project_id, "installed" if success else "ready")
 
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finish)
@@ -1032,9 +1049,8 @@ class ModpacksTab(QWidget):
 
     def _on_version_fetch_error(self, project_id: str, error_message: str) -> None:
         self._status_label.setText(f"Error: {error_message}")
-        card = self._current_cards.get(project_id)
-        if card:
-            card.set_ready()
+        self._active_installs.discard(project_id)
+        self._set_project_install_state(project_id, "ready")
 
     def _import_pack_archive(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

@@ -115,6 +115,89 @@ class UISmokeTests(unittest.TestCase):
         card.deleteLater()
         self.app.processEvents()
 
+    def test_modpacks_tab_state_updates_apply_to_discovery_and_results(self) -> None:
+        from src.ui.tabs.modpacks_tab import ModpackCard, ModpacksTab
+
+        project = {
+            "id": "sample-pack",
+            "title": "Sample Pack",
+            "description": "Sample",
+            "author": "Tester",
+            "downloads": 1,
+            "categories": [],
+            "source": "modrinth",
+        }
+        with patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None):
+            tab = ModpacksTab()
+            results_card = ModpackCard(project)
+            discovery_card = ModpackCard(project)
+            tab._current_cards["sample-pack"] = results_card
+            tab._discovery_cards["sample-pack"] = discovery_card
+
+            tab._set_project_install_state("sample-pack", "installing", "50%")
+            self.assertFalse(results_card._install_btn.isEnabled())
+            self.assertFalse(discovery_card._install_btn.isEnabled())
+
+            tab._set_project_install_state("sample-pack", "ready")
+            self.assertTrue(results_card._install_btn.isEnabled())
+            self.assertTrue(discovery_card._install_btn.isEnabled())
+
+            tab._set_project_install_state("sample-pack", "installed")
+            self.assertEqual(results_card._install_btn.text(), "Installed")
+            self.assertEqual(discovery_card._install_btn.text(), "Installed")
+
+            for widget in (results_card, discovery_card, tab):
+                widget.close()
+                widget.deleteLater()
+            self.app.processEvents()
+
+    def test_shader_card_install_states(self) -> None:
+        from PySide6.QtWidgets import QPushButton
+        from src.ui.tabs.shaders_tab import ShaderCard
+
+        project = {"id": "shader-1", "title": "Example", "description": "Example", "author": "Tester", "downloads": 1}
+        card = ShaderCard(project)
+        button = card.findChild(QPushButton)
+        self.assertIsNotNone(button)
+
+        card.set_installing("Fetching...")
+        self.assertFalse(button.isEnabled())
+
+        card.set_ready()
+        self.assertTrue(button.isEnabled())
+        self.assertEqual(button.text(), "Install")
+
+        card.set_installed()
+        self.assertFalse(button.isEnabled())
+        self.assertEqual(button.text(), "Installed")
+
+        card.close()
+        card.deleteLater()
+        self.app.processEvents()
+
+    def test_shaders_tab_version_fetch_error_resets_button_state(self) -> None:
+        from src.ui.tabs.shaders_tab import ShaderCard, ShadersTab
+
+        project = {"id": "shader-1", "title": "Example", "description": "Example", "author": "Tester", "downloads": 1}
+        with patch.object(ShadersTab, "_refresh_installed", lambda self: None), patch.object(ShadersTab, "_load_version_choices", lambda self: None):
+            tab = ShadersTab()
+            card = ShaderCard(project)
+            card.set_installing("Fetching...")
+            tab._shader_cards["shader-1"] = card
+            tab._active_shader_installs.add("shader-1")
+
+            tab._on_shader_version_fetch_error("shader-1", "network failed")
+
+            self.assertNotIn("shader-1", tab._active_shader_installs)
+            self.assertEqual(card._install_btn.text(), "Install")
+            self.assertTrue(card._install_btn.isEnabled())
+            self.assertIn("network failed", tab._shader_status.text())
+
+            for widget in (card, tab):
+                widget.close()
+                widget.deleteLater()
+            self.app.processEvents()
+
     def test_main_window_constructs(self) -> None:
         from src.ui.main_window import MainWindow
         from src.ui.tabs.home_tab import HomeTab
