@@ -85,7 +85,7 @@ class UISmokeTests(unittest.TestCase):
     def test_install_buttons_emit_from_cards(self) -> None:
         from PySide6.QtWidgets import QPushButton
         from src.ui.components.version_card import VersionCard
-        from src.ui.tabs.mods_tab import ModCard
+        from src.ui.tabs.mods_tab import ModCard, _infer_instance_loader
         from src.ui.tabs.shaders_tab import ShaderCard
 
         version_hits: list[str] = []
@@ -111,6 +111,15 @@ class UISmokeTests(unittest.TestCase):
             widget.close()
             widget.deleteLater()
         self.app.processEvents()
+
+        self.assertEqual(
+            _infer_instance_loader({"mc_version": "fabric-loader-0.16.9-1.21.4"}),
+            "fabric",
+        )
+        self.assertEqual(
+            _infer_instance_loader({"launch_version_id": "quilt-loader-0.25.0-1.21.4"}),
+            "quilt",
+        )
 
 
 if __name__ == "__main__":
