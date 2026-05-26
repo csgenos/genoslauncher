@@ -448,7 +448,7 @@ class AccountsTab(QWidget):
         active_ms = auth_manager.username if auth_manager.is_logged_in else ""
         for ms_name in auth_manager.list_ms_accounts():
             is_active = ms_name == active_ms
-            last_used = config.get(_account_last_used_key(ms_name), "")
+            last_used = get_account_last_used(ms_name)
             row = AccountRow(
                 ms_name,
                 "Microsoft | Online" if is_active else "Microsoft | Saved",
@@ -460,7 +460,7 @@ class AccountsTab(QWidget):
             self._accounts_layout.addWidget(row)
 
         for name in self._offline_accounts:
-            last_used = config.get(_account_last_used_key(name), "")
+            last_used = get_account_last_used(name)
             row = AccountRow(
                 name,
                 "Offline | Unverified",
@@ -574,8 +574,23 @@ def _account_last_used_key(username: str) -> str:
     return f"account_last_used_{username}"
 
 
+def get_account_last_used(username: str) -> str:
+    store = config.get("account_last_used", {})
+    if isinstance(store, dict):
+        value = str(store.get(username, "") or "").strip()
+        if value:
+            return value
+    # Backward compatibility with legacy dynamic keys.
+    return str(config.get(_account_last_used_key(username), "") or "").strip()
+
+
 def record_account_used(username: str) -> None:
-    config.set(_account_last_used_key(username), datetime.now(timezone.utc).isoformat())
+    stamp = datetime.now(timezone.utc).isoformat()
+    store = config.get("account_last_used", {})
+    if not isinstance(store, dict):
+        store = {}
+    store[username] = stamp
+    config.set("account_last_used", store)
 
 
 def _relative_time(iso_str: str) -> str:

@@ -81,6 +81,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ms_usernames": [],
     "active_ms_username": "",
     "auth_redirect_port": 0,
+    "cloud_sync_enabled": False,
+    "cloud_sync_dir": "",
+    "cloud_sync_auto": False,
+    "cloud_sync_last": "",
+    "account_last_used": {},
 }
 
 # Keys whose types are enforced (basic schema validation)
@@ -119,6 +124,11 @@ _SCHEMA: dict[str, type | tuple] = {
     "servers":            list,
     "ms_usernames":       list,
     "active_ms_username": str,
+    "cloud_sync_enabled": bool,
+    "cloud_sync_dir": str,
+    "cloud_sync_auto": bool,
+    "cloud_sync_last": (str, type(None)),
+    "account_last_used": dict,
 }
 
 
@@ -293,21 +303,36 @@ class Config:
             if flow not in {"device_code", "off"}:
                 return "device_code"
             return flow
+        if key == "account_last_used":
+            if not isinstance(val, dict):
+                return {}
+            clean: dict[str, str] = {}
+            for raw_key, raw_value in val.items():
+                username = str(raw_key or "").strip()
+                stamp = str(raw_value or "").strip()
+                if not username or not stamp:
+                    continue
+                clean[username[:64]] = stamp[:64]
+            return clean
         return val
 
     def _validate(self, data: dict) -> dict:
-        """Apply a strict known-key schema; fall back to defaults on error."""
+        """Validate known keys and preserve unknown non-sensitive keys."""
         if "theme_mode" not in data and data.get("dark_mode") is True:
             data = dict(data)
             data["theme_mode"] = "dark"
         out = dict(DEFAULT_CONFIG)
         for key, val in data.items():
+            if not isinstance(key, str):
+                continue
             if key in _SENSITIVE_KEYS or key in _SECRET_CONFIG_KEYS:
                 continue
             expected = _SCHEMA.get(key)
             if expected is None and key not in DEFAULT_CONFIG:
-                continue
-            out[key] = self._validate_value(key, val)
+                # Preserve forward-compatible and runtime metadata keys.
+                out[key] = val
+            else:
+                out[key] = self._validate_value(key, val)
         return out
 
     def _load(self) -> None:

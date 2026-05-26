@@ -65,11 +65,21 @@ from .secure_store import atomic_write_bytes, secure_delete as _secure_delete_fi
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# Xbox Live public client ID — used by HMCL, MultiMC, and many open-source
-# Minecraft launchers. No Azure registration required for end users.
-# Replace via GENOS_AZURE_CLIENT_ID env var or CI secret if you want your
-# own registered app instead.
-_BUILTIN_CLIENT_ID = "00000000402b5328"
+# First-party Microsoft public client ID with consumer support.
+# Replace via GENOS_AZURE_CLIENT_ID env var or config override if you run
+# your own app registration.
+_BUILTIN_CLIENT_ID = "04f0c124-f2bc-4f59-8241-bf6df9866bbd"
+_GUID_CLIENT_ID_RE = _re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_LEGACY_CLIENT_ID_RE = _re.compile(r"^[0-9a-fA-F]{16}$")
+
+
+def _is_plausible_client_id(client_id: str) -> bool:
+    value = str(client_id or "").strip()
+    if not value:
+        return False
+    return bool(_GUID_CLIENT_ID_RE.fullmatch(value) or _LEGACY_CLIENT_ID_RE.fullmatch(value))
 
 
 def _resolve_client_id() -> str:
@@ -79,11 +89,15 @@ def _resolve_client_id() -> str:
               → user override stored in config (advanced users)
               → project built-in ID (normal end-user path)
     """
-    return (
-        os.environ.get("GENOS_AZURE_CLIENT_ID", "")
-        or config.get("azure_client_id", "")
-        or _BUILTIN_CLIENT_ID
-    )
+    for candidate in (
+        os.environ.get("GENOS_AZURE_CLIENT_ID", ""),
+        config.get("azure_client_id", ""),
+        _BUILTIN_CLIENT_ID,
+    ):
+        client_id = str(candidate or "").strip()
+        if _is_plausible_client_id(client_id):
+            return client_id
+    return ""
 
 # ---------------------------------------------------------------------------
 # Microsoft / Xbox / Minecraft API endpoints
@@ -150,7 +164,42 @@ def _redirect_path() -> str:
 
 
 def _redirect_host() -> str:
-    return str(config.get("auth_redirect_host", "127.0.0.1") or "127.0.0.1")
+    host = str(config.get("auth_redirect_host", "127.0.0.1") or "127.0.0.1").strip().lower()
+    return host if host in {"127.0.0.1", "localhost"} else "127.0.0.1"
+
+
+def _oauth_error_message(error: str, description: str = "") -> str:
+    err = str(error or "").strip().lower()
+    desc = str(description or "").strip()
+    if err == "unauthorized_client":
+        return (
+            "Microsoft sign-in is not configured for this build.\n\n"
+            "Set a valid Azure public client ID in Settings -> Microsoft Authentication "
+            "or set GENOS_AZURE_CLIENT_ID before launching GenosLauncher."
+        )
+    if err == "invalid_request" and "redirect" in desc.lower() and "uri" in desc.lower():
+        return (
+            "Microsoft rejected the redirect URI for sign-in.\n\n"
+            "Make sure your Azure app registration includes a loopback redirect URI "
+            "(for example http://localhost) and try again."
+        )
+    if desc:
+        return desc
+    if err:
+        return err
+    return "Microsoft authentication failed."
+
+
+def _format_loopback_host_for_uri(host: str) -> str:
+    value = str(host or "").strip()
+    if ":" in value and not value.startswith("["):
+        return f"[{value}]"
+    return value
+
+
+def _redirect_uri_for_server(server: http.server.HTTPServer) -> str:
+    host, port = server.server_address[:2]
+    return f"http://{_format_loopback_host_for_uri(str(host))}:{int(port)}{_redirect_path()}"
 
 
 def _uses_shared_client_id(client_id: str) -> bool:
@@ -398,11 +447,18 @@ def _exchange_code(
         "redirect_uri":  redirect_uri,
         "code_verifier": verifier,
     }, timeout=15)
+    data: dict = {}
+    if resp.content:
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
     if not resp.ok:
-        raise AuthError(f"Token exchange failed ({resp.status_code}): {resp.text[:200]}")
-    data = resp.json()
+        if data:
+            raise AuthError(_oauth_error_message(data.get("error", ""), data.get("error_description", "")))
+        raise AuthError(f"Token exchange failed ({resp.status_code}).")
     if "error" in data:
-        raise AuthError(data.get("error_description", data["error"]))
+        raise AuthError(_oauth_error_message(data.get("error", ""), data.get("error_description", "")))
     return data
 
 
@@ -411,11 +467,18 @@ def _request_device_code(client_id: str) -> dict:
         "client_id": client_id,
         "scope": _SCOPE,
     }, timeout=15)
+    data: dict = {}
+    if resp.content:
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
     if not resp.ok:
-        raise AuthError(f"Device sign-in could not start ({resp.status_code}): {resp.text[:200]}")
-    data = resp.json()
+        if data:
+            raise AuthError(_oauth_error_message(data.get("error", ""), data.get("error_description", "")))
+        raise AuthError(f"Device sign-in could not start ({resp.status_code}).")
     if "error" in data:
-        raise AuthError(data.get("error_description", data["error"]))
+        raise AuthError(_oauth_error_message(data.get("error", ""), data.get("error_description", "")))
     if not data.get("device_code") or not data.get("user_code"):
         raise AuthError("Microsoft did not return a device sign-in code.")
     return data
@@ -445,8 +508,8 @@ def _poll_device_code(client_id: str, device_code: str, stop_event: threading.Ev
             raise AuthError("The Microsoft sign-in code expired. Please try again.")
         if error == "access_denied":
             raise AuthError("Microsoft sign-in was denied.")
-        detail = data.get("error_description") or resp.text[:200] or "Unknown device sign-in error."
-        raise AuthError(str(detail))
+        detail = data.get("error_description", "")
+        raise AuthError(_oauth_error_message(error, str(detail)))
     raise AuthError("Sign-in timed out. Please try again.")
 
 
@@ -521,7 +584,8 @@ def _create_callback_server(
         def log_message(self, fmt: str, *args: object) -> None:
             pass  # suppress HTTP access log noise
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    bind_host = _redirect_host()
+    server = http.server.HTTPServer((bind_host, 0), _Handler)
     server_ref.append(server)
     return server, result
 
@@ -750,7 +814,7 @@ class AuthManager:
         client_id = _resolve_client_id()
         if not client_id:
             on_error(
-                "Microsoft sign-in could not start — no client ID is configured.\n\n"
+                "Microsoft sign-in could not start — no valid client ID is configured.\n\n"
                 "If you built GenosLauncher from source, set the "
                 "GENOS_AZURE_CLIENT_ID environment variable or paste a "
                 "client ID in Settings → Microsoft Authentication."
@@ -789,8 +853,7 @@ class AuthManager:
             on_error(f"Could not start local sign-in server: {exc}")
             return
 
-        port = server.server_address[1]
-        redirect_uri = f"http://{_redirect_host()}:{port}{_redirect_path()}"
+        redirect_uri = _redirect_uri_for_server(server)
         auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
 
         webbrowser.open(auth_url)
@@ -882,7 +945,7 @@ class AuthManager:
         client_id = _resolve_client_id()
         if not client_id:
             on_error(
-                "Microsoft sign-in could not start — no client ID is configured.\n\n"
+                "Microsoft sign-in could not start — no valid client ID is configured.\n\n"
                 "Set the GENOS_AZURE_CLIENT_ID environment variable or paste a "
                 "client ID in Settings → Microsoft Authentication."
             )
@@ -910,8 +973,7 @@ class AuthManager:
         except OSError as exc:
             on_error(f"Could not start local sign-in server: {exc}")
             return
-        port = server.server_address[1]
-        redirect_uri = f"http://{_redirect_host()}:{port}{_redirect_path()}"
+        redirect_uri = _redirect_uri_for_server(server)
         auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
         webbrowser.open(auth_url)
         on_browser_opened(auth_url)
