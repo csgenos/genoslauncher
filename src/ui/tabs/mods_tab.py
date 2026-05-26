@@ -1283,11 +1283,16 @@ class ModsTab(QWidget):
     # ------------------------------------------------------------------
 
     def _install_mod(self, project: dict, version: dict | None = None) -> None:
-        instance    = selected_instance()
-        fallback_dir = (
-            selected_instance_dir() if instance
-            else Path(config.get("minecraft_dir", str(APP_DIR / "minecraft")))
-        )
+        instance = selected_instance()
+        if not instance:
+            self._status.setText("Select an instance before installing mods.")
+            QMessageBox.information(
+                self,
+                "Instance Required",
+                "Choose an instance first so GenosLauncher knows where to install this mod.",
+            )
+            return
+        fallback_dir = selected_instance_dir()
         self._status.setText(f"Installing {project.get('title', 'mod')}…")
         thread = QThread(self)
         worker = ModInstallWorker(project, version, instance, fallback_dir)

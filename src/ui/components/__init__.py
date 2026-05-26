@@ -4,6 +4,7 @@ from .animated_button import CleanButton, LaunchButton, OutlineButton, PrimaryBu
 from .clean_card import CleanCard
 from .progress_widget import CleanProgressBar, LaunchProgressPanel
 from .sidebar import Sidebar, SidebarItem
+from .top_nav import TopNavBar
 from .version_card import VersionCard
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     # Navigation
     "Sidebar",
     "SidebarItem",
+    "TopNavBar",
     # Version display
     "VersionCard",
 ]

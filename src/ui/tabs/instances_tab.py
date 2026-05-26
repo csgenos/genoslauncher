@@ -187,8 +187,8 @@ class InstancesTab(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(48, 32, 48, 32)
-        root.setSpacing(24)
+        root.setContentsMargins(36, 24, 36, 24)
+        root.setSpacing(18)
 
         header_row = QHBoxLayout()
         title = QLabel("Instances")
@@ -224,6 +224,12 @@ class InstancesTab(QWidget):
         bulk_btn.clicked.connect(self._bulk_actions)
         header_row.addWidget(bulk_btn)
 
+        self._bulk_tools_toggle = OutlineButton("Bulk Tools")
+        self._bulk_tools_toggle.setFixedHeight(34)
+        self._bulk_tools_toggle.setFixedWidth(108)
+        self._bulk_tools_toggle.clicked.connect(self._toggle_bulk_tools)
+        header_row.addWidget(self._bulk_tools_toggle)
+
         root.addLayout(header_row)
 
         self._instances_title = QLabel("Installed Instances")
@@ -250,7 +256,10 @@ class InstancesTab(QWidget):
         instance_filter_row.addWidget(self._sort_combo)
         root.addLayout(instance_filter_row)
 
-        bulk_row = QHBoxLayout()
+        self._bulk_tools_row = QWidget(self)
+        self._bulk_tools_row.setVisible(False)
+        bulk_row = QHBoxLayout(self._bulk_tools_row)
+        bulk_row.setContentsMargins(0, 0, 0, 0)
         bulk_row.setSpacing(8)
         self._select_all_cb = QCheckBox("Select All")
         self._select_all_cb.toggled.connect(self._on_select_all)
@@ -268,7 +277,7 @@ class InstancesTab(QWidget):
         export_all_btn.setFixedHeight(30)
         export_all_btn.clicked.connect(self._bulk_export)
         bulk_row.addWidget(export_all_btn)
-        root.addLayout(bulk_row)
+        root.addWidget(self._bulk_tools_row)
 
         self._instances_container = QWidget()
         self._instances_container.setStyleSheet("background: transparent;")
@@ -319,6 +328,14 @@ class InstancesTab(QWidget):
 
         self._scroll.setWidget(self._versions_container)
         root.addWidget(self._scroll)
+
+    def _toggle_bulk_tools(self) -> None:
+        if not hasattr(self, "_bulk_tools_row"):
+            return
+        visible = not self._bulk_tools_row.isVisible()
+        self._bulk_tools_row.setVisible(visible)
+        if hasattr(self, "_bulk_tools_toggle"):
+            self._bulk_tools_toggle.setText("Hide Bulk" if visible else "Bulk Tools")
 
     def _load_versions(self, force_refresh: bool = False) -> None:
         self._count_label.setText("Loading versions...")

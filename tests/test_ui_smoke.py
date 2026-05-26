@@ -50,6 +50,39 @@ class UISmokeTests(unittest.TestCase):
         tab.deleteLater()
         self.app.processEvents()
 
+    def test_modpacks_tab_constructs(self) -> None:
+        from src.ui.tabs.modpacks_tab import ModpacksTab
+
+        with patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None):
+            tab = ModpacksTab()
+            self.assertIsNotNone(tab)
+            self.assertIsNotNone(tab._version_filter)
+            tab.close()
+            tab.deleteLater()
+            self.app.processEvents()
+
+    def test_shaders_tab_constructs(self) -> None:
+        from src.ui.tabs.shaders_tab import ShadersTab
+
+        with patch.object(ShadersTab, "_refresh_installed", lambda self: None), patch.object(ShadersTab, "_load_version_choices", lambda self: None):
+            tab = ShadersTab()
+            self.assertIsNotNone(tab)
+            self.assertIsNotNone(tab._shader_ver)
+            tab.close()
+            tab.deleteLater()
+            self.app.processEvents()
+
+    def test_mods_tab_constructs(self) -> None:
+        from src.ui.tabs.mods_tab import ModsTab
+
+        with patch.object(ModsTab, "refresh_instances", lambda self: None):
+            tab = ModsTab()
+            self.assertIsNotNone(tab)
+            self.assertIsNotNone(tab._source_combo)
+            tab.close()
+            tab.deleteLater()
+            self.app.processEvents()
+
     def test_main_window_constructs(self) -> None:
         from src.ui.main_window import MainWindow
         from src.ui.tabs.home_tab import HomeTab
