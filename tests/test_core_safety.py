@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from src.core import instances as instances_core
 from src.core import modpack_archive
+from src.core import config as config_core
 from src.core.java_manager import required_java_for_mc
 from src.core.modrinth import ModrinthError, safe_download_path, verify_file_hash
 from src.core.validators import (
@@ -138,6 +139,29 @@ class AuthFlowTests(unittest.TestCase):
         with patch.object(auth_core.config, "get", side_effect=lambda key, default="": "" if key == "azure_client_id" else default):
             self.assertTrue(auth_core._uses_shared_client_id(auth_core._BUILTIN_CLIENT_ID))
 
+    def test_resolve_client_id_falls_back_from_invalid_override(self) -> None:
+        with patch.dict(auth_core.os.environ, {"GENOS_AZURE_CLIENT_ID": "not-a-client-id"}):
+            with patch.object(auth_core.config, "get", return_value=""):
+                self.assertEqual(auth_core._resolve_client_id(), auth_core._BUILTIN_CLIENT_ID)
+
+    def test_redirect_uri_is_derived_from_bound_server(self) -> None:
+        stop_event = auth_core.threading.Event()
+        with patch.object(
+            auth_core.config,
+            "get",
+            side_effect=lambda key, default="": {
+                "auth_redirect_host": "localhost",
+                "auth_redirect_path": "/callback",
+            }.get(key, default),
+        ):
+            server, _ = auth_core._create_callback_server("state", stop_event)
+            try:
+                redirect_uri = auth_core._redirect_uri_for_server(server)
+                self.assertTrue(redirect_uri.startswith("http://"))
+                self.assertIn(f":{server.server_address[1]}/callback", redirect_uri)
+            finally:
+                server.server_close()
+
     def test_device_code_request_validates_payload(self) -> None:
         class _Resp:
             ok = True
@@ -149,6 +173,22 @@ class AuthFlowTests(unittest.TestCase):
         with patch.object(auth_core._HTTP, "post", return_value=_Resp()):
             data = auth_core._request_device_code("client")
         self.assertEqual(data["user_code"], "ABCD-EFGH")
+
+
+class ConfigValidationTests(unittest.TestCase):
+    def test_validate_preserves_unknown_runtime_keys(self) -> None:
+        cfg = config_core.Config.__new__(config_core.Config)
+        data = {
+            "theme_mode": "dark",
+            "cloud_sync_enabled": True,
+            "account_last_used": {"player": "2026-05-26T00:00:00+00:00"},
+            "custom_runtime_key": {"enabled": True},
+        }
+        cleaned = config_core.Config._validate(cfg, data)
+        self.assertTrue(cleaned["cloud_sync_enabled"])
+        self.assertIn("custom_runtime_key", cleaned)
+        self.assertEqual(cleaned["custom_runtime_key"], {"enabled": True})
+        self.assertEqual(cleaned["account_last_used"]["player"], "2026-05-26T00:00:00+00:00")
 
 
 if __name__ == "__main__":
