@@ -888,7 +888,9 @@ class SettingsTab(QWidget):
                 if hasattr(window, "refresh_theme"):
                     window.refresh_theme()
             for widget in app.allWidgets():
-                widget.update()
+                # Some Qt classes expose overloaded update methods that can fail
+                # no-arg invocation via PySide; repaint is explicit and reliable.
+                widget.repaint()
 
     def _load_java_installs_async(self) -> None:
         thread = QThread(self)
