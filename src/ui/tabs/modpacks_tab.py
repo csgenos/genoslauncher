@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..components.animated_button import OutlineButton
 from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
@@ -42,7 +43,7 @@ from ...core.instances import create_modpack_instance
 from ...core.instances import set_selected_instance
 from ...core.instances import list_instances
 from ...core.modpack_discovery import recommend_modpacks
-from ...core.launcher import install_minecraft_base, install_loader
+from ...core.launcher import get_available_versions, install_minecraft_base, install_loader
 from ...core.modpack_archive import import_instance_archive
 from ...core.modpack_update import update_modpack_instance
 from ...core.validators import safe_path_segment
@@ -80,6 +81,23 @@ class SearchWorker(QObject):
                 )
                 self.results_ready.emit(hits, total)
         except (mr.ModrinthError, cf.CurseForgeError) as exc:
+            self.error.emit(str(exc))
+
+
+class VersionChoicesWorker(QObject):
+    done = Signal(list)
+    error = Signal(str)
+
+    def run(self) -> None:
+        try:
+            versions = get_available_versions(include_snapshots=False, include_old=False)
+            release_ids: list[str] = []
+            for item in versions:
+                vid = str(item.get("id", "")).strip()
+                if vid and vid not in release_ids:
+                    release_ids.append(vid)
+            self.done.emit(release_ids)
+        except Exception as exc:
             self.error.emit(str(exc))
 
 
@@ -506,6 +524,7 @@ class ModpacksTab(QWidget):
         self._build_ui()
         # Load initial results
         QTimer.singleShot(200, self._execute_search)
+        QTimer.singleShot(250, self._load_version_choices)
         QTimer.singleShot(400, self._load_discovery)
         if self._update_policy in {"notify", "auto-on-launch"}:
             QTimer.singleShot(900, self.run_startup_update_policy)
@@ -650,8 +669,9 @@ class ModpacksTab(QWidget):
             QComboBox:focus {{ border-color: {C["border_focus"]}; }}
             QComboBox::drop-down {{ border: none; }}
         """)
-        versions = ["Any version", "1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2"]
-        self._version_filter.addItems(versions)
+        self._version_filter.addItem("Any version")
+        self._version_filter.addItem("Loading versions...")
+        self._version_filter.setCurrentIndex(0)
         self._version_filter.currentTextChanged.connect(self._on_search_changed)
         search_row.addWidget(self._version_filter)
 
@@ -677,6 +697,43 @@ class ModpacksTab(QWidget):
 
         self._scroll.setWidget(self._results_widget)
         root.addWidget(self._scroll)
+
+    def _load_version_choices(self) -> None:
+        thread = QThread(self)
+        worker = VersionChoicesWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_version_choices_loaded)
+        worker.error.connect(self._on_version_choices_error)
+        worker.done.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_version_choices_loaded(self, versions: list[str]) -> None:
+        if not hasattr(self, "_version_filter"):
+            return
+        current = self._version_filter.currentText()
+        self._version_filter.blockSignals(True)
+        self._version_filter.clear()
+        self._version_filter.addItem("Any version")
+        for version_id in versions[:80]:
+            self._version_filter.addItem(version_id)
+        if current and self._version_filter.findText(current) >= 0:
+            self._version_filter.setCurrentText(current)
+        else:
+            self._version_filter.setCurrentIndex(0)
+        self._version_filter.blockSignals(False)
+
+    def _on_version_choices_error(self, _message: str) -> None:
+        # Keep the filter usable even if network/cache lookup fails.
+        fallback = ["1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2"]
+        self._on_version_choices_loaded(fallback)
 
     # ------------------------------------------------------------------
     # Discovery panel
@@ -769,7 +826,7 @@ class ModpacksTab(QWidget):
             return
         query = self._search_box.text().strip()
         ver_text = self._version_filter.currentText()
-        game_version = "" if ver_text.startswith("Any") else ver_text
+        game_version = "" if (ver_text.startswith("Any") or ver_text.startswith("Loading")) else ver_text
         source = self._source_combo.currentData() if hasattr(self, "_source_combo") else "modrinth"
 
         self._status_label.setText("Searching…")
@@ -891,7 +948,7 @@ class ModpacksTab(QWidget):
         # Fetch versions on background thread, then start install
         thread = QThread(self)
         ver_text = self._version_filter.currentText()
-        game_version = "" if ver_text.startswith("Any") else ver_text
+        game_version = "" if (ver_text.startswith("Any") or ver_text.startswith("Loading")) else ver_text
 
         class VersionFetcher(QObject):
             done = Signal(list)

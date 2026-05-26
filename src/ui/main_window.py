@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import sys
-import webbrowser
 import math
 
 from PySide6.QtCore import Qt, QRect, QTimer
@@ -21,7 +20,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
-    QPushButton,
     QSizeGrip,
     QStackedWidget,
     QVBoxLayout,
@@ -30,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from .styles import COLORS as C, get_stylesheet
 from .titlebar import TitleBar
-from .components.sidebar import Sidebar
+from .components.top_nav import TopNavBar
 from .components.animated_button import OutlineButton
 from .tabs.home_tab import HomeTab
 from .tabs.instances_tab import InstancesTab
@@ -41,11 +39,9 @@ from .tabs.settings_tab import SettingsTab
 from .tabs.accounts_tab import AccountsTab
 from .tabs.servers_tab import ServersTab
 from .login_dialog import LoginDialog
-from .qt_dispatch import run_on_ui_thread
 from ..core.auth import auth_manager
 from ..core.config import config
 from ..core.launcher import InstallWorker, LaunchWorker
-from ..core.updater import check_async
 
 _RESIZE_MARGIN = 6
 
@@ -59,7 +55,7 @@ def _asset(name: str) -> str:
 
 
 class ContentArea(QWidget):
-    """Right pane — stacked tabs on a light background."""
+    """Centered workbench surface for tab content."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -67,15 +63,49 @@ class ContentArea(QWidget):
         self.setStyleSheet(f"#ContentArea {{ background-color: {C['bg_secondary']}; }}")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(18, 16, 18, 18)
         layout.setSpacing(0)
 
-        self.stack = QStackedWidget(self)
+        stage_row = QHBoxLayout()
+        stage_row.setContentsMargins(0, 0, 0, 0)
+        stage_row.setSpacing(0)
+        stage_row.addStretch(1)
+
+        self._stage = QWidget(self)
+        self._stage.setObjectName("ContentStage")
+        self._stage.setMaximumWidth(1600)
+        self._stage.setStyleSheet(
+            f"""
+            #ContentStage {{
+                background: {C['bg_primary']};
+                border: 1px solid {C['border']};
+                border-radius: 12px;
+            }}
+            """
+        )
+        stage_layout = QVBoxLayout(self._stage)
+        stage_layout.setContentsMargins(0, 0, 0, 0)
+        stage_layout.setSpacing(0)
+
+        self.stack = QStackedWidget(self._stage)
         self.stack.setStyleSheet("background: transparent;")
-        layout.addWidget(self.stack)
+        stage_layout.addWidget(self.stack)
+
+        stage_row.addWidget(self._stage, 1)
+        stage_row.addStretch(1)
+        layout.addLayout(stage_row, 1)
 
     def refresh_theme(self) -> None:
         self.setStyleSheet(f"#ContentArea {{ background-color: {C['bg_secondary']}; }}")
+        self._stage.setStyleSheet(
+            f"""
+            #ContentStage {{
+                background: {C['bg_primary']};
+                border: 1px solid {C['border']};
+                border-radius: 12px;
+            }}
+            """
+        )
         self.update()
 
     def _draw_hex_fade(self, painter: QPainter) -> None:
@@ -138,7 +168,6 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._load_auth()
         QTimer.singleShot(1500, self._run_startup_modpack_update_policy)
-        QTimer.singleShot(3000, self._check_for_update)
 
     # ------------------------------------------------------------------
     # Window setup
@@ -177,23 +206,11 @@ class MainWindow(QMainWindow):
         self._title_bar = TitleBar(root)
         root_layout.addWidget(self._title_bar)
 
-        # Update notification bar (hidden until an update is found)
-        self._update_bar = self._build_update_bar()
-        self._update_bar.setVisible(False)
-        root_layout.addWidget(self._update_bar)
-
-        # Body: sidebar | content
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-
-        self._sidebar = Sidebar(root)
-        body.addWidget(self._sidebar)
+        self._top_nav = TopNavBar(root)
+        root_layout.addWidget(self._top_nav)
 
         self._content = ContentArea(root)
-        body.addWidget(self._content, 1)
-
-        root_layout.addLayout(body, 1)
+        root_layout.addWidget(self._content, 1)
 
         self._status_strip = self._build_status_strip()
         root_layout.addWidget(self._status_strip)
@@ -300,63 +317,14 @@ class MainWindow(QMainWindow):
                 self._status_movie.start()
         self._status_action.setVisible(action_visible)
 
-    def _build_update_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setFixedHeight(38)
-        bar.setStyleSheet(f"""
-            background: {C["accent_orange_soft"]};
-            border-bottom: 1px solid {C["border_focus"]};
-        """)
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 0, 12, 0)
-        layout.setSpacing(10)
-
-        self._update_label = QLabel()
-        self._update_label.setStyleSheet(f"font-size: 12px; color: {C['text_primary']}; font-weight: 600;")
-        layout.addWidget(self._update_label)
-
-        self._update_url = ""
-        dl_btn = QPushButton("Download")
-        dl_btn.setFixedSize(90, 26)
-        dl_btn.setCursor(Qt.PointingHandCursor)
-        dl_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {C["accent"]};
-                color: {C["text_inverse"]};
-                border: none;
-                border-radius: 5px;
-                font-size: 11px;
-                font-weight: 700;
-            }}
-            QPushButton:hover {{ background: #1F2937; }}
-        """)
-        dl_btn.clicked.connect(lambda _checked=False: webbrowser.open(self._update_url) if self._update_url else None)
-        layout.addWidget(dl_btn)
-
-        dismiss = QPushButton("x")
-        dismiss.setFixedSize(26, 26)
-        dismiss.setCursor(Qt.PointingHandCursor)
-        dismiss.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {C["text_secondary"]};
-                border: none;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ color: {C["text_primary"]}; }}
-        """)
-        dismiss.clicked.connect(lambda _checked=False: self._update_bar.setVisible(False))
-        layout.addWidget(dismiss)
-
-        return bar
-
     def refresh_theme(self) -> None:
         self.setStyleSheet(get_stylesheet())
         self._root.setStyleSheet(f"#RootWidget {{ background-color: {C['bg_primary']}; }}")
         self._content.refresh_theme()
         if hasattr(self._title_bar, "refresh_theme"):
             self._title_bar.refresh_theme()
-        self._sidebar.update()
+        if hasattr(self, "_top_nav"):
+            self._top_nav.refresh_theme()
         self._status_strip.setStyleSheet(f"""
             #StatusStrip {{
                 background: {C["bg_primary"]};
@@ -364,24 +332,7 @@ class MainWindow(QMainWindow):
             }}
         """)
         self._status_label.setStyleSheet(f"font-size: 12px; color: {C['text_secondary']};")
-        self._update_bar.setStyleSheet(f"""
-            background: {C["accent_orange_soft"]};
-            border-bottom: 1px solid {C["border_focus"]};
-        """)
         self.update()
-
-    def _check_for_update(self) -> None:
-        def _on_result(result):
-            if result:
-                run_on_ui_thread(lambda: self._show_update_bar(result))
-        check_async(_on_result)
-
-    def _show_update_bar(self, result: dict) -> None:
-        self._update_url = result.get("url", "")
-        self._update_label.setText(
-            f"Update available: GenosLauncher {result['version']}"
-        )
-        self._update_bar.setVisible(True)
 
     def _run_startup_modpack_update_policy(self) -> None:
         policy = str(config.get("modpack_update_policy", "manual")).strip().lower()
@@ -396,9 +347,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        self._sidebar.tab_changed.connect(self._switch_tab)
-        self._sidebar.login_requested.connect(self._open_login_dialog)
-        self._sidebar.logout_requested.connect(self._logout)
+        self._top_nav.tab_changed.connect(self._switch_tab)
+        self._top_nav.login_requested.connect(self._open_login_dialog)
+        self._top_nav.logout_requested.connect(self._logout)
         self._home_tab.launch_requested.connect(self._on_launch_requested)
         self._home_tab.install_requested.connect(self._on_install_requested)
         self._home_tab.view_all_requested.connect(lambda: self._switch_tab("instances"))
@@ -416,7 +367,7 @@ class MainWindow(QMainWindow):
     def _load_auth(self) -> None:
         """Restore saved session and refresh token silently."""
         if auth_manager.load_stored():
-            self._update_sidebar_account()
+            self._update_nav_account()
             auth_manager.refresh_async()
 
     def _open_login_dialog(self) -> None:
@@ -426,24 +377,22 @@ class MainWindow(QMainWindow):
 
     def _on_login_success(self, account: dict) -> None:
         config.update({"last_account": account.get("name", "")})
-        self._update_sidebar_account()
+        self._update_nav_account()
         if self._accounts_tab is not None:
             self._accounts_tab._refresh_state()
 
     def _logout(self) -> None:
         auth_manager.logout()
         config.update({"last_account": ""})
-        self._update_sidebar_account()
+        self._update_nav_account()
         if self._accounts_tab is not None:
             self._accounts_tab._refresh_state()
 
-    def _update_sidebar_account(self) -> None:
+    def _update_nav_account(self) -> None:
         if auth_manager.is_logged_in:
-            self._sidebar.account_widget.set_logged_in(
-                auth_manager.username, "Microsoft - Online"
-            )
+            self._top_nav.set_logged_in(auth_manager.username)
         else:
-            self._sidebar.account_widget.set_logged_out()
+            self._top_nav.set_logged_out()
 
     # ------------------------------------------------------------------
     # Tab switching (200ms fade-in)
@@ -470,7 +419,7 @@ class MainWindow(QMainWindow):
             return
 
         self._content.stack.setCurrentWidget(widget)
-        self._sidebar.set_active(key)
+        self._top_nav.set_active(key)
 
         widget.setVisible(True)
         widget.setGraphicsEffect(None)

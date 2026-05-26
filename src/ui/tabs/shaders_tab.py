@@ -35,6 +35,7 @@ from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT
 from ...core.config import APP_DIR, config
 from ...core.instances import create_custom_instance, list_instances, selected_instance_dir, set_selected_instance
+from ...core.launcher import get_available_versions
 from ...core import modrinth as mr
 
 
@@ -67,7 +68,24 @@ class ShaderSearchWorker(QObject):
 # Iris + Sodium install worker
 # ---------------------------------------------------------------------------
 
-_IRIS_VERSIONS = ["1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.4", "1.18.2"]
+_FALLBACK_VERSIONS = ["1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.4", "1.18.2"]
+
+
+class VersionChoicesWorker(QObject):
+    done = Signal(list)
+    error = Signal(str)
+
+    def run(self) -> None:
+        try:
+            versions = get_available_versions(include_snapshots=False, include_old=False)
+            release_ids: list[str] = []
+            for item in versions:
+                vid = str(item.get("id", "")).strip()
+                if vid and vid not in release_ids:
+                    release_ids.append(vid)
+            self.done.emit(release_ids)
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 class IrisInstallWorker(QObject):
@@ -490,6 +508,7 @@ class ShadersTab(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         QTimer.singleShot(300, self._refresh_installed)
+        QTimer.singleShot(350, self._load_version_choices)
 
     def _shaderpacks_dir(self) -> Path:
         return self._mc_dir / "shaderpacks"
@@ -598,8 +617,8 @@ class ShadersTab(QWidget):
 
         self._shader_ver = GComboBox()
         self._shader_ver.setFixedSize(130, 38)
-        for v in ["Any version", "1.21.4", "1.21.1", "1.20.1", "1.19.4", "1.18.2"]:
-            self._shader_ver.addItem(v)
+        self._shader_ver.addItem("Any version")
+        self._shader_ver.addItem("Loading versions...")
         self._shader_ver.currentTextChanged.connect(lambda _: self._search_timer.start(400))
         search_row.addWidget(self._shader_ver)
         cl.addLayout(search_row)
@@ -711,8 +730,9 @@ class ShadersTab(QWidget):
             }}
             QComboBox::drop-down {{ border: none; width: 18px; }}
         """)
-        for v in _IRIS_VERSIONS:
-            self._iris_version_combo.addItem(v)
+        self._iris_version_combo.addItem("1.21.4")
+        self._iris_version_combo.addItem("1.21.1")
+        self._iris_version_combo.addItem("1.20.6")
         current_ver = config.get("selected_version", "1.21.4") or "1.21.4"
         idx = self._iris_version_combo.findText(current_ver)
         if idx >= 0:
@@ -745,6 +765,57 @@ class ShadersTab(QWidget):
         layout.addLayout(right_col)
 
         return card
+
+    def _load_version_choices(self) -> None:
+        thread = QThread(self)
+        worker = VersionChoicesWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_version_choices_loaded)
+        worker.error.connect(self._on_version_choices_error)
+        worker.done.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        self._search_threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._search_threads.remove(thread) if thread in self._search_threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_version_choices_loaded(self, versions: list[str]) -> None:
+        releases = versions[:80] if versions else list(_FALLBACK_VERSIONS)
+
+        # Search filter
+        shader_current = self._shader_ver.currentText()
+        self._shader_ver.blockSignals(True)
+        self._shader_ver.clear()
+        self._shader_ver.addItem("Any version")
+        for version_id in releases:
+            self._shader_ver.addItem(version_id)
+        if shader_current and self._shader_ver.findText(shader_current) >= 0:
+            self._shader_ver.setCurrentText(shader_current)
+        else:
+            self._shader_ver.setCurrentIndex(0)
+        self._shader_ver.blockSignals(False)
+
+        # Iris installer target
+        iris_current = self._iris_version_combo.currentText()
+        self._iris_version_combo.blockSignals(True)
+        self._iris_version_combo.clear()
+        for version_id in releases:
+            self._iris_version_combo.addItem(version_id)
+        if iris_current and self._iris_version_combo.findText(iris_current) >= 0:
+            self._iris_version_combo.setCurrentText(iris_current)
+        else:
+            selected_version = str(config.get("selected_version", "")).strip()
+            idx = self._iris_version_combo.findText(selected_version)
+            self._iris_version_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._iris_version_combo.blockSignals(False)
+        self._reset_iris_btn()
+
+    def _on_version_choices_error(self, _message: str) -> None:
+        self._on_version_choices_loaded(_FALLBACK_VERSIONS)
 
     def _outline_btn_style(self) -> str:
         return f"""
@@ -844,6 +915,9 @@ class ShadersTab(QWidget):
 
     def _install_iris(self) -> None:
         mc_version = self._iris_version_combo.currentText()
+        if not mc_version or mc_version.startswith("Loading"):
+            self._shader_status.setText("Version list is still loading. Try again in a moment.")
+            return
         self._iris_btn.setText("Installing…")
         self._iris_btn.setEnabled(False)
         self._iris_version_combo.setEnabled(False)
@@ -902,7 +976,7 @@ class ShadersTab(QWidget):
     def _execute_shader_search(self) -> None:
         query = self._shader_search.text().strip() if hasattr(self, '_shader_search') else ""
         ver = self._shader_ver.currentText() if hasattr(self, '_shader_ver') else ""
-        game_version = "" if ver.startswith("Any") else ver
+        game_version = "" if (ver.startswith("Any") or ver.startswith("Loading")) else ver
 
         self._shader_status.setText("Searching…")
         self._search_generation += 1
@@ -975,7 +1049,7 @@ class ShadersTab(QWidget):
 
         thread = QThread(self)
         ver = self._shader_ver.currentText() if hasattr(self, "_shader_ver") else ""
-        game_version = "" if ver.startswith("Any") else ver
+        game_version = "" if (ver.startswith("Any") or ver.startswith("Loading")) else ver
 
         class VersionFetcher(QObject):
             done = Signal(list)
