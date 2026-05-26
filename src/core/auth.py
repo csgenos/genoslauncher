@@ -73,13 +73,35 @@ _GUID_CLIENT_ID_RE = _re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _LEGACY_CLIENT_ID_RE = _re.compile(r"^[0-9a-fA-F]{16}$")
+_DEPRECATED_CLIENT_IDS = {
+    # Legacy public-client identifier seen in older launcher builds/config.
+    # It is no longer reliable for current Microsoft auth flows.
+    "00000000402b5328",
+}
+_ALLOW_LEGACY_CLIENT_ID_ENV = "GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID"
+
+
+def _is_guid_client_id(client_id: str) -> bool:
+    return bool(_GUID_CLIENT_ID_RE.fullmatch(str(client_id or "").strip()))
+
+
+def _is_legacy_client_id(client_id: str) -> bool:
+    return bool(_LEGACY_CLIENT_ID_RE.fullmatch(str(client_id or "").strip()))
+
+
+def _is_deprecated_client_id(client_id: str) -> bool:
+    return str(client_id or "").strip().lower() in _DEPRECATED_CLIENT_IDS
+
+
+def _allow_legacy_client_ids() -> bool:
+    return os.environ.get(_ALLOW_LEGACY_CLIENT_ID_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_plausible_client_id(client_id: str) -> bool:
     value = str(client_id or "").strip()
     if not value:
         return False
-    return bool(_GUID_CLIENT_ID_RE.fullmatch(value) or _LEGACY_CLIENT_ID_RE.fullmatch(value))
+    return bool(_is_guid_client_id(value) or _is_legacy_client_id(value))
 
 
 def _resolve_client_id() -> str:
@@ -89,14 +111,26 @@ def _resolve_client_id() -> str:
               → user override stored in config (advanced users)
               → project built-in ID (normal end-user path)
     """
+    legacy_candidate = ""
     for candidate in (
         os.environ.get("GENOS_AZURE_CLIENT_ID", ""),
         config.get("azure_client_id", ""),
-        _BUILTIN_CLIENT_ID,
     ):
         client_id = str(candidate or "").strip()
-        if _is_plausible_client_id(client_id):
+        if not client_id or _is_deprecated_client_id(client_id):
+            continue
+        if _is_guid_client_id(client_id):
             return client_id
+        if not legacy_candidate and _is_legacy_client_id(client_id):
+            legacy_candidate = client_id
+
+    if legacy_candidate and _allow_legacy_client_ids():
+        return legacy_candidate
+
+    # Always prefer the built-in GUID client ID over legacy 16-char IDs.
+    if _is_guid_client_id(_BUILTIN_CLIENT_ID):
+        return _BUILTIN_CLIENT_ID
+
     return ""
 
 # ---------------------------------------------------------------------------
@@ -175,7 +209,8 @@ def _oauth_error_message(error: str, description: str = "") -> str:
         return (
             "Microsoft sign-in is not configured for this build.\n\n"
             "Set a valid Azure public client ID in Settings -> Microsoft Authentication "
-            "or set GENOS_AZURE_CLIENT_ID before launching GenosLauncher."
+            "or set GENOS_AZURE_CLIENT_ID before launching GenosLauncher.\n"
+            "If you previously used a legacy ID like 00000000402b5328, clear it and retry."
         )
     if err == "invalid_request" and "redirect" in desc.lower() and "uri" in desc.lower():
         return (

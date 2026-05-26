@@ -197,6 +197,23 @@ class AuthFlowTests(unittest.TestCase):
             with patch.object(auth_core.config, "get", return_value=""):
                 self.assertEqual(auth_core._resolve_client_id(), auth_core._BUILTIN_CLIENT_ID)
 
+    def test_resolve_client_id_ignores_legacy_config_override(self) -> None:
+        with patch.dict(auth_core.os.environ, {}, clear=True):
+            with patch.object(auth_core.config, "get", return_value="00000000402b5328"):
+                self.assertEqual(auth_core._resolve_client_id(), auth_core._BUILTIN_CLIENT_ID)
+
+    def test_resolve_client_id_allows_legacy_env_when_opted_in(self) -> None:
+        with patch.dict(
+            auth_core.os.environ,
+            {
+                "GENOS_AZURE_CLIENT_ID": "1234567890ABCDEF",
+                "GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID": "1",
+            },
+            clear=True,
+        ):
+            with patch.object(auth_core.config, "get", return_value=""):
+                self.assertEqual(auth_core._resolve_client_id(), "1234567890ABCDEF")
+
     def test_redirect_uri_is_derived_from_bound_server(self) -> None:
         stop_event = auth_core.threading.Event()
         with patch.object(

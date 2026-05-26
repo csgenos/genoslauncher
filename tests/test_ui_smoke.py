@@ -83,15 +83,50 @@ class UISmokeTests(unittest.TestCase):
             tab.deleteLater()
             self.app.processEvents()
 
+    def test_modpack_card_install_states(self) -> None:
+        from PySide6.QtWidgets import QPushButton
+        from src.ui.tabs.modpacks_tab import ModpackCard
+
+        project = {
+            "id": "sample",
+            "title": "Sample Pack",
+            "description": "Sample",
+            "author": "Tester",
+            "downloads": 1,
+            "categories": [],
+            "source": "modrinth",
+        }
+        card = ModpackCard(project)
+        button = card.findChild(QPushButton)
+        self.assertIsNotNone(button)
+
+        card.set_installing("Fetching...")
+        self.assertFalse(button.isEnabled())
+
+        card.set_ready()
+        self.assertTrue(button.isEnabled())
+        self.assertEqual(button.text(), "Install")
+
+        card.set_installed()
+        self.assertFalse(button.isEnabled())
+        self.assertEqual(button.text(), "Installed")
+
+        card.close()
+        card.deleteLater()
+        self.app.processEvents()
+
     def test_main_window_constructs(self) -> None:
         from src.ui.main_window import MainWindow
         from src.ui.tabs.home_tab import HomeTab
         from src.ui.tabs.instances_tab import InstancesTab
+        from src.ui.tabs.modpacks_tab import ModpacksTab
 
-        with patch.object(HomeTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(HomeTab, "_load_news", lambda self: None), patch.object(InstancesTab, "_load_versions", lambda self, *args, **kwargs: None):
+        with patch.object(HomeTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(HomeTab, "_load_news", lambda self: None), patch.object(InstancesTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None):
             win = MainWindow()
             self.assertIsNotNone(win)
             self.assertIsNotNone(win._tabs)
+            win._switch_tab("modpacks")
+            self.assertIs(win._content.stack.currentWidget(), win._modpacks_tab)
             win.close()
             win.deleteLater()
             self.app.processEvents()
