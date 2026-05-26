@@ -302,6 +302,7 @@ class ShaderCard(QFrame):
     def __init__(self, project: dict, parent=None) -> None:
         super().__init__(parent)
         self._project = project
+        self._install_btn: QPushButton | None = None
         self.setObjectName("ShaderCard")
         self.setStyleSheet(f"""
             #ShaderCard {{
@@ -354,6 +355,7 @@ class ShaderCard(QFrame):
         layout.addLayout(text_col, 1)
 
         install_btn = QPushButton("Install")
+        self._install_btn = install_btn
         install_btn.setFixedSize(74, 30)
         install_btn.setCursor(Qt.PointingHandCursor)
         install_btn.setStyleSheet(f"""
@@ -407,6 +409,24 @@ class ShaderCard(QFrame):
 
         self._badge_layout.addStretch()
         self._badge_row_widget.setVisible(True)
+
+    def set_installing(self, status: str = "Installing...") -> None:
+        if self._install_btn is None:
+            return
+        self._install_btn.setText(status[:12])
+        self._install_btn.setEnabled(False)
+
+    def set_ready(self) -> None:
+        if self._install_btn is None:
+            return
+        self._install_btn.setText("Install")
+        self._install_btn.setEnabled(True)
+
+    def set_installed(self) -> None:
+        if self._install_btn is None:
+            return
+        self._install_btn.setText("Installed")
+        self._install_btn.setEnabled(False)
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +525,7 @@ class ShadersTab(QWidget):
         self._search_generation = 0
         self._shader_cards: dict[str, ShaderCard] = {}
         self._compat_threads: list[QThread] = []
+        self._active_shader_installs: set[str] = set()
         self.setAcceptDrops(True)
         self._build_ui()
         QTimer.singleShot(300, self._refresh_installed)
@@ -1045,6 +1066,17 @@ class ShadersTab(QWidget):
         self._shader_status.setText(f"Error: {msg}")
 
     def _on_shader_install(self, project: dict) -> None:
+        project_id = str(project.get("id", "")).strip()
+        if not project_id:
+            self._shader_status.setText("Install failed: missing shader id.")
+            return
+        if project_id in self._active_shader_installs:
+            self._shader_status.setText("Install already in progress for this shader.")
+            return
+        self._active_shader_installs.add(project_id)
+        card = self._shader_cards.get(project_id)
+        if card is not None:
+            card.set_installing("Fetching...")
         self._shader_status.setText(f"Fetching versions for '{project['title']}'…")
 
         thread = QThread(self)
@@ -1066,11 +1098,11 @@ class ShadersTab(QWidget):
                     ))
                 except mr.ModrinthError as e: self.err.emit(str(e))
 
-        fetcher = VersionFetcher(project["id"], game_version)
+        fetcher = VersionFetcher(project_id, game_version)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
-        fetcher.done.connect(lambda versions: self._start_shader_download(project, versions))
-        fetcher.err.connect(lambda e: self._shader_status.setText(f"Error: {e}"))
+        fetcher.done.connect(lambda versions, pid=project_id: self._start_shader_download(project, versions, pid))
+        fetcher.err.connect(lambda e, pid=project_id: self._on_shader_version_fetch_error(pid, e))
         fetcher.done.connect(thread.quit)
         fetcher.err.connect(thread.quit)
         self._search_threads.append(thread)
@@ -1083,26 +1115,35 @@ class ShadersTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    def _start_shader_download(self, project: dict, versions: list[dict]) -> None:
+    def _start_shader_download(self, project: dict, versions: list[dict], project_id: str) -> None:
+        card = self._shader_cards.get(project_id)
         if not versions:
             self._shader_status.setText("No versions available.")
+            self._active_shader_installs.discard(project_id)
+            if card is not None:
+                card.set_ready()
             return
         version = versions[0]
         files = version.get("files", [])
         primary = next((f for f in files if f.get("primary")), files[0] if files else None)
         if not primary:
             self._shader_status.setText("No file found for this shader.")
+            self._active_shader_installs.discard(project_id)
+            if card is not None:
+                card.set_ready()
             return
 
         filename = mr.safe_filename(primary["filename"])
         dest = mr.safe_download_path(self._shaderpacks_dir(), filename)
+        if card is not None:
+            card.set_installing("Downloading")
         self._shader_status.setText(f"Downloading {primary['filename']}…")
 
         thread = QThread(self)
         worker = ShaderDownloadWorker(project, primary, dest)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(lambda ok, msg: self._on_shader_download_finished(ok, msg))
+        worker.finished.connect(lambda ok, msg, pid=project_id: self._on_shader_download_finished(ok, msg, pid))
         worker.finished.connect(thread.quit)
         self._search_threads.append(thread)
         self._workers.append(worker)
@@ -1112,10 +1153,24 @@ class ShadersTab(QWidget):
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
-    def _on_shader_download_finished(self, success: bool, message: str) -> None:
+    def _on_shader_download_finished(self, success: bool, message: str, project_id: str) -> None:
+        self._active_shader_installs.discard(project_id)
         self._shader_status.setText(message)
+        card = self._shader_cards.get(project_id)
+        if card is not None:
+            if success:
+                card.set_installed()
+            else:
+                card.set_ready()
         if success:
             self._refresh_installed()
+
+    def _on_shader_version_fetch_error(self, project_id: str, message: str) -> None:
+        self._active_shader_installs.discard(project_id)
+        self._shader_status.setText(f"Error: {message}")
+        card = self._shader_cards.get(project_id)
+        if card is not None:
+            card.set_ready()
 
     # ------------------------------------------------------------------
     # Open folder
