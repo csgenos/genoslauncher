@@ -47,7 +47,7 @@ jobs:
         run: python -c "import PySide6, cryptography, psutil; print('PySide6', PySide6.__version__)"
 
       - name: Audit dependencies for known vulnerabilities
-        run: pip-audit --disable-pip --no-deps -r requirements.lock
+        run: pip-audit --no-deps -r requirements.lock
 
       - name: Run source checks
         run: |
