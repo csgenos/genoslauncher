@@ -40,6 +40,16 @@ _JAVA_CACHE_TTL: float = 60.0
 # Version helpers
 # ---------------------------------------------------------------------------
 
+def _windows_no_window_kwargs() -> dict:
+    if platform.system() != "Windows":
+        return {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    kwargs: dict = {"startupinfo": startup}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
 def get_java_version(java_executable: str) -> Optional[str]:
     """Run `java -version` and return the version string or None."""
     try:
@@ -48,6 +58,7 @@ def get_java_version(java_executable: str) -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=3,
+            **_windows_no_window_kwargs(),
         )
         output = result.stderr or result.stdout
         for line in output.splitlines():
