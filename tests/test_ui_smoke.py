@@ -151,6 +151,43 @@ class UISmokeTests(unittest.TestCase):
                 widget.deleteLater()
             self.app.processEvents()
 
+    def test_modpacks_results_skip_missing_id_and_disable_curseforge_installs(self) -> None:
+        from src.ui.tabs.modpacks_tab import ModpacksTab
+
+        hits = [
+            {
+                "title": "Missing Id",
+                "description": "Bad entry",
+                "author": "Tester",
+                "downloads": 1,
+                "categories": [],
+            },
+            {
+                "id": 42,
+                "title": "CF Pack",
+                "description": "CurseForge source",
+                "author": "Tester",
+                "downloads": 1,
+                "categories": [],
+                "source": "curseforge",
+            },
+        ]
+        with patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None):
+            tab = ModpacksTab()
+            tab._on_results(tab._search_generation, hits, 2)
+            self.assertNotIn("", tab._current_cards)
+            self.assertIn("42", tab._current_cards)
+            self.assertEqual(tab._current_cards["42"]._install_btn.text(), "Unavailable")
+            self.assertFalse(tab._current_cards["42"]._install_btn.isEnabled())
+
+            tab._on_install_requested(hits[1])
+            self.assertIn("not supported", tab._status_label.text().lower())
+            self.assertNotIn("42", tab._active_installs)
+
+            tab.close()
+            tab.deleteLater()
+            self.app.processEvents()
+
     def test_shader_card_install_states(self) -> None:
         from PySide6.QtWidgets import QPushButton
         from src.ui.tabs.shaders_tab import ShaderCard

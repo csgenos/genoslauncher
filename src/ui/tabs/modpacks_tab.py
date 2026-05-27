@@ -82,6 +82,8 @@ class SearchWorker(QObject):
                 self.results_ready.emit(hits, total)
         except (mr.ModrinthError, cf.CurseForgeError) as exc:
             self.error.emit(str(exc))
+        except Exception as exc:
+            self.error.emit(f"Unexpected search error: {exc}")
 
 
 class VersionChoicesWorker(QObject):
@@ -132,6 +134,7 @@ class InstallWorker(QObject):
         self.finished.emit(True, msg)
 
     def _install(self) -> list[str]:
+        self.dest_dir.mkdir(parents=True, exist_ok=True)
         # 1. Find the primary file
         files = self.version.get("files", [])
         primary = next((f for f in files if f.get("primary")), files[0] if files else None)
@@ -802,15 +805,18 @@ class ModpacksTab(QWidget):
                 installed_project_ids.add(src)
 
         for project in projects:
+            project_id = str(project.get("id", "")).strip()
+            if not project_id:
+                continue
             card = ModpackCard(project)
             card.setFixedWidth(320)
             card.install_requested.connect(self._on_install_requested)
-            if str(project.get("id", "")) in installed_project_ids:
+            if project_id in installed_project_ids:
                 card.set_installed()
             self._disc_inner_layout.insertWidget(self._disc_inner_layout.count() - 1, card)
-            self._discovery_cards[str(project.get("id", ""))] = card
+            self._discovery_cards[project_id] = card
             if project.get("icon_url"):
-                self._load_icon_async(project["id"], project["icon_url"])
+                self._load_icon_async(project_id, project["icon_url"])
 
     def _on_discovery_error(self, msg: str) -> None:
         self._disc_status_lbl.setText(f"Could not load recommendations: {msg}")
@@ -890,18 +896,21 @@ class ModpacksTab(QWidget):
                 installed_project_ids.add(raw_source)
 
         for project in hits:
+            project_id = str(project.get("id", "")).strip()
+            if not project_id:
+                continue
             card = ModpackCard(project, self._results_widget)
             card.install_requested.connect(self._on_install_requested)
             if project.get("source") == "curseforge":
                 card.set_unavailable()
-            elif str(project["id"]) in installed_project_ids:
+            elif project_id in installed_project_ids:
                 card.set_installed()
             self._results_layout.insertWidget(self._results_layout.count() - 1, card)
-            self._current_cards[project["id"]] = card
+            self._current_cards[project_id] = card
 
             # Load icon async
             if project.get("icon_url"):
-                self._load_icon_async(project["id"], project["icon_url"])
+                self._load_icon_async(project_id, project["icon_url"])
 
     def _on_search_error(self, generation: int, msg: str) -> None:
         if generation != self._search_generation:
@@ -934,6 +943,7 @@ class ModpacksTab(QWidget):
         thread.start()
 
     def _on_icon_loaded(self, project_id: str, image: QImage) -> None:
+        project_id = str(project_id).strip()
         pixmap = QPixmap.fromImage(image)
         if project_id in self._current_cards:
             self._current_cards[project_id].set_icon(pixmap)
@@ -941,6 +951,7 @@ class ModpacksTab(QWidget):
             self._discovery_cards[project_id].set_icon(pixmap)
 
     def _set_project_install_state(self, project_id: str, state: str, status: str = "") -> None:
+        project_id = str(project_id).strip()
         for card_map in (self._current_cards, self._discovery_cards):
             card = card_map.get(project_id)
             if card is None:
@@ -963,7 +974,8 @@ class ModpacksTab(QWidget):
         if not project_id:
             self._status_label.setText("Install failed: missing project id.")
             return
-        if project.get("source") == "curseforge":
+        source_name = str(project.get("source", "modrinth")).strip().lower() or "modrinth"
+        if source_name != "modrinth":
             self._status_label.setText(
                 "CurseForge modpack installation is not supported yet. Use Modrinth modpacks for one-click installs."
             )
@@ -992,7 +1004,8 @@ class ModpacksTab(QWidget):
                         self.pid,
                         game_versions=[self.game_version] if self.game_version else None,
                     ))
-                except mr.ModrinthError as e: self.err.emit(str(e))
+                except Exception as e:
+                    self.err.emit(str(e))
 
         fetcher = VersionFetcher(project_id, game_version)
         fetcher.moveToThread(thread)
