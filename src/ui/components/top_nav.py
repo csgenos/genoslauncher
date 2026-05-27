@@ -52,7 +52,7 @@ class TopNavBar(QWidget):
         tabs_layout.setSpacing(6)
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
-        self._tab_group.idClicked.connect(self._on_group_clicked)
+        self._tab_group.buttonClicked.connect(self._on_group_button_clicked)
 
         for idx, (key, label) in enumerate(self.NAV_ITEMS):
             btn = QPushButton(label, self._tabs_frame)
@@ -170,7 +170,8 @@ class TopNavBar(QWidget):
         )
         self.update()
 
-    def _on_group_clicked(self, idx: int) -> None:
+    def _on_group_button_clicked(self, button: QPushButton) -> None:
+        idx = self._tab_group.id(button)
         if idx < 0 or idx >= len(self._button_order):
             return
         key = self._button_order[idx]
