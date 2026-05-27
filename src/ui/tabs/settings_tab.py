@@ -8,6 +8,7 @@ All settings auto-save to config.json via the config singleton.
 from __future__ import annotations
 
 import subprocess
+import os
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
@@ -696,6 +697,9 @@ class SettingsTab(QWidget):
         self._az_client_input.setText(config.get("azure_client_id", ""))
         self._az_client_input.setFixedHeight(38)
         self._az_client_input.textChanged.connect(lambda t: self._debounced_set("azure_client_id", t.strip()))
+        self._az_client_input.editingFinished.connect(
+            lambda: config.set("azure_client_id", self._az_client_input.text().strip())
+        )
         behav_layout.addWidget(self._az_client_input)
 
         # CurseForge API key
@@ -921,11 +925,19 @@ class SettingsTab(QWidget):
     def _test_java_path(self) -> None:
         path = self._java_input.text().strip() or "java"
         try:
+            popen_kwargs: dict = {}
+            if os.name == "nt":
+                startup = subprocess.STARTUPINFO()
+                startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                popen_kwargs["startupinfo"] = startup
+                if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                    popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             result = subprocess.run(
                 [path, "-version"],
                 capture_output=True,
                 text=True,
                 timeout=5,
+                **popen_kwargs,
             )
             output = (result.stderr or result.stdout or "").strip().splitlines()
             first_line = output[0] if output else "(no output)"

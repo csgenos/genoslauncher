@@ -234,6 +234,19 @@ def _oauth_error_message(error: str, description: str = "") -> str:
     return "Microsoft authentication failed."
 
 
+def _open_browser_or_raise(url: str) -> None:
+    """Open the system browser and raise AuthError if that fails."""
+    try:
+        opened = webbrowser.open(url)
+    except Exception as exc:
+        raise AuthError(f"Could not open your browser automatically: {exc}") from exc
+    if not opened:
+        raise AuthError(
+            "Could not open your browser automatically.\n\n"
+            "Please check your default browser settings and try again."
+        )
+
+
 def _format_loopback_host_for_uri(host: str) -> str:
     value = str(host or "").strip()
     if ":" in value and not value.startswith("["):
@@ -910,7 +923,7 @@ class AuthManager:
         redirect_uri = _redirect_uri_for_server(server)
         auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
 
-        webbrowser.open(auth_url)
+        _open_browser_or_raise(auth_url)
         on_browser_opened(auth_url)
 
         try:
@@ -950,7 +963,7 @@ class AuthManager:
             separator = "&" if "?" in verification_uri else "?"
             open_url = str(data.get("verification_uri_complete") or f"{verification_uri}{separator}otc={urllib.parse.quote(user_code)}")
             display_url = f"{open_url}#genos_device_code={urllib.parse.quote(user_code)}"
-            webbrowser.open(open_url)
+            _open_browser_or_raise(open_url)
             on_browser_opened(display_url)
             ms_tokens = _poll_device_code(
                 client_id,
@@ -1029,7 +1042,7 @@ class AuthManager:
             return
         redirect_uri = _redirect_uri_for_server(server)
         auth_url = _build_auth_url(client_id, redirect_uri, challenge, state)
-        webbrowser.open(auth_url)
+        _open_browser_or_raise(auth_url)
         on_browser_opened(auth_url)
         try:
             code      = _wait_for_callback(server, result, stop_event)
@@ -1061,7 +1074,7 @@ class AuthManager:
             separator = "&" if "?" in verification_uri else "?"
             open_url = str(data.get("verification_uri_complete") or f"{verification_uri}{separator}otc={urllib.parse.quote(user_code)}")
             display_url = f"{open_url}#genos_device_code={urllib.parse.quote(user_code)}"
-            webbrowser.open(open_url)
+            _open_browser_or_raise(open_url)
             on_browser_opened(display_url)
             ms_tokens = _poll_device_code(
                 client_id,

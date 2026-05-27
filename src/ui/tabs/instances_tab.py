@@ -178,6 +178,7 @@ class InstancesTab(QWidget):
         self._disk_labels: dict[str, QLabel] = {}
         self._modpack_update_threads: list[QThread] = []
         self._modpack_update_workers: list[_ModpackUpdateWorker] = []
+        self._open_menus: list[QMenu] = []
         self._build_ui()
         QTimer.singleShot(100, lambda: self._load_versions(force_refresh=False))
         self._version_refresh_timer = QTimer(self)
@@ -488,31 +489,43 @@ class InstancesTab(QWidget):
                 self._instances_layout.addWidget(row)
 
     def _show_instance_menu(self, instance: dict, button: QPushButton) -> None:
-        menu = GMenu(self)
-        menu.addAction("Edit", lambda: self._edit_instance(instance))
-        menu.addAction("Edit Metadata", lambda: self._edit_instance_metadata(instance))
-        menu.addAction("Validate", lambda: self._validate_instance(instance))
-        menu.addAction("Health Check / Optimize", lambda: self._open_health_dialog(instance))
-        menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
-        menu.addAction("Clone", lambda: self._clone_instance(instance))
-        menu.addAction("Repair", lambda: self._repair_instance(instance))
-        if instance.get("type") == "modpack":
-            menu.addAction("Update Modpack", lambda: self._update_modpack(instance))
-        menu.addAction("Export ZIP...", lambda: self._export_instance_zip(instance))
-        menu.addAction("Export MRPACK...", lambda: self._export_instance_mrpack(instance))
-        menu.addSeparator()
-        menu.addAction("View Crash Reports", lambda: self._view_crashes(instance))
-        menu.addAction("Screenshots", lambda: self._view_screenshots(instance))
-        menu.addAction("Backup Worlds", lambda: self._backup_worlds(instance))
-        menu.addSeparator()
-        menu.addAction("Remove", lambda: self._remove_instance(instance))
-        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        try:
+            menu = GMenu(self)
+            menu.addAction("Edit", lambda: self._edit_instance(instance))
+            menu.addAction("Edit Metadata", lambda: self._edit_instance_metadata(instance))
+            menu.addAction("Validate", lambda: self._validate_instance(instance))
+            menu.addAction("Health Check / Optimize", lambda: self._open_health_dialog(instance))
+            menu.addAction("Move to Group...", lambda: self._move_instance_group(instance))
+            menu.addAction("Clone", lambda: self._clone_instance(instance))
+            menu.addAction("Repair", lambda: self._repair_instance(instance))
+            if instance.get("type") == "modpack":
+                menu.addAction("Update Modpack", lambda: self._update_modpack(instance))
+            menu.addAction("Export ZIP...", lambda: self._export_instance_zip(instance))
+            menu.addAction("Export MRPACK...", lambda: self._export_instance_mrpack(instance))
+            menu.addSeparator()
+            menu.addAction("View Crash Reports", lambda: self._view_crashes(instance))
+            menu.addAction("Screenshots", lambda: self._view_screenshots(instance))
+            menu.addAction("Backup Worlds", lambda: self._backup_worlds(instance))
+            menu.addSeparator()
+            menu.addAction("Remove", lambda: self._remove_instance(instance))
+            self._open_menus.append(menu)
+            menu.aboutToHide.connect(lambda m=menu: self._open_menus.remove(m) if m in self._open_menus else None)
+            menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+        except Exception as exc:
+            log.exception("Failed to open instance action menu")
+            QMessageBox.warning(self, "Instance Actions", f"Could not open the instance menu:\n{exc}")
 
     def _import_menu(self) -> None:
-        menu = GMenu(self)
-        menu.addAction("Import Prism/MultiMC Folder...", self._import_instances)
-        menu.addAction("Import ZIP/MRPACK Archive...", self._import_archive)
-        menu.exec(QCursor.pos())
+        try:
+            menu = GMenu(self)
+            menu.addAction("Import Prism/MultiMC Folder...", self._import_instances)
+            menu.addAction("Import ZIP/MRPACK Archive...", self._import_archive)
+            self._open_menus.append(menu)
+            menu.aboutToHide.connect(lambda m=menu: self._open_menus.remove(m) if m in self._open_menus else None)
+            menu.popup(QCursor.pos())
+        except Exception as exc:
+            log.exception("Failed to open instance import menu")
+            QMessageBox.warning(self, "Import", f"Could not open import options:\n{exc}")
 
     def _on_instance_cb_toggled(self, instance_id: str, checked: bool) -> None:
         if checked:
