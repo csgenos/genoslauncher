@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import shutil
 import threading
@@ -45,6 +46,17 @@ LOGS_DIR = APP_DIR / "logs"
 # Keys that must never be persisted to config.json.
 _SENSITIVE_KEYS: frozenset[str] = frozenset({"access_token", "refresh_token"})
 _SECRET_CONFIG_KEYS: frozenset[str] = frozenset({"curseforge_api_key"})
+_AZURE_GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_AZURE_LEGACY_RE = re.compile(r"^[0-9a-fA-F]{16}$")
+_BLOCKED_AZURE_CLIENT_IDS: frozenset[str] = frozenset(
+    {
+        # Microsoft first-party Visual Studio app (blocked for launcher sign-in use).
+        "04f0c124-f2bc-4f59-8241-bf6df9866bbd",
+        # Legacy Minecraft launcher id; unreliable for current OAuth v2 flows.
+        "00000000402b5328",
+    }
+)
+_ALLOW_LEGACY_CLIENT_IDS_ENV = "GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "version": __version__,
@@ -303,6 +315,23 @@ class Config:
             if flow not in {"device_code", "off"}:
                 return "off"
             return flow
+        if key == "azure_client_id":
+            value = str(val or "").strip()
+            if not value:
+                return ""
+            if value.lower() in _BLOCKED_AZURE_CLIENT_IDS:
+                return ""
+            if _AZURE_GUID_RE.fullmatch(value):
+                return value.lower()
+            if _AZURE_LEGACY_RE.fullmatch(value):
+                allow_legacy = os.environ.get(_ALLOW_LEGACY_CLIENT_IDS_ENV, "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                return value if allow_legacy else ""
+            return ""
         if key == "account_last_used":
             if not isinstance(val, dict):
                 return {}

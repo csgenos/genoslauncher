@@ -189,8 +189,8 @@ class AuthFlowTests(unittest.TestCase):
         self.assertIn("code_challenge=challenge", url)
 
     def test_shared_client_uses_device_code_path(self) -> None:
-        with patch.object(auth_core.config, "get", side_effect=lambda key, default="": "" if key == "azure_client_id" else default):
-            self.assertTrue(auth_core._uses_shared_client_id(auth_core._BUILTIN_CLIENT_ID))
+        with patch.object(auth_core, "_BUILTIN_CLIENT_ID", "11111111-2222-3333-4444-555555555555"):
+            self.assertTrue(auth_core._uses_shared_client_id("11111111-2222-3333-4444-555555555555"))
 
     def test_resolve_client_id_falls_back_from_invalid_override(self) -> None:
         with patch.dict(auth_core.os.environ, {"GENOS_AZURE_CLIENT_ID": "not-a-client-id"}):
@@ -200,6 +200,11 @@ class AuthFlowTests(unittest.TestCase):
     def test_resolve_client_id_ignores_legacy_config_override(self) -> None:
         with patch.dict(auth_core.os.environ, {}, clear=True):
             with patch.object(auth_core.config, "get", return_value="00000000402b5328"):
+                self.assertEqual(auth_core._resolve_client_id(), auth_core._BUILTIN_CLIENT_ID)
+
+    def test_resolve_client_id_ignores_blocked_first_party_override(self) -> None:
+        with patch.dict(auth_core.os.environ, {}, clear=True):
+            with patch.object(auth_core.config, "get", return_value="04f0c124-f2bc-4f59-8241-bf6df9866bbd"):
                 self.assertEqual(auth_core._resolve_client_id(), auth_core._BUILTIN_CLIENT_ID)
 
     def test_resolve_client_id_allows_legacy_env_when_opted_in(self) -> None:
@@ -282,6 +287,11 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertIn("custom_runtime_key", cleaned)
         self.assertEqual(cleaned["custom_runtime_key"], {"enabled": True})
         self.assertEqual(cleaned["account_last_used"]["player"], "2026-05-26T00:00:00+00:00")
+
+    def test_validate_azure_client_id_rejects_blocked_ids(self) -> None:
+        cfg = config_core.Config.__new__(config_core.Config)
+        self.assertEqual(config_core.Config._validate_value(cfg, "azure_client_id", "04f0c124-f2bc-4f59-8241-bf6df9866bbd"), "")
+        self.assertEqual(config_core.Config._validate_value(cfg, "azure_client_id", "00000000402b5328"), "")
 
 
 if __name__ == "__main__":

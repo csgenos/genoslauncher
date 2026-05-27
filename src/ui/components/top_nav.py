@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from ..styles import COLORS as C
 
@@ -31,6 +31,7 @@ class TopNavBar(QWidget):
         self._active_key = "home"
         self._logged_in = False
         self._buttons: dict[str, QPushButton] = {}
+        self._button_order: list[str] = []
         self._build_ui()
         self.refresh_theme()
         self.set_active(self._active_key, emit=False)
@@ -49,15 +50,19 @@ class TopNavBar(QWidget):
         tabs_layout = QHBoxLayout(self._tabs_frame)
         tabs_layout.setContentsMargins(8, 6, 8, 6)
         tabs_layout.setSpacing(6)
+        self._tab_group = QButtonGroup(self)
+        self._tab_group.setExclusive(True)
+        self._tab_group.idClicked.connect(self._on_group_clicked)
 
-        for key, label in self.NAV_ITEMS:
+        for idx, (key, label) in enumerate(self.NAV_ITEMS):
             btn = QPushButton(label, self._tabs_frame)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setCheckable(True)
             btn.setFixedHeight(32)
             btn.setMinimumWidth(86)
-            btn.clicked.connect(lambda _checked=False, k=key: self._on_tab_clicked(k))
             self._buttons[key] = btn
+            self._button_order.append(key)
+            self._tab_group.addButton(btn, idx)
             tabs_layout.addWidget(btn)
 
         outer.addWidget(self._tabs_frame, 0, Qt.AlignCenter)
@@ -165,7 +170,10 @@ class TopNavBar(QWidget):
         )
         self.update()
 
-    def _on_tab_clicked(self, key: str) -> None:
+    def _on_group_clicked(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._button_order):
+            return
+        key = self._button_order[idx]
         self.set_active(key, emit=True)
 
     def _on_auth_clicked(self) -> None:

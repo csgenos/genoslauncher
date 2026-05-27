@@ -97,8 +97,10 @@ SHA256 checksums are written to `SHA256SUMS.txt` and published alongside each re
 
 ## Notes
 
-- Microsoft sign-in and CurseForge browsing work out of the box — no configuration needed.
+- CurseForge browsing works out of the box.
+- Microsoft sign-in requires a valid Azure public client ID (set in Settings → Microsoft Authentication or `GENOS_AZURE_CLIENT_ID`).
 - Microsoft auth now ignores deprecated legacy client ID overrides by default (including `00000000402b5328`) to avoid `unauthorized_client` login failures.
+- Microsoft auth also blocks known first-party IDs (for example `04f0c124-f2bc-4f59-8241-bf6df9866bbd`) that cause consent failures in custom launchers.
 - Advanced users can still allow legacy 16-character client IDs with `GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID=1`.
 - Microsoft sign-in now prefers PKCE browser callback flow by default. Device-code flow remains available for custom client IDs when explicitly enabled.
 - Cloud Sync requires no third-party account; any writable directory works.

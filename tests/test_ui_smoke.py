@@ -202,18 +202,30 @@ class UISmokeTests(unittest.TestCase):
         from src.ui.main_window import MainWindow
         from src.ui.tabs.home_tab import HomeTab
         from src.ui.tabs.instances_tab import InstancesTab
+        from src.ui.tabs.mods_tab import ModsTab
         from src.ui.tabs.modpacks_tab import ModpacksTab
+        from src.ui.tabs.shaders_tab import ShadersTab
+        from src.ui.tabs.accounts_tab import AccountsTab
+        from src.ui.tabs.settings_tab import SettingsTab
 
-        with patch.object(HomeTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(HomeTab, "_load_news", lambda self: None), patch.object(InstancesTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None):
+        with patch.object(HomeTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(HomeTab, "_load_news", lambda self: None), patch.object(InstancesTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(ModsTab, "refresh_instances", lambda self: None), patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None), patch.object(ShadersTab, "_refresh_installed", lambda self: None), patch.object(ShadersTab, "_load_version_choices", lambda self: None), patch.object(AccountsTab, "_refresh_state", lambda self: None), patch.object(SettingsTab, "_load_java_installs_async", lambda self: None):
             win = MainWindow()
             self.assertIsNotNone(win)
             self.assertIsNotNone(win._tabs)
-            win._top_nav._buttons["instances"].click()
-            self.assertIs(win._content.stack.currentWidget(), win._instances_tab)
-            win._switch_tab("modpacks")
-            self.assertIs(win._content.stack.currentWidget(), win._modpacks_tab)
-            win._top_nav._buttons["home"].click()
-            self.assertIs(win._content.stack.currentWidget(), win._home_tab)
+            expected_types = {
+                "home": "HomeTab",
+                "instances": "InstancesTab",
+                "mods": "ModsTab",
+                "modpacks": "ModpacksTab",
+                "shaders": "ShadersTab",
+                "servers": "ServersTab",
+                "accounts": "AccountsTab",
+                "settings": "SettingsTab",
+            }
+            for key in ("instances", "mods", "modpacks", "shaders", "servers", "accounts", "settings", "home"):
+                win._top_nav._buttons[key].click()
+                current = win._content.stack.currentWidget()
+                self.assertEqual(type(current).__name__, expected_types[key])
             win.close()
             win.deleteLater()
             self.app.processEvents()

@@ -65,15 +65,16 @@ from .secure_store import atomic_write_bytes, secure_delete as _secure_delete_fi
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# First-party Microsoft public client ID with consumer support.
-# Replace via GENOS_AZURE_CLIENT_ID env var or config override if you run
-# your own app registration.
-_BUILTIN_CLIENT_ID = "04f0c124-f2bc-4f59-8241-bf6df9866bbd"
+# Optional built-in public client ID.
+# Leave empty by default; distributors can inject their own Azure app ID.
+_BUILTIN_CLIENT_ID = ""
 _GUID_CLIENT_ID_RE = _re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _LEGACY_CLIENT_ID_RE = _re.compile(r"^[0-9a-fA-F]{16}$")
 _DEPRECATED_CLIENT_IDS = {
+    # Microsoft first-party Visual Studio client ID (blocked for this usage).
+    "04f0c124-f2bc-4f59-8241-bf6df9866bbd",
     # Legacy public-client identifier seen in older launcher builds/config.
     # It is no longer reliable for current Microsoft auth flows.
     "00000000402b5328",
@@ -211,7 +212,8 @@ def _oauth_error_message(error: str, description: str = "") -> str:
             "Microsoft sign-in is not configured for this build.\n\n"
             "Set a valid Azure public client ID in Settings -> Microsoft Authentication "
             "or set GENOS_AZURE_CLIENT_ID before launching GenosLauncher.\n"
-            "If you previously used a legacy ID like 00000000402b5328, clear it and retry."
+            "Do not use first-party/legacy IDs such as 04f0c124-f2bc-4f59-8241-bf6df9866bbd "
+            "or 00000000402b5328."
         )
     if err == "invalid_request" and "redirect" in lower_desc and "uri" in lower_desc:
         return (
@@ -222,8 +224,8 @@ def _oauth_error_message(error: str, description: str = "") -> str:
     if err == "invalid_request" and "first party application" in lower_desc:
         return (
             "Microsoft blocked this sign-in flow for the current client ID.\n\n"
-            "Use PKCE (browser callback) with your own Azure public client ID, or switch "
-            "off device-code fallback in GenosLauncher settings."
+            "Use your own Azure public client ID in Settings -> Microsoft Authentication. "
+            "Microsoft first-party IDs cannot be used here."
         )
     if desc:
         return desc
@@ -245,9 +247,7 @@ def _redirect_uri_for_server(server: http.server.HTTPServer) -> str:
 
 
 def _uses_shared_client_id(client_id: str) -> bool:
-    return client_id == _BUILTIN_CLIENT_ID and not (
-        os.environ.get("GENOS_AZURE_CLIENT_ID", "") or config.get("azure_client_id", "")
-    )
+    return bool(_BUILTIN_CLIENT_ID) and client_id == _BUILTIN_CLIENT_ID
 
 
 def _device_code_enabled() -> bool:
@@ -257,6 +257,8 @@ def _device_code_enabled() -> bool:
 def _should_use_device_code_for_client(client_id: str) -> bool:
     # Shared/built-in client IDs frequently fail device-code consent checks.
     # Prefer PKCE for them unless an explicit non-shared client ID is configured.
+    if not str(client_id or "").strip():
+        return False
     return _device_code_enabled() and not _uses_shared_client_id(client_id)
 
 
