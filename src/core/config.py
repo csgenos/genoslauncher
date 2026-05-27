@@ -76,7 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "azure_client_id": "",
     "auth_redirect_host": "127.0.0.1",
     "auth_redirect_path": "/callback",
-    "auth_fallback_flow": "device_code",
+    "auth_fallback_flow": "off",
     "servers": [],
     "ms_usernames": [],
     "active_ms_username": "",
@@ -301,7 +301,7 @@ class Config:
         if key == "auth_fallback_flow":
             flow = str(val or "").strip().lower()
             if flow not in {"device_code", "off"}:
-                return "device_code"
+                return "off"
             return flow
         if key == "account_last_used":
             if not isinstance(val, dict):

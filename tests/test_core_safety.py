@@ -244,6 +244,29 @@ class AuthFlowTests(unittest.TestCase):
             data = auth_core._request_device_code("client")
         self.assertEqual(data["user_code"], "ABCD-EFGH")
 
+    def test_shared_client_prefers_pkce_even_when_device_code_enabled(self) -> None:
+        with patch.object(
+            auth_core.config,
+            "get",
+            side_effect=lambda key, default="": "device_code" if key == "auth_fallback_flow" else default,
+        ):
+            self.assertFalse(auth_core._should_use_device_code_for_client(auth_core._BUILTIN_CLIENT_ID))
+
+    def test_custom_client_can_use_device_code_when_enabled(self) -> None:
+        with patch.object(
+            auth_core.config,
+            "get",
+            side_effect=lambda key, default="": "device_code" if key == "auth_fallback_flow" else default,
+        ):
+            self.assertTrue(auth_core._should_use_device_code_for_client("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+
+    def test_oauth_error_message_handles_first_party_consent_block(self) -> None:
+        message = auth_core._oauth_error_message(
+            "invalid_request",
+            "The application is a first party application and users are not permitted to consent.",
+        )
+        self.assertIn("blocked this sign-in flow", message)
+
 
 class ConfigValidationTests(unittest.TestCase):
     def test_validate_preserves_unknown_runtime_keys(self) -> None:

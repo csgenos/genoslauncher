@@ -138,6 +138,13 @@ HIDDEN_IMPORTS = [
     "charset_normalizer",
     "certifi",
     "idna",
+    "pkg_resources",
+    "setuptools",
+    "backports",
+    "backports.tarfile",
+    "jaraco.context",
+    "setuptools._vendor.jaraco.context",
+    "setuptools._vendor.jaraco.text",
 ]
 
 # ---------------------------------------------------------------------------

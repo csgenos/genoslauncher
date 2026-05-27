@@ -54,10 +54,9 @@ class TopNavBar(QWidget):
             btn = QPushButton(label, self._tabs_frame)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setCheckable(True)
-            btn.setAutoExclusive(True)
             btn.setFixedHeight(32)
             btn.setMinimumWidth(86)
-            btn.clicked.connect(lambda checked=False, k=key: self._on_tab_clicked(k, checked))
+            btn.clicked.connect(lambda _checked=False, k=key: self._on_tab_clicked(k))
             self._buttons[key] = btn
             tabs_layout.addWidget(btn)
 
@@ -166,13 +165,8 @@ class TopNavBar(QWidget):
         )
         self.update()
 
-    def _on_tab_clicked(self, key: str, checked: bool) -> None:
-        if not checked:
-            return
-        if key == self._active_key:
-            return
-        self._active_key = key
-        self.tab_changed.emit(key)
+    def _on_tab_clicked(self, key: str) -> None:
+        self.set_active(key, emit=True)
 
     def _on_auth_clicked(self) -> None:
         if self._logged_in:
@@ -185,7 +179,10 @@ class TopNavBar(QWidget):
             return
         old = self._active_key
         self._active_key = key
-        self._buttons[key].setChecked(True)
+        for item_key, button in self._buttons.items():
+            button.blockSignals(True)
+            button.setChecked(item_key == key)
+            button.blockSignals(False)
         if emit and old != key:
             self.tab_changed.emit(key)
 

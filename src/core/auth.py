@@ -205,6 +205,7 @@ def _redirect_host() -> str:
 def _oauth_error_message(error: str, description: str = "") -> str:
     err = str(error or "").strip().lower()
     desc = str(description or "").strip()
+    lower_desc = desc.lower()
     if err == "unauthorized_client":
         return (
             "Microsoft sign-in is not configured for this build.\n\n"
@@ -212,11 +213,17 @@ def _oauth_error_message(error: str, description: str = "") -> str:
             "or set GENOS_AZURE_CLIENT_ID before launching GenosLauncher.\n"
             "If you previously used a legacy ID like 00000000402b5328, clear it and retry."
         )
-    if err == "invalid_request" and "redirect" in desc.lower() and "uri" in desc.lower():
+    if err == "invalid_request" and "redirect" in lower_desc and "uri" in lower_desc:
         return (
             "Microsoft rejected the redirect URI for sign-in.\n\n"
             "Make sure your Azure app registration includes a loopback redirect URI "
             "(for example http://localhost) and try again."
+        )
+    if err == "invalid_request" and "first party application" in lower_desc:
+        return (
+            "Microsoft blocked this sign-in flow for the current client ID.\n\n"
+            "Use PKCE (browser callback) with your own Azure public client ID, or switch "
+            "off device-code fallback in GenosLauncher settings."
         )
     if desc:
         return desc
@@ -241,6 +248,16 @@ def _uses_shared_client_id(client_id: str) -> bool:
     return client_id == _BUILTIN_CLIENT_ID and not (
         os.environ.get("GENOS_AZURE_CLIENT_ID", "") or config.get("azure_client_id", "")
     )
+
+
+def _device_code_enabled() -> bool:
+    return str(config.get("auth_fallback_flow", "off")).strip().lower() == "device_code"
+
+
+def _should_use_device_code_for_client(client_id: str) -> bool:
+    # Shared/built-in client IDs frequently fail device-code consent checks.
+    # Prefer PKCE for them unless an explicit non-shared client ID is configured.
+    return _device_code_enabled() and not _uses_shared_client_id(client_id)
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +877,7 @@ class AuthManager:
         with self._lock:
             self._generation += 1
             generation = self._generation
-        target = self._login_thread_device_code if _uses_shared_client_id(client_id) and config.get("auth_fallback_flow", "device_code") != "off" else self._login_thread_pkce
+        target = self._login_thread_device_code if _should_use_device_code_for_client(client_id) else self._login_thread_pkce
         threading.Thread(
             target=target,
             args=(client_id, generation, on_browser_opened, on_success, on_error),
@@ -986,7 +1003,7 @@ class AuthManager:
             )
             return
         self._add_cancel_event.clear()
-        target = self._add_account_thread_device_code if _uses_shared_client_id(client_id) and config.get("auth_fallback_flow", "device_code") != "off" else self._add_account_thread
+        target = self._add_account_thread_device_code if _should_use_device_code_for_client(client_id) else self._add_account_thread
         threading.Thread(
             target=target,
             args=(client_id, on_browser_opened, on_success, on_error, self._add_cancel_event),

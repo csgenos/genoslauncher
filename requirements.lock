@@ -1,3 +1,7 @@
+backports.tarfile==1.2.0
+    # via
+    #   -r requirements.txt
+    #   jaraco-context
 certifi==2026.5.20
     # via requests
 cffi==2.0.0
@@ -14,6 +18,8 @@ importlib-metadata==9.0.0
     # via keyring
 jaraco-classes==3.4.0
     # via keyring
+jaraco-context==6.1.2
+    # via backports-tarfile
 jeepney==0.9.0
     # via
     #   keyring

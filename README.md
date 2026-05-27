@@ -100,7 +100,9 @@ SHA256 checksums are written to `SHA256SUMS.txt` and published alongside each re
 - Microsoft sign-in and CurseForge browsing work out of the box — no configuration needed.
 - Microsoft auth now ignores deprecated legacy client ID overrides by default (including `00000000402b5328`) to avoid `unauthorized_client` login failures.
 - Advanced users can still allow legacy 16-character client IDs with `GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID=1`.
+- Microsoft sign-in now prefers PKCE browser callback flow by default. Device-code flow remains available for custom client IDs when explicitly enabled.
 - Cloud Sync requires no third-party account; any writable directory works.
+- Linux package builds include `backports.tarfile` so Flatpak runtime startup does not fail on missing `backports` module imports.
 - macOS builds are currently disabled.
 
 ## Windows SmartScreen
