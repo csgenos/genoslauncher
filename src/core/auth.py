@@ -65,15 +65,16 @@ from .secure_store import atomic_write_bytes, secure_delete as _secure_delete_fi
 # Publisher configuration
 # ---------------------------------------------------------------------------
 
-# First-party Microsoft public client ID with consumer support.
-# Replace via GENOS_AZURE_CLIENT_ID env var or config override if you run
-# your own app registration.
-_BUILTIN_CLIENT_ID = "04f0c124-f2bc-4f59-8241-bf6df9866bbd"
+# Optional built-in public client ID.
+# Leave empty by default; distributors can inject their own Azure app ID.
+_BUILTIN_CLIENT_ID = ""
 _GUID_CLIENT_ID_RE = _re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _LEGACY_CLIENT_ID_RE = _re.compile(r"^[0-9a-fA-F]{16}$")
 _DEPRECATED_CLIENT_IDS = {
+    # Microsoft first-party Visual Studio client ID (blocked for this usage).
+    "04f0c124-f2bc-4f59-8241-bf6df9866bbd",
     # Legacy public-client identifier seen in older launcher builds/config.
     # It is no longer reliable for current Microsoft auth flows.
     "00000000402b5328",
@@ -205,18 +206,26 @@ def _redirect_host() -> str:
 def _oauth_error_message(error: str, description: str = "") -> str:
     err = str(error or "").strip().lower()
     desc = str(description or "").strip()
+    lower_desc = desc.lower()
     if err == "unauthorized_client":
         return (
             "Microsoft sign-in is not configured for this build.\n\n"
             "Set a valid Azure public client ID in Settings -> Microsoft Authentication "
             "or set GENOS_AZURE_CLIENT_ID before launching GenosLauncher.\n"
-            "If you previously used a legacy ID like 00000000402b5328, clear it and retry."
+            "Do not use first-party/legacy IDs such as 04f0c124-f2bc-4f59-8241-bf6df9866bbd "
+            "or 00000000402b5328."
         )
-    if err == "invalid_request" and "redirect" in desc.lower() and "uri" in desc.lower():
+    if err == "invalid_request" and "redirect" in lower_desc and "uri" in lower_desc:
         return (
             "Microsoft rejected the redirect URI for sign-in.\n\n"
             "Make sure your Azure app registration includes a loopback redirect URI "
             "(for example http://localhost) and try again."
+        )
+    if err == "invalid_request" and "first party application" in lower_desc:
+        return (
+            "Microsoft blocked this sign-in flow for the current client ID.\n\n"
+            "Use your own Azure public client ID in Settings -> Microsoft Authentication. "
+            "Microsoft first-party IDs cannot be used here."
         )
     if desc:
         return desc
@@ -238,9 +247,19 @@ def _redirect_uri_for_server(server: http.server.HTTPServer) -> str:
 
 
 def _uses_shared_client_id(client_id: str) -> bool:
-    return client_id == _BUILTIN_CLIENT_ID and not (
-        os.environ.get("GENOS_AZURE_CLIENT_ID", "") or config.get("azure_client_id", "")
-    )
+    return bool(_BUILTIN_CLIENT_ID) and client_id == _BUILTIN_CLIENT_ID
+
+
+def _device_code_enabled() -> bool:
+    return str(config.get("auth_fallback_flow", "off")).strip().lower() == "device_code"
+
+
+def _should_use_device_code_for_client(client_id: str) -> bool:
+    # Shared/built-in client IDs frequently fail device-code consent checks.
+    # Prefer PKCE for them unless an explicit non-shared client ID is configured.
+    if not str(client_id or "").strip():
+        return False
+    return _device_code_enabled() and not _uses_shared_client_id(client_id)
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +879,7 @@ class AuthManager:
         with self._lock:
             self._generation += 1
             generation = self._generation
-        target = self._login_thread_device_code if _uses_shared_client_id(client_id) and config.get("auth_fallback_flow", "device_code") != "off" else self._login_thread_pkce
+        target = self._login_thread_device_code if _should_use_device_code_for_client(client_id) else self._login_thread_pkce
         threading.Thread(
             target=target,
             args=(client_id, generation, on_browser_opened, on_success, on_error),
@@ -986,7 +1005,7 @@ class AuthManager:
             )
             return
         self._add_cancel_event.clear()
-        target = self._add_account_thread_device_code if _uses_shared_client_id(client_id) and config.get("auth_fallback_flow", "device_code") != "off" else self._add_account_thread
+        target = self._add_account_thread_device_code if _should_use_device_code_for_client(client_id) else self._add_account_thread
         threading.Thread(
             target=target,
             args=(client_id, on_browser_opened, on_success, on_error, self._add_cancel_event),

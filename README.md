@@ -14,6 +14,15 @@ Open-source Minecraft launcher built with Python + PySide6.
 
 GenosLauncher is a full-featured Minecraft launcher designed to replace tools like Prism — including a one-click migration wizard to import from it. Sign in with Microsoft or play offline, manage isolated instances, browse mods and modpacks, and get back into the game fast. The "Continue" chip on the home screen resumes your last session in one click.
 
+## UI and UX
+
+GenosLauncher now uses a dedicated app-style shell with a centered top navigation, compact account controls, and a cleaner content stage so it feels like a desktop launcher instead of a website-style layout.
+
+Install actions across major tabs were hardened for reliability:
+- Modpack install cards now keep state in sync across search results and recommendations.
+- Duplicate install clicks are blocked while an install is already running.
+- Buttons recover to a usable state after fetch or install errors instead of getting stuck disabled.
+
 ## Instances
 
 Every version runs in its own isolated environment. You can create vanilla, Fabric, Forge, NeoForge, or Quilt instances side-by-side, each with its own RAM allocation, JVM args, Java path, and mod set. Bulk actions (Validate All, Repair All, Export All) apply across your whole library at once.
@@ -29,6 +38,8 @@ Browse and install from **Modrinth** and **CurseForge** — no API key needed fo
 Modpack installs handle the full chain: downloads the `.mrpack` or CurseForge `.zip`, installs the right Minecraft base and loader version, fetches every mod, and extracts overrides. Every install is logged with a retry button if something fails. Installed modpacks can be checked for updates and updated in-place with staging and automatic rollback if the update breaks anything. The update policy (manual / notify / auto-on-launch) is configurable per-launcher and runs at startup even if you never open the Modpacks tab.
 
 **Smart Discovery** sits above the search bar as a collapsible panel. It looks at which MC versions and loaders you actually use, scores candidate modpacks against that profile, and surfaces up to 6 recommendations as browsable cards — no account or tracking required.
+
+Both Modpacks and Shaders use live Minecraft release lists for their version selectors, so newly released versions can appear without waiting for a manual hardcoded update.
 
 ## Cloud Sync & Backup
 
@@ -86,8 +97,14 @@ SHA256 checksums are written to `SHA256SUMS.txt` and published alongside each re
 
 ## Notes
 
-- Microsoft sign-in and CurseForge browsing work out of the box — no configuration needed.
+- CurseForge browsing works out of the box.
+- Microsoft sign-in requires a valid Azure public client ID (set in Settings → Microsoft Authentication or `GENOS_AZURE_CLIENT_ID`).
+- Microsoft auth now ignores deprecated legacy client ID overrides by default (including `00000000402b5328`) to avoid `unauthorized_client` login failures.
+- Microsoft auth also blocks known first-party IDs (for example `04f0c124-f2bc-4f59-8241-bf6df9866bbd`) that cause consent failures in custom launchers.
+- Advanced users can still allow legacy 16-character client IDs with `GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID=1`.
+- Microsoft sign-in now prefers PKCE browser callback flow by default. Device-code flow remains available for custom client IDs when explicitly enabled.
 - Cloud Sync requires no third-party account; any writable directory works.
+- Linux package builds include `backports.tarfile` so Flatpak runtime startup does not fail on missing `backports` module imports.
 - macOS builds are currently disabled.
 
 ## Windows SmartScreen

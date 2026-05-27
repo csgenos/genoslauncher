@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
@@ -138,7 +139,18 @@ HIDDEN_IMPORTS = [
     "charset_normalizer",
     "certifi",
     "idna",
+    "pkg_resources",
+    "setuptools",
+    "backports",
+    "backports.tarfile",
+    "jaraco.context",
+    "setuptools._vendor.jaraco.context",
+    "setuptools._vendor.jaraco.text",
 ]
+try:
+    HIDDEN_IMPORTS += collect_submodules("backports")
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Data files
