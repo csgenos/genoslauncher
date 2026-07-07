@@ -145,6 +145,7 @@ def main() -> int:
 
     icon_candidates = [
         _resource_path(os.path.join("assets", "icon.ico")),
+        _resource_path(os.path.join("assets", "genoslauncherlogo.png")),
         _resource_path(os.path.join("assets", "glauncherlogo.png")),
         _resource_path(os.path.join("src", "resources", "icons", "app_icon.png")),
     ]

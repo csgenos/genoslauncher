@@ -43,7 +43,7 @@ class LogoMark(QLabel):
         self.setFixedSize(28, 28)
         self.setStyleSheet("background: transparent;")
         self.setAlignment(Qt.AlignCenter)
-        logo_path = _asset("glauncherlogo.png")
+        logo_path = _asset("genoslauncherlogo.png")
         if os.path.exists(logo_path):
             pix = QPixmap(logo_path).scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.setPixmap(pix)

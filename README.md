@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/glauncherlogo.png" alt="GenosLauncher" width="120" />
+  <img src="assets/genoslauncherlogo.png" alt="GenosLauncher" width="120" />
 </p>
 
 # GenosLauncher

@@ -188,7 +188,7 @@ class _WelcomePage(QWidget):
         layout.setAlignment(Qt.AlignCenter)
 
         # Logo
-        logo_path = _asset("glauncherlogo.png")
+        logo_path = _asset("genoslauncherlogo.png")
         icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setStyleSheet("background: transparent;")
@@ -749,7 +749,7 @@ class SetupWizard(QDialog):
         top_row.setSpacing(0)
 
         # Logo mark in top-left to balance the X button
-        logo_path = _asset("glauncherlogo.png")
+        logo_path = _asset("genoslauncherlogo.png")
         logo_lbl = QLabel()
         logo_lbl.setFixedSize(28, 28)
         logo_lbl.setStyleSheet("background: transparent;")
