@@ -3,7 +3,7 @@ GenosLauncher — First-run setup wizard.
 
 580×500 frameless QDialog, three steps:
   1. Welcome
-  2. Account setup  (Microsoft PKCE browser flow OR offline username)
+  2. Required Microsoft account setup (PKCE browser flow)
   3. Ready summary  (auto-detected RAM + Java, applies config on accept)
 
 Thread safety: all callbacks from auth_manager arrive on a background thread.
@@ -15,7 +15,6 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
-import re
 import sys
 import webbrowser
 from typing import Optional
@@ -39,7 +38,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -50,7 +48,6 @@ from PySide6.QtWidgets import (
 from src.core.auth import auth_manager
 from src.core.config import config
 from src.core.java_manager import find_java_installations
-from src.core.validators import normalize_offline_username
 from src.ui.styles import C, FONT
 from src.ui.qt_dispatch import run_on_ui_thread
 
@@ -239,11 +236,10 @@ class _WelcomePage(QWidget):
 class _AccountPage(QWidget):
     """
     Manages the account setup sub-states:
-      "choose"         → two clickable option cards
+      "choose"         → required Microsoft sign-in card
       "ms_requesting"  → connecting spinner text
       "ms_code"        → device code display + countdown
       "ms_success"     → green tick + name
-      "offline"        → username input
     """
 
     account_ready = Signal()   # emitted when account is configured
@@ -253,7 +249,6 @@ class _AccountPage(QWidget):
     _STATE_MS_REQ       = "ms_requesting"
     _STATE_MS_WAITING   = "ms_waiting"
     _STATE_MS_SUCCESS   = "ms_success"
-    _STATE_OFFLINE      = "offline"
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -273,14 +268,12 @@ class _AccountPage(QWidget):
         self._page_ms_req      = self._build_ms_requesting_page()
         self._page_ms_waiting  = self._build_ms_waiting_page()
         self._page_ms_success  = self._build_ms_success_page()
-        self._page_offline     = self._build_offline_page()
 
         for page in (
             self._page_choose,
             self._page_ms_req,
             self._page_ms_waiting,
             self._page_ms_success,
-            self._page_offline,
         ):
             self._stack.addWidget(page)
 
@@ -296,7 +289,6 @@ class _AccountPage(QWidget):
             self._STATE_MS_REQ:     self._page_ms_req,
             self._STATE_MS_WAITING: self._page_ms_waiting,
             self._STATE_MS_SUCCESS: self._page_ms_success,
-            self._STATE_OFFLINE:    self._page_offline,
         }
         page = mapping.get(state)
         if page is not None:
@@ -326,7 +318,7 @@ class _AccountPage(QWidget):
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignTop)
 
-        title = QLabel("How do you want to play?")
+        title = QLabel("Microsoft sign-in required")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
             f"color: {C['text_primary']};"
@@ -336,8 +328,12 @@ class _AccountPage(QWidget):
         layout.addWidget(title)
         layout.addSpacing(8)
 
-        sub = QLabel("You can always change this later in Settings.")
+        sub = QLabel(
+            "Sign in with an account that owns Minecraft: Java Edition. "
+            "After verification, you can play offline for up to seven days."
+        )
         sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
         sub.setStyleSheet(
             f"color: {C['text_secondary']};"
             f"font-size: {FONT['sm']};"
@@ -355,21 +351,10 @@ class _AccountPage(QWidget):
             bg_letter="#0078D4",
             letter="M",
             title="Sign in with Microsoft",
-            description="Recommended for online play",
+            description="Required for all launches",
         )
         ms_card.mousePressEvent = lambda _e: self._on_ms_clicked()
         layout.addWidget(ms_card)
-        layout.addSpacing(10)
-
-        # Offline card
-        offline_card = self._option_card(
-            bg_letter=C["text_secondary"],
-            letter="?",
-            title="Play Offline",
-            description="Pick a username to get started",
-        )
-        offline_card.mousePressEvent = lambda _e: self._on_offline_clicked()
-        layout.addWidget(offline_card)
         layout.addStretch()
         return page
 
@@ -550,74 +535,6 @@ class _AccountPage(QWidget):
         layout.addWidget(badge)
         return page
 
-    def _build_offline_page(self) -> QWidget:
-        page = QWidget()
-        page.setStyleSheet("background: transparent;")
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(48, 24, 48, 24)
-        layout.setSpacing(0)
-        layout.setAlignment(Qt.AlignTop)
-
-        title = QLabel("Choose a username")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(
-            f"color: {C['text_primary']};"
-            f"font-size: {FONT['xl']};"
-            "font-weight: 700;"
-        )
-        layout.addWidget(title)
-        layout.addSpacing(6)
-
-        sub = QLabel("Use letters, numbers and underscores. Max 16 characters.")
-        sub.setAlignment(Qt.AlignCenter)
-        sub.setWordWrap(True)
-        sub.setStyleSheet(
-            f"color: {C['text_secondary']};"
-            f"font-size: {FONT['sm']};"
-        )
-        layout.addWidget(sub)
-        layout.addSpacing(20)
-
-        self._username_input = QLineEdit()
-        self._username_input.setPlaceholderText("Username")
-        self._username_input.setMaxLength(16)
-        self._username_input.setStyleSheet(
-            f"""
-            QLineEdit {{
-                background-color: {C['bg_input']};
-                color: {C['text_primary']};
-                border: 1.5px solid {C['border']};
-                border-radius: 8px;
-                padding: 8px 14px;
-                font-size: 14px;
-                min-height: 38px;
-            }}
-            QLineEdit:focus {{
-                border-color: {C['border_focus']};
-                background-color: {C['bg_primary']};
-            }}
-            """
-        )
-        self._username_input.textChanged.connect(self._on_username_changed)
-        layout.addWidget(self._username_input)
-        layout.addSpacing(8)
-
-        self._username_hint = QLabel("")
-        self._username_hint.setStyleSheet(
-            f"color: {C['text_tertiary']};"
-            f"font-size: {FONT['sm']};"
-        )
-        layout.addWidget(self._username_hint)
-
-        layout.addSpacing(12)
-        back_link = QLabel('<a href="#" style="color: {c}; text-decoration: none;">← Back to options</a>'.format(c=C["text_secondary"]))
-        back_link.setAlignment(Qt.AlignLeft)
-        back_link.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
-        back_link.linkActivated.connect(lambda _: self.reset_to_choose())
-        layout.addWidget(back_link)
-        layout.addStretch()
-        return page
-
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
@@ -632,31 +549,6 @@ class _AccountPage(QWidget):
             on_success=self._cb_success,
             on_error=self._cb_error,
         )
-
-    def _on_offline_clicked(self) -> None:
-        self._account_info = {}
-        self._choose_error.setText("")
-        self._username_input.clear()
-        self._username_hint.setText("")
-        self._show_state(self._STATE_OFFLINE)
-
-    def _on_username_changed(self, text: str) -> None:
-        # Validate: alphanumeric + underscore only
-        clean = re.sub(r"[^a-zA-Z0-9_]", "", text)
-        if clean != text:
-            self._username_input.setText(clean)
-            return
-
-        if clean and normalize_offline_username(clean):
-            self._account_info = {"name": clean, "type": "offline"}
-            self._username_hint.setText(f"Playing as: {clean}")
-            self.account_ready.emit()
-        elif clean:
-            self._account_info = {}
-            self._username_hint.setText("Use 3-16 letters, numbers, or underscores.")
-        else:
-            self._account_info = {}
-            self._username_hint.setText("")
 
     def _reopen_browser(self) -> None:
         if self._auth_url:
@@ -785,9 +677,7 @@ class _ReadyPage(QWidget):
         """Populate the summary with current account info and auto-detected system data."""
         # Account row
         if account_info.get("name"):
-            a_type = account_info.get("type", "offline")
-            badge = "Microsoft" if a_type == "microsoft" else "Offline"
-            self._account_val.setText(f"{account_info['name']}  [{badge}]")
+            self._account_val.setText(f"{account_info['name']}  [Microsoft]")
         else:
             self._account_val.setText("Not configured")
 
@@ -1048,14 +938,7 @@ class SetupWizard(QDialog):
         updates: dict = {"ram_mb": ram, "first_run": False}
 
         account = self._account_page.account_info
-        if account.get("type") == "offline" and account.get("name"):
-            name = account["name"]
-            existing: list = config.get("offline_accounts", [])
-            if name not in existing:
-                existing.insert(0, name)
-            updates["offline_accounts"] = existing
-            updates["last_account"] = name
-        elif account.get("type") == "microsoft" and account.get("name"):
+        if account.get("type") == "microsoft" and account.get("name"):
             updates["last_account"] = account["name"]
         # Microsoft account is already stored in the keyring by auth_manager.
 

@@ -14,11 +14,7 @@ from src.core import config as config_core
 from src.core import cloud_sync as cloud_sync_core
 from src.core.java_manager import required_java_for_mc
 from src.core.modrinth import ModrinthError, safe_download_path, verify_file_hash
-from src.core.validators import (
-    normalize_offline_username,
-    safe_path_segment,
-    validate_version_id,
-)
+from src.core.validators import safe_path_segment, validate_version_id
 from src.core import auth as auth_core
 
 
@@ -33,11 +29,6 @@ class JavaRequirementTests(unittest.TestCase):
 
 
 class ValidatorTests(unittest.TestCase):
-    def test_offline_username_rules(self) -> None:
-        self.assertEqual(normalize_offline_username("Player_123"), "Player_123")
-        self.assertEqual(normalize_offline_username("ab"), "")
-        self.assertEqual(normalize_offline_username("../bad"), "")
-
     def test_version_id_rejects_path_segments(self) -> None:
         self.assertEqual(validate_version_id("fabric-loader-0.16.9-1.21.4"), "fabric-loader-0.16.9-1.21.4")
         with self.assertRaises(ValueError):

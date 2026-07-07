@@ -21,7 +21,6 @@ from typing import Any
 
 from .._version import __version__
 from .secure_store import delete_secret, get_secret, set_secret
-from .validators import normalize_offline_username
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +47,8 @@ _SENSITIVE_KEYS: frozenset[str] = frozenset({"access_token", "refresh_token"})
 _SECRET_CONFIG_KEYS: frozenset[str] = frozenset({"curseforge_api_key"})
 _AZURE_GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _AZURE_LEGACY_RE = re.compile(r"^[0-9a-fA-F]{16}$")
+_DISCORD_CLIENT_ID_RE = re.compile(r"^\d{15,25}$")
+_DISCORD_ASSET_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _BLOCKED_AZURE_CLIENT_IDS: frozenset[str] = frozenset(
     {
         # Microsoft first-party Visual Studio app (blocked for launcher sign-in use).
@@ -67,11 +68,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "resolution_height": 720,
     "fullscreen": False,
     "close_on_launch": False,
-    "allow_online_launch_token": False,
     "selected_version": "",
     "selected_instance_id": "",
     "last_account": "",
-    "offline_accounts": [],
     "instances": [],
     "show_snapshots": False,
     "show_old_versions": False,
@@ -98,6 +97,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cloud_sync_auto": False,
     "cloud_sync_last": "",
     "account_last_used": {},
+    "discord_presence_enabled": True,
+    "discord_presence_client_id": "1524019146030055444",
+    "discord_presence_large_image": "glauncherlogo",
 }
 
 # Keys whose types are enforced (basic schema validation)
@@ -109,7 +111,6 @@ _SCHEMA: dict[str, type | tuple] = {
     "resolution_height":  int,
     "fullscreen":         bool,
     "close_on_launch":    bool,
-    "allow_online_launch_token": bool,
     "show_snapshots":     bool,
     "show_old_versions":  bool,
     "modpack_update_policy": str,
@@ -130,7 +131,6 @@ _SCHEMA: dict[str, type | tuple] = {
     "selected_instance_id": str,
     "java_path":          str,
     "last_account":       str,
-    "offline_accounts":   list,
     "instances":          list,
     "azure_client_id":    str,
     "servers":            list,
@@ -141,7 +141,39 @@ _SCHEMA: dict[str, type | tuple] = {
     "cloud_sync_auto": bool,
     "cloud_sync_last": (str, type(None)),
     "account_last_used": dict,
+    "discord_presence_enabled": bool,
+    "discord_presence_client_id": str,
+    "discord_presence_large_image": str,
 }
+
+
+def _migrate_microsoft_only_config(stored: dict[str, Any]) -> bool:
+    """Purge legacy local-account settings in place."""
+    changed = False
+    had_offline_key = "offline_accounts" in stored
+    legacy_offline = stored.pop("offline_accounts", [])
+    if had_offline_key:
+        changed = True
+    if "allow_online_launch_token" in stored:
+        stored.pop("allow_online_launch_token", None)
+        changed = True
+    offline_names = {
+        str(name).strip() for name in legacy_offline
+        if isinstance(name, str) and str(name).strip()
+    }
+    if str(stored.get("last_account", "") or "") in offline_names:
+        stored["last_account"] = ""
+        changed = True
+    usage = stored.get("account_last_used")
+    if isinstance(usage, dict):
+        cleaned_usage = {k: v for k, v in usage.items() if k not in offline_names}
+        if cleaned_usage != usage:
+            stored["account_last_used"] = cleaned_usage
+            changed = True
+    for name in offline_names:
+        if stored.pop(f"account_last_used_{name}", None) is not None:
+            changed = True
+    return changed
 
 
 class Config:
@@ -245,13 +277,13 @@ class Config:
             if not int(val):
                 return 0
             return max(1024, min(int(val), 65535))
-        if key in {"offline_accounts", "ms_usernames"} and isinstance(val, list):
+        if key == "ms_usernames" and isinstance(val, list):
             unique = []
             seen = set()
             for x in val:
                 if not isinstance(x, str):
                     continue
-                clean = normalize_offline_username(x) if key == "offline_accounts" else str(x).strip()[:32]
+                clean = str(x).strip()[:32]
                 if clean and clean not in seen:
                     unique.append(clean)
                     seen.add(clean)
@@ -343,6 +375,16 @@ class Config:
                     continue
                 clean[username[:64]] = stamp[:64]
             return clean
+        if key == "discord_presence_client_id":
+            value = str(val or "").strip()
+            if not value:
+                return ""
+            return value if _DISCORD_CLIENT_ID_RE.fullmatch(value) else DEFAULT_CONFIG["discord_presence_client_id"]
+        if key == "discord_presence_large_image":
+            value = str(val or "").strip()
+            if not value:
+                return ""
+            return value if _DISCORD_ASSET_KEY_RE.fullmatch(value) else DEFAULT_CONFIG["discord_presence_large_image"]
         return val
 
     def _validate(self, data: dict) -> dict:
@@ -372,13 +414,15 @@ class Config:
                         stored = json.load(f)
                     if not isinstance(stored, dict):
                         raise ValueError("Config root must be a JSON object.")
-                    migrated_secret = False
+                    migrated_config = False
                     legacy_cf_key = stored.pop("curseforge_api_key", "")
                     if isinstance(legacy_cf_key, str) and legacy_cf_key.strip():
                         set_secret(APP_DIR, "curseforge_api_key", legacy_cf_key.strip())
-                        migrated_secret = True
+                        migrated_config = True
+
+                    migrated_config = _migrate_microsoft_only_config(stored) or migrated_config
                     self._data = self._validate(stored)
-                    if migrated_secret:
+                    if migrated_config:
                         self._save_locked()
                     return
                 except (json.JSONDecodeError, OSError, ValueError):

@@ -39,11 +39,24 @@ from .tabs.settings_tab import SettingsTab
 from .tabs.accounts_tab import AccountsTab
 from .tabs.servers_tab import ServersTab
 from .login_dialog import LoginDialog
+from .qt_dispatch import run_on_ui_thread
 from ..core.auth import auth_manager
 from ..core.config import config
+from ..core.discord_presence import discord_presence
+from ..core.instances import find_instance
 from ..core.launcher import InstallWorker, LaunchWorker
 
 _RESIZE_MARGIN = 6
+_TAB_PRESENCE_LABELS = {
+    "home": "Home",
+    "instances": "Instances",
+    "mods": "Mods",
+    "modpacks": "Modpacks",
+    "shaders": "Shaders",
+    "servers": "Servers",
+    "accounts": "Accounts",
+    "settings": "Settings",
+}
 
 
 def _asset(name: str) -> str:
@@ -162,11 +175,14 @@ class MainWindow(QMainWindow):
         self._drag_start_pos = None
         self._drag_start_geom: QRect | None = None
         self._last_cursor_edge: str = ""   # O-X-008: only call setCursor on change
+        self._current_tab_key = "home"
+        self._presence_launch_context: dict[str, object] = {}
 
         self._setup_window()
         self._build_ui()
         self._connect_signals()
         self._load_auth()
+        self._set_launcher_presence("home")
         QTimer.singleShot(1500, self._run_startup_modpack_update_policy)
 
     # ------------------------------------------------------------------
@@ -368,7 +384,12 @@ class MainWindow(QMainWindow):
         """Restore saved session and refresh token silently."""
         if auth_manager.load_stored():
             self._update_nav_account()
-            auth_manager.refresh_async()
+            auth_manager.refresh_async(lambda _ok: run_on_ui_thread(self._on_auth_refresh_complete))
+
+    def _on_auth_refresh_complete(self) -> None:
+        self._update_nav_account()
+        if self._accounts_tab is not None:
+            self._accounts_tab._refresh_state()
 
     def _open_login_dialog(self) -> None:
         dlg = LoginDialog(self)
@@ -390,7 +411,17 @@ class MainWindow(QMainWindow):
 
     def _update_nav_account(self) -> None:
         if auth_manager.is_logged_in:
-            self._top_nav.set_logged_in(auth_manager.username)
+            state = auth_manager.verification_state
+            hints = {
+                "online": "Verified",
+                "offline_grace": "Offline grace",
+                "sign_in_required": "Sign-in required",
+            }
+            self._top_nav.set_logged_in(
+                auth_manager.username,
+                hints.get(state, "Microsoft"),
+                requires_sign_in=state == "sign_in_required",
+            )
         else:
             self._top_nav.set_logged_out()
 
@@ -420,6 +451,7 @@ class MainWindow(QMainWindow):
 
         self._content.stack.setCurrentWidget(widget)
         self._top_nav.set_active(key)
+        self._current_tab_key = key
 
         widget.setVisible(True)
         widget.setGraphicsEffect(None)
@@ -428,6 +460,8 @@ class MainWindow(QMainWindow):
         elif key == "shaders":
             widget._reload_instances()
         widget.update()
+        if self._launch_worker is None:
+            self._set_launcher_presence(key)
 
     # ------------------------------------------------------------------
     # Launch
@@ -450,13 +484,15 @@ class MainWindow(QMainWindow):
         self._home_tab.set_launch_state(True)
         self._home_tab.update_progress(0, 100, f"Preparing {version_id}...")
         self._set_global_status(f"Preparing {version_id}...", 8, True)
+        self._presence_launch_context = self._build_presence_launch_context(version_id, instance_id, bool(server_ip))
+        discord_presence.set_launching(
+            str(self._presence_launch_context.get("version_id", version_id)),
+            str(self._presence_launch_context.get("instance_name", "")),
+            multiplayer=bool(self._presence_launch_context.get("multiplayer", False)),
+        )
 
-        if auth_manager.is_logged_in:
-            username = auth_manager.username
-        else:
-            username = config.get("last_account") or "Player"
         self._launch_worker = LaunchWorker(
-            version_id, username, self,
+            version_id, self,
             instance_id=instance_id,
             server_ip=server_ip,
             server_port=server_port,
@@ -474,22 +510,46 @@ class MainWindow(QMainWindow):
     def _on_process_started(self) -> None:
         self._home_tab.update_progress(100, 100, "Minecraft is running!")
         self._set_global_status("Minecraft is running.", 100, False)
+        discord_presence.set_playing(
+            str(self._presence_launch_context.get("version_id", "")),
+            str(self._presence_launch_context.get("instance_name", "")),
+            multiplayer=bool(self._presence_launch_context.get("multiplayer", False)),
+        )
         if config.get("close_on_launch", False):
             self.hide()
 
     def _on_process_ended(self, _exit_code: int) -> None:
         self._launch_worker = None
+        self._presence_launch_context = {}
         self._home_tab.set_launch_state(False)
         self._set_global_status("Ready")
+        self._set_launcher_presence(self._current_tab_key)
         if self.isHidden():
             self.show()
 
     def _on_launch_error(self, message: str) -> None:
         self._launch_worker = None
+        self._presence_launch_context = {}
         self._home_tab.set_launch_state(False)
         self._home_tab.update_progress(0, 100, "Launch failed.")
         self._set_global_status("Launch failed.", action_visible=True)
+        self._set_launcher_presence(self._current_tab_key)
         QMessageBox.critical(self, "Launch Error", f"Failed to start Minecraft:\n\n{message}")
+
+    def _build_presence_launch_context(self, version_id: str, instance_id: str, multiplayer: bool) -> dict[str, object]:
+        instance_name = ""
+        if instance_id:
+            instance = find_instance(instance_id)
+            if instance:
+                instance_name = str(instance.get("name") or "").strip()
+        return {
+            "version_id": version_id,
+            "instance_name": instance_name,
+            "multiplayer": multiplayer,
+        }
+
+    def _set_launcher_presence(self, tab_key: str) -> None:
+        discord_presence.set_launcher(_TAB_PRESENCE_LABELS.get(tab_key, "Launcher"))
 
     def _on_install_requested(self, version_id: str) -> None:
         if self._install_worker is not None:
@@ -613,4 +673,5 @@ class MainWindow(QMainWindow):
                         "Minecraft is still running",
                         "GenosLauncher could not stop Minecraft. It may still be running.",
                     )
+        discord_presence.close()
         super().closeEvent(event)

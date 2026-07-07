@@ -12,11 +12,13 @@ Open-source Minecraft launcher built with Python + PySide6.
 
 ---
 
-GenosLauncher is a full-featured Minecraft launcher designed to replace tools like Prism — including a one-click migration wizard to import from it. Sign in with Microsoft or play offline, manage isolated instances, browse mods and modpacks, and get back into the game fast. The "Continue" chip on the home screen resumes your last session in one click.
+GenosLauncher is a full-featured Minecraft launcher designed to replace tools like Prism — including a one-click migration wizard to import from it. Sign in with a Microsoft account that owns Minecraft: Java Edition, manage isolated instances, browse mods and modpacks, and get back into the game fast. After successful ownership verification, local play remains available for seven days when Microsoft services cannot be reached. The "Continue" chip on the home screen resumes your last session in one click.
 
 ## UI and UX
 
 GenosLauncher now uses a dedicated app-style shell with a centered top navigation, compact account controls, and a cleaner content stage so it feels like a desktop launcher instead of a website-style layout.
+
+Discord Rich Presence is built in with application ID `1524019146030055444`. When Discord Desktop is running, GenosLauncher can show whether you are browsing the launcher, launching Minecraft, or playing an instance. Presence intentionally omits Microsoft account names and server IP addresses.
 
 Install actions across major tabs were hardened for reliability:
 - Modpack install cards now keep state in sync across search results and recommendations.
@@ -98,7 +100,10 @@ SHA256 checksums are written to `SHA256SUMS.txt` and published alongside each re
 ## Notes
 
 - CurseForge browsing works out of the box.
+- Discord Rich Presence uses the local Discord Desktop IPC connection. Upload `assets/glauncherlogo.png` to the Discord Developer Portal for application `1524019146030055444` with the asset key `glauncherlogo` so the logo appears in activity cards.
 - Microsoft sign-in requires a valid Azure public client ID (set in Settings → Microsoft Authentication or `GENOS_AZURE_CLIENT_ID`).
+- Every launch requires a Microsoft account with verified Minecraft: Java Edition ownership. There are no local username profiles.
+- Successful sign-in or silent ownership refresh starts a rolling 168-hour offline grace period. Explicitly rejected or revoked credentials still require immediate sign-in.
 - Microsoft auth now ignores deprecated legacy client ID overrides by default (including `00000000402b5328`) to avoid `unauthorized_client` login failures.
 - Microsoft auth also blocks known first-party IDs (for example `04f0c124-f2bc-4f59-8241-bf6df9866bbd`) that cause consent failures in custom launchers.
 - Advanced users can still allow legacy 16-character client IDs with `GENOS_ALLOW_LEGACY_AZURE_CLIENT_ID=1`.

@@ -195,16 +195,16 @@ class TopNavBar(QWidget):
         if emit and old != key:
             self.tab_changed.emit(key)
 
-    def set_logged_in(self, username: str) -> None:
-        self._logged_in = True
+    def set_logged_in(self, username: str, hint: str = "Microsoft", requires_sign_in: bool = False) -> None:
+        self._logged_in = not requires_sign_in
         self._account_name.setText(username)
-        self._account_hint.setText("Microsoft")
-        self._auth_btn.setText("Sign Out")
+        self._account_hint.setText(hint)
+        self._auth_btn.setText("Sign In" if requires_sign_in else "Sign Out")
         self.refresh_theme()
 
     def set_logged_out(self) -> None:
         self._logged_in = False
         self._account_name.setText("Not signed in")
-        self._account_hint.setText("Offline")
+        self._account_hint.setText("Required")
         self._auth_btn.setText("Sign In")
         self.refresh_theme()

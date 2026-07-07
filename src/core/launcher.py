@@ -3,7 +3,6 @@ Minecraft launch logic — wraps minecraft-launcher-lib.
 Emits progress via Qt signals so the UI can animate the launch bar.
 
 Fixes applied:
-  B-Z-004: Proper offline UUID using UUID3 (mirrors Minecraft's own algorithm)
   B-Y-007: JVM arg deduplication — preset can't override -Xmx/-Xms set from RAM slider;
            user custom args are sanitized (each token must start with '-')
 """
@@ -15,7 +14,6 @@ import json
 import logging
 import subprocess
 import threading
-import uuid as _uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -25,7 +23,7 @@ import requests
 
 from .config import config
 from .config import APP_DIR, LOGS_DIR
-from .auth import auth_manager
+from .auth import LaunchAuthError, auth_manager
 from .instances import create_vanilla_instance, find_instance, find_instance_for_version, list_instances, update_instance
 from .java_manager import find_best_java, get_preset_args, required_java_for_mc
 from .validators import safe_path_segment, validate_version_id
@@ -242,19 +240,6 @@ def get_installed_versions() -> list[str]:
     except Exception as exc:
         log.warning("Installed version scan failed: %s", exc)
     return sorted(v for v in installed if v)
-
-
-# ---------------------------------------------------------------------------
-# Offline UUID (B-Z-004)
-# ---------------------------------------------------------------------------
-
-def _offline_uuid(username: str) -> str:
-    """
-    Generate a consistent offline UUID for a username.
-    Mirrors Minecraft's own offline-mode algorithm:
-    UUID3(DNS_NAMESPACE, "OfflinePlayer:<username>").
-    """
-    return str(_uuid.uuid3(_uuid.NAMESPACE_DNS, f"OfflinePlayer:{username}"))
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +484,6 @@ class LaunchWorker(QObject):
     def __init__(
         self,
         version_id: str,
-        username:    str = "Player",
         parent:      Optional[QObject] = None,
         instance_id: str = "",
         server_ip:   str = "",
@@ -507,7 +491,6 @@ class LaunchWorker(QObject):
     ) -> None:
         super().__init__(parent)
         self.version_id  = validate_version_id(version_id)
-        self.username    = username
         self.instance_id = instance_id
         self.server_ip   = server_ip
         self.server_port = server_port
@@ -538,6 +521,19 @@ class LaunchWorker(QObject):
             self.error.emit("minecraft-launcher-lib is not installed.")
             return
 
+        self.status_changed.emit("Verifying Microsoft account...")
+        try:
+            credentials = auth_manager.prepare_launch_credentials()
+        except LaunchAuthError as exc:
+            self.error.emit(str(exc))
+            return
+        if credentials.mode == "offline_grace":
+            expires = credentials.grace_expires_at.astimezone().strftime("%b %d, %Y at %I:%M %p")
+            self.status_changed.emit(
+                f"Microsoft is unavailable. Launching offline as {credentials.username}; "
+                f"verification is valid until {expires}."
+            )
+
         instance = find_instance(self.instance_id) if self.instance_id else find_instance_for_version(self.version_id)
         mc_dir = instance.get("directory") if instance else config.get("minecraft_dir")
         if not Path(mc_dir).exists():
@@ -565,23 +561,6 @@ class LaunchWorker(QObject):
         height = config.get("resolution_height", 720)
         fullscreen = config.get("fullscreen", False)
 
-        # Online Minecraft requires passing the bearer token in the child process
-        # arguments. Keep the privacy-safe offline token path as the default.
-        online_token_allowed = config.get("allow_online_launch_token", False)
-        if online_token_allowed and auth_manager.is_logged_in and auth_manager.username == self.username:
-            if not auth_manager.ensure_token_fresh(force=True):
-                self.error.emit(
-                    "Microsoft session refresh failed. Please sign in again before launching online."
-                )
-                return
-            token = auth_manager.access_token
-            uid   = auth_manager.uuid or _offline_uuid(self.username)
-        else:
-            if auth_manager.is_logged_in and auth_manager.username == self.username:
-                self.status_changed.emit("Launching without exposing the Microsoft access token...")
-            token = "offline"
-            uid   = _offline_uuid(self.username)
-
         # JVM args with deduplication (B-Y-007)
         preset_key  = config.get("jvm_preset", "performance")
         preset_args = get_preset_args(preset_key)
@@ -589,9 +568,9 @@ class LaunchWorker(QObject):
         jvm_args    = _build_jvm_args(ram, preset_args, custom_args)
 
         options = {
-            "username":         self.username,
-            "uuid":             uid,
-            "token":            token,
+            "username":         credentials.username,
+            "uuid":             credentials.uuid,
+            "token":            credentials.token,
             "jvmArguments":     jvm_args,
             "gameDirectory":    mc_dir,
             "executablePath":   java,

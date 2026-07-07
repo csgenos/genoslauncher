@@ -42,12 +42,27 @@ class UISmokeTests(unittest.TestCase):
 
     def test_accounts_tab_constructs(self) -> None:
         from src.ui.tabs.accounts_tab import AccountsTab
+        from PySide6.QtWidgets import QPushButton
 
         tab = AccountsTab()
         self.assertIsNotNone(tab)
         self.assertIsNotNone(tab._accounts_layout)
+        self.assertNotIn("+ Add Offline Account", [button.text() for button in tab.findChildren(QPushButton)])
         tab.close()
         tab.deleteLater()
+        self.app.processEvents()
+
+    def test_setup_wizard_has_no_offline_account_path(self) -> None:
+        from PySide6.QtWidgets import QLabel
+        from src.ui.setup_wizard import _AccountPage
+
+        page = _AccountPage()
+        text = " ".join(label.text() for label in page.findChildren(QLabel))
+        self.assertNotIn("Play Offline", text)
+        self.assertIn("Microsoft sign-in required", text)
+        self.assertFalse(hasattr(page, "_page_offline"))
+        page.close()
+        page.deleteLater()
         self.app.processEvents()
 
     def test_modpacks_tab_constructs(self) -> None:
@@ -245,7 +260,7 @@ class UISmokeTests(unittest.TestCase):
         from src.ui.tabs.accounts_tab import AccountsTab
         from src.ui.tabs.settings_tab import SettingsTab
 
-        with patch.object(HomeTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(HomeTab, "_load_news", lambda self: None), patch.object(InstancesTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(ModsTab, "refresh_instances", lambda self: None), patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None), patch.object(ShadersTab, "_refresh_installed", lambda self: None), patch.object(ShadersTab, "_load_version_choices", lambda self: None), patch.object(AccountsTab, "_refresh_state", lambda self: None), patch.object(SettingsTab, "_load_java_installs_async", lambda self: None):
+        with patch.object(HomeTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(HomeTab, "_load_news", lambda self: None), patch.object(InstancesTab, "_load_versions", lambda self, *args, **kwargs: None), patch.object(ModsTab, "refresh_instances", lambda self: None), patch.object(ModpacksTab, "_execute_search", lambda self: None), patch.object(ModpacksTab, "_load_discovery", lambda self: None), patch.object(ModpacksTab, "_load_version_choices", lambda self: None), patch.object(ShadersTab, "_refresh_installed", lambda self: None), patch.object(ShadersTab, "_load_version_choices", lambda self: None), patch.object(AccountsTab, "_refresh_state", lambda self: None), patch.object(SettingsTab, "_load_java_installs_async", lambda self: None), patch("src.ui.main_window.discord_presence.set_launcher", lambda *_args, **_kwargs: None), patch("src.ui.main_window.discord_presence.close", lambda *_args, **_kwargs: None):
             win = MainWindow()
             self.assertIsNotNone(win)
             self.assertIsNotNone(win._tabs)

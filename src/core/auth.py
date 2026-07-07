@@ -36,8 +36,10 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 log = logging.getLogger(__name__)
 
@@ -192,6 +194,69 @@ def _credential_store_unavailable(detail: Exception) -> RuntimeError:
 
 class AuthError(Exception):
     """Raised on any authentication failure."""
+
+
+class AuthUnavailableError(AuthError):
+    """Raised when Microsoft services cannot be reached temporarily."""
+
+
+class AuthRejectedError(AuthError):
+    """Raised when Microsoft explicitly rejects credentials or entitlement."""
+
+
+class AuthConfigurationError(AuthError):
+    """Raised when local Microsoft authentication configuration is invalid."""
+
+
+class LaunchAuthError(AuthError):
+    """Raised when Minecraft launch is not authorized."""
+
+
+@dataclass(frozen=True)
+class LaunchCredentials:
+    username: str
+    uuid: str
+    token: str
+    mode: Literal["online", "offline_grace"]
+    grace_expires_at: Optional[datetime] = None
+
+
+_OFFLINE_GRACE_PERIOD = timedelta(days=7)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _grace_expiry(account: dict, now: Optional[datetime] = None) -> Optional[datetime]:
+    """Return a valid grace expiry or None for missing/invalid timestamps."""
+    raw = str(account.get("last_verified_at", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        verified = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if verified.tzinfo is None:
+        return None
+    verified = verified.astimezone(timezone.utc)
+    current = (now or _utc_now()).astimezone(timezone.utc)
+    if verified > current:
+        return None
+    return verified + _OFFLINE_GRACE_PERIOD
+
+
+def _is_transient_status(status_code: int) -> bool:
+    return status_code in {408, 429} or status_code >= 500
+
+
+def _require_auth_response(response, context: str) -> None:
+    if response.ok:
+        return
+    message = f"{context} failed ({response.status_code})."
+    if _is_transient_status(int(response.status_code)):
+        raise AuthUnavailableError(message)
+    raise AuthRejectedError(message)
 
 
 def _redirect_path() -> str:
@@ -698,10 +763,17 @@ def _refresh_ms_token(client_id: str, refresh_token: str) -> dict:
         "scope":         _SCOPE,
     }, timeout=15)
     if not resp.ok:
-        raise AuthError(f"Token refresh failed ({resp.status_code})")
+        if _is_transient_status(int(resp.status_code)):
+            raise AuthUnavailableError(f"Token refresh failed ({resp.status_code}).")
+        try:
+            payload = resp.json()
+            detail = _oauth_error_message(payload.get("error", ""), payload.get("error_description", ""))
+        except Exception:
+            detail = f"Token refresh failed ({resp.status_code})."
+        raise AuthRejectedError(detail)
     data = resp.json()
     if "error" in data:
-        raise AuthError(data.get("error_description", data["error"]))
+        raise AuthRejectedError(data.get("error_description", data["error"]))
     return data
 
 
@@ -712,7 +784,7 @@ def _refresh_ms_token(client_id: str, refresh_token: str) -> dict:
 def _ms_token_to_minecraft(ms_access_token: str, ms_refresh_token: str) -> dict:
     """
     Exchange a Microsoft access token for Minecraft credentials.
-    Returns account dict: {name, id, access_token, refresh_token}.
+    Returns account dict including identity, tokens, and last_verified_at.
     """
     # Xbox Live
     xbl = _HTTP.post(_XBL_URL, json={
@@ -724,7 +796,7 @@ def _ms_token_to_minecraft(ms_access_token: str, ms_refresh_token: str) -> dict:
         "RelyingParty": "http://auth.xboxlive.com",
         "TokenType":    "JWT",
     }, headers={"Accept": "application/json"}, timeout=15)
-    xbl.raise_for_status()
+    _require_auth_response(xbl, "Xbox sign-in")
     xbl_data  = xbl.json()
     xbl_token = xbl_data["Token"]
     userhash  = xbl_data["DisplayClaims"]["xui"][0]["uhs"]
@@ -754,29 +826,31 @@ def _ms_token_to_minecraft(ms_access_token: str, ms_refresh_token: str) -> dict:
             detail = xerr_messages.get(xerr) or payload.get("Message", "")
         except Exception:
             detail = ""
+        if _is_transient_status(int(xsts.status_code)):
+            raise AuthUnavailableError(f"Xbox sign-in failed ({xsts.status_code}).")
         if detail:
-            raise AuthError(f"Xbox sign-in failed: {detail}")
-        raise AuthError(f"Xbox sign-in failed ({xsts.status_code}).")
+            raise AuthRejectedError(f"Xbox sign-in failed: {detail}")
+        raise AuthRejectedError(f"Xbox sign-in failed ({xsts.status_code}).")
     xsts_token = xsts.json()["Token"]
 
     # Minecraft token
     mc = _HTTP.post(_MC_LOGIN_URL, json={
         "identityToken": f"XBL3.0 x={userhash};{xsts_token}",
     }, timeout=15)
-    mc.raise_for_status()
+    _require_auth_response(mc, "Minecraft sign-in")
     mc_token = mc.json()["access_token"]
 
     # Minecraft profile
     profile = _HTTP.get(_MC_PROFILE_URL, headers={
         "Authorization": f"Bearer {mc_token}",
     }, timeout=15)
-    profile.raise_for_status()
+    _require_auth_response(profile, "Minecraft profile verification")
     prof = profile.json()
 
     if "error" in prof:
-        raise AuthError(
+        raise AuthRejectedError(
             "This Microsoft account does not own Minecraft: Java Edition.\n"
-            "Purchase it at minecraft.net to play online."
+            "Purchase it at minecraft.net to use GenosLauncher."
         )
 
     return {
@@ -784,6 +858,7 @@ def _ms_token_to_minecraft(ms_access_token: str, ms_refresh_token: str) -> dict:
         "id":            prof["id"],
         "access_token":  mc_token,
         "refresh_token": ms_refresh_token,
+        "last_verified_at": _utc_now().isoformat(),
     }
 
 
@@ -809,9 +884,11 @@ class AuthManager:
     def __init__(self) -> None:
         self._account: Optional[dict] = None
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._cancel_event = threading.Event()
         self._add_cancel_event = threading.Event()
         self._token_acquired_at: float = 0.0
+        self._reauth_required = False
         self._generation = 0
 
     # ------------------------------------------------------------------
@@ -843,6 +920,28 @@ class AuthManager:
         with self._lock:
             return (self._account or {}).get("refresh_token", "")
 
+    @property
+    def verification_state(self) -> str:
+        with self._lock:
+            account = dict(self._account or {})
+            reauth_required = self._reauth_required or bool(account.get("reauth_required"))
+            token_age = time.monotonic() - self._token_acquired_at if self._token_acquired_at else None
+        if not account:
+            return "signed_out"
+        if reauth_required:
+            return "sign_in_required"
+        if token_age is not None and token_age < self._TOKEN_MAX_AGE:
+            return "online"
+        expiry = _grace_expiry(account)
+        if expiry is not None and expiry >= _utc_now():
+            return "offline_grace"
+        return "sign_in_required"
+
+    @property
+    def grace_expires_at(self) -> Optional[datetime]:
+        with self._lock:
+            return _grace_expiry(dict(self._account or {}))
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -852,6 +951,7 @@ class AuthManager:
         if data and data.get("name") and data.get("refresh_token"):
             with self._lock:
                 self._account = data
+                self._reauth_required = bool(data.get("reauth_required"))
                 # _token_acquired_at stays 0.0 so ensure_token_fresh() will
                 # always do a proactive refresh on the first launch attempt.
             return True
@@ -938,6 +1038,7 @@ class AuthManager:
                     raise AuthError("Sign-in cancelled.")
                 self._account = account
                 self._token_acquired_at = time.monotonic()
+                self._reauth_required = False
                 _store_account(account)
                 _store_account_for(account)
                 _register_username(account["name"])
@@ -981,6 +1082,7 @@ class AuthManager:
                     raise AuthError("Sign-in cancelled.")
                 self._account = account
                 self._token_acquired_at = time.monotonic()
+                self._reauth_required = False
                 _store_account(account)
                 _store_account_for(account)
                 _register_username(account["name"])
@@ -1104,6 +1206,7 @@ class AuthManager:
             self._generation += 1
             self._account = data
             self._token_acquired_at = 0.0  # force proactive refresh on next launch
+            self._reauth_required = bool(data.get("reauth_required"))
         _store_account(data)
         config.update({"active_ms_username": username, "last_account": username})
         return True
@@ -1124,36 +1227,57 @@ class AuthManager:
     # Token refresh
     # ------------------------------------------------------------------
 
-    def refresh(self) -> bool:
-        with self._lock:
-            account_snapshot = dict(self._account or {})
-            generation = self._generation
-            refresh_token = account_snapshot.get("refresh_token", "")
-        if not refresh_token:
-            return False
-        client_id = _resolve_client_id()
-        if not client_id:
-            return False
-        try:
-            ms_tokens = _refresh_ms_token(client_id, refresh_token)
-            account   = _ms_token_to_minecraft(
-                ms_tokens["access_token"],
-                ms_tokens.get("refresh_token", refresh_token),
-            )
+    def _refresh_account(self) -> dict:
+        """Refresh and re-verify the active account, preserving failure type."""
+        with self._refresh_lock:
+            with self._lock:
+                account_snapshot = dict(self._account or {})
+                generation = self._generation
+                refresh_token = account_snapshot.get("refresh_token", "")
+            if not refresh_token:
+                raise AuthRejectedError("No saved Microsoft refresh token is available.")
+            client_id = _resolve_client_id()
+            if not client_id:
+                raise AuthConfigurationError("Microsoft sign-in is not configured for this build.")
+            try:
+                ms_tokens = _refresh_ms_token(client_id, refresh_token)
+                account = _ms_token_to_minecraft(
+                    ms_tokens["access_token"],
+                    ms_tokens.get("refresh_token", refresh_token),
+                )
+            except _req.exceptions.RequestException as exc:
+                raise AuthUnavailableError("Microsoft services are currently unreachable.") from exc
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise AuthRejectedError("Microsoft returned an invalid authentication response.") from exc
             with self._lock:
                 if generation != self._generation:
-                    return False
+                    raise AuthError("The active Microsoft account changed during verification.")
                 self._account = account
                 self._token_acquired_at = time.monotonic()
+                self._reauth_required = False
                 _store_account(account)
                 _store_account_for(account)
+            return account
+
+    def refresh(self) -> bool:
+        try:
+            self._refresh_account()
             return True
+        except AuthRejectedError as exc:
+            self._mark_reauthentication_required()
+            log.warning("Token refresh was rejected: %s", exc)
+            return False
         except Exception as exc:
             log.warning("Token refresh failed: %s", exc)
             return False
 
-    def refresh_async(self) -> None:
-        threading.Thread(target=self.refresh, daemon=True).start()
+    def refresh_async(self, on_complete: Optional[Callable[[bool], None]] = None) -> None:
+        def _run() -> None:
+            result = self.refresh()
+            if on_complete is not None:
+                on_complete(result)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def ensure_token_fresh(self, force: bool = False) -> bool:
         """Synchronously refresh the access token if it is approaching expiry.
@@ -1171,6 +1295,66 @@ class AuthManager:
             return self.refresh()
         return True
 
+    def prepare_launch_credentials(self, now: Optional[datetime] = None) -> LaunchCredentials:
+        """Return the only credentials permitted to reach Minecraft launch."""
+        with self._lock:
+            account = dict(self._account or {})
+            reauth_required = self._reauth_required or bool(account.get("reauth_required"))
+            token_age = time.monotonic() - self._token_acquired_at if self._token_acquired_at else None
+        if not account:
+            raise LaunchAuthError("Sign in with a Microsoft account before launching Minecraft.")
+        if reauth_required:
+            raise LaunchAuthError("Microsoft rejected the saved session. Please sign in again.")
+
+        required = ("name", "id", "access_token", "refresh_token")
+        if any(not account.get(key) for key in required):
+            raise LaunchAuthError("Saved Microsoft credentials are incomplete. Please sign in again.")
+
+        if token_age is not None and token_age < self._TOKEN_MAX_AGE:
+            return LaunchCredentials(account["name"], account["id"], account["access_token"], "online")
+
+        try:
+            account = self._refresh_account()
+            return LaunchCredentials(account["name"], account["id"], account["access_token"], "online")
+        except AuthUnavailableError as exc:
+            with self._lock:
+                account = dict(self._account or {})
+            current = (now or _utc_now()).astimezone(timezone.utc)
+            expiry = _grace_expiry(account, current)
+            if expiry is None:
+                raise LaunchAuthError(
+                    "Microsoft is unavailable and this account has no valid verification record. "
+                    "Connect to the internet and sign in again."
+                ) from exc
+            if current > expiry:
+                raise LaunchAuthError(
+                    "Microsoft is unavailable and this account's seven-day offline grace period has expired. "
+                    "Connect to the internet and sign in again."
+                ) from exc
+            return LaunchCredentials(account["name"], account["id"], "offline", "offline_grace", expiry)
+        except AuthRejectedError as exc:
+            self._mark_reauthentication_required()
+            raise LaunchAuthError(
+                f"Microsoft rejected the saved session: {exc} Please sign in again."
+            ) from exc
+        except AuthError as exc:
+            raise LaunchAuthError(str(exc)) from exc
+
+    def _mark_reauthentication_required(self) -> None:
+        """Persist rejection state so switching accounts or restarting cannot bypass it."""
+        with self._lock:
+            if not self._account:
+                return
+            account = dict(self._account)
+            account["reauth_required"] = True
+            self._account = account
+            self._reauth_required = True
+        try:
+            _store_account(account)
+            _store_account_for(account)
+        except Exception as exc:
+            log.warning("Could not persist Microsoft reauthentication requirement: %s", exc)
+
     # ------------------------------------------------------------------
     # Logout
     # ------------------------------------------------------------------
@@ -1182,6 +1366,7 @@ class AuthManager:
             self._generation += 1
             username = (self._account or {}).get("name", "")
             self._account = None
+            self._reauth_required = False
         if username:
             _delete_account_for(username)
             usernames = [u for u in config.get("ms_usernames", []) if u != username]

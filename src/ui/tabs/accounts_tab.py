@@ -1,6 +1,4 @@
-"""
-Accounts tab - Microsoft login plus offline account management.
-"""
+"""Microsoft account management."""
 
 from __future__ import annotations
 
@@ -18,7 +16,6 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMessageBox,
     QVBoxLayout,
@@ -27,7 +24,6 @@ from PySide6.QtWidgets import (
 
 from ...core.auth import auth_manager, credential_storage_warning
 from ...core.config import config
-from ...core.validators import validate_offline_username
 from ..components.animated_button import OutlineButton, PrimaryButton
 from ..login_dialog import LoginDialog
 from ..styles import COLORS as C, FONT
@@ -292,7 +288,6 @@ class AccountRow(QFrame):
 class AccountsTab(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._offline_accounts: list[str] = list(config.get("offline_accounts", []))
         self._build_ui()
         self._refresh_state()
 
@@ -304,7 +299,7 @@ class AccountsTab(QWidget):
         title = QLabel("Accounts")
         title.setStyleSheet(f"font-size: {FONT['2xl']}; font-weight: 800; color: {C['text_primary']};")
         self._root.addWidget(title)
-        sub = QLabel("Sign in with Microsoft for online play, or add an offline account for solo play.")
+        sub = QLabel("A Microsoft account that owns Minecraft: Java Edition is required to play.")
         sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']}; margin-top: -12px;")
         self._root.addWidget(sub)
 
@@ -322,17 +317,6 @@ class AccountsTab(QWidget):
         add_ms_row.addWidget(self._add_ms_btn)
         self._root.addLayout(add_ms_row)
 
-        offline_row = QHBoxLayout()
-        offline_lbl = QLabel("Or add an offline account:")
-        offline_lbl.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
-        offline_row.addWidget(offline_lbl)
-        offline_row.addStretch()
-        add_offline = OutlineButton("+ Add Offline Account")
-        add_offline.setFixedHeight(34)
-        add_offline.clicked.connect(self._add_offline)
-        offline_row.addWidget(add_offline)
-        self._root.addLayout(offline_row)
-
         div = QFrame()
         div.setFrameShape(QFrame.HLine)
         div.setFixedHeight(1)
@@ -348,7 +332,8 @@ class AccountsTab(QWidget):
         self._root.addStretch()
 
         note = QLabel(
-            "GenosLauncher stores account tokens locally on your device and never shares them with third parties."
+            "Credentials are stored securely on this device. After successful verification, local play remains "
+            "available for seven days if Microsoft services cannot be reached."
         )
         note.setStyleSheet(
             f"""
@@ -410,7 +395,7 @@ class AccountsTab(QWidget):
         self._ms_title = QLabel("Sign in with Microsoft")
         self._ms_title.setStyleSheet(f"font-size: {FONT['lg']}; font-weight: 700; color: {C['text_primary']};")
         text_col.addWidget(self._ms_title)
-        self._ms_sub = QLabel("Required for online multiplayer. Links your Xbox / Minecraft account.")
+        self._ms_sub = QLabel("Required for all launches and checked against Minecraft ownership.")
         self._ms_sub.setStyleSheet(f"font-size: {FONT['sm']}; color: {C['text_secondary']};")
         text_col.addWidget(self._ms_sub)
         ms_h.addLayout(text_col)
@@ -425,14 +410,24 @@ class AccountsTab(QWidget):
     def _refresh_state(self) -> None:
         if auth_manager.is_logged_in:
             self._ms_title.setText(f"Active: {auth_manager.username}")
-            self._ms_sub.setText("Microsoft account linked | Minecraft online play enabled")
-            self._ms_btn.setText("Sign Out")
+            state = auth_manager.verification_state
+            if state == "online":
+                self._ms_sub.setText("Verified online | Minecraft play enabled")
+                self._ms_btn.setText("Sign Out")
+            elif state == "offline_grace":
+                expiry = auth_manager.grace_expires_at
+                remaining = _grace_remaining(expiry)
+                self._ms_sub.setText(f"Offline grace active | {remaining} remaining")
+                self._ms_btn.setText("Sign Out")
+            else:
+                self._ms_sub.setText("Verification expired or invalid | Sign in again to play")
+                self._ms_btn.setText("Sign In Again")
             self._ms_icon.setVisible(False)
             self._skin_widget.setVisible(True)
             self._skin_widget.load_for(auth_manager.username)
         else:
             self._ms_title.setText("Sign in with Microsoft")
-            self._ms_sub.setText("Required for online multiplayer. Links your Xbox / Minecraft account.")
+            self._ms_sub.setText("Required for all launches and checked against Minecraft ownership.")
             self._ms_btn.setText("Sign In")
             self._ms_icon.setVisible(True)
             self._skin_widget.setVisible(False)
@@ -444,14 +439,22 @@ class AccountsTab(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        active = config.get("last_account", "")
         active_ms = auth_manager.username if auth_manager.is_logged_in else ""
         for ms_name in auth_manager.list_ms_accounts():
             is_active = ms_name == active_ms
             last_used = get_account_last_used(ms_name)
+            if is_active:
+                state_labels = {
+                    "online": "Microsoft | Verified online",
+                    "offline_grace": "Microsoft | Offline grace",
+                    "sign_in_required": "Microsoft | Sign-in required",
+                }
+                account_type = state_labels.get(auth_manager.verification_state, "Microsoft | Saved")
+            else:
+                account_type = "Microsoft | Saved"
             row = AccountRow(
                 ms_name,
-                "Microsoft | Online" if is_active else "Microsoft | Saved",
+                account_type,
                 is_active=is_active,
                 on_select=lambda n=ms_name: self._switch_ms_account(n),
                 on_remove=lambda n=ms_name: self._remove_ms_account(n),
@@ -459,25 +462,13 @@ class AccountsTab(QWidget):
             )
             self._accounts_layout.addWidget(row)
 
-        for name in self._offline_accounts:
-            last_used = get_account_last_used(name)
-            row = AccountRow(
-                name,
-                "Offline | Unverified",
-                is_active=(name == active and not auth_manager.is_logged_in),
-                on_select=lambda n=name: self._select_account(n),
-                on_remove=lambda n=name: self._remove_offline(n),
-                last_used=last_used,
-            )
-            self._accounts_layout.addWidget(row)
-
-        if not auth_manager.is_logged_in and not self._offline_accounts:
-            empty = _lbl("No accounts added yet.", FONT["sm"], C["text_tertiary"])
+        if not auth_manager.list_ms_accounts():
+            empty = _lbl("No Microsoft accounts added yet.", FONT["sm"], C["text_tertiary"])
             empty.setAlignment(Qt.AlignCenter)
             self._accounts_layout.addWidget(empty)
 
     def _on_ms_action(self) -> None:
-        if auth_manager.is_logged_in:
+        if auth_manager.is_logged_in and auth_manager.verification_state != "sign_in_required":
             self._logout_ms()
         else:
             self._open_login_dialog()
@@ -535,34 +526,6 @@ class AccountsTab(QWidget):
             auth_manager.remove_ms_account(username)
             self._refresh_state()
 
-    def _add_offline(self) -> None:
-        name, ok = QInputDialog.getText(self, "Add Offline Account", "Username:")
-        if not ok:
-            return
-        try:
-            name = validate_offline_username(name)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Invalid Username", str(exc))
-            return
-        if name and name not in self._offline_accounts:
-            self._offline_accounts.append(name)
-            config.update({"offline_accounts": self._offline_accounts})
-            self._refresh_state()
-
-    def _select_account(self, name: str) -> None:
-        config.update({"last_account": name})
-        record_account_used(name)
-        self._refresh_state()
-
-    def _remove_offline(self, name: str) -> None:
-        if name in self._offline_accounts:
-            self._offline_accounts.remove(name)
-            config.update({"offline_accounts": self._offline_accounts})
-            if config.get("last_account") == name:
-                config.update({"last_account": ""})
-            self._refresh_state()
-
-
 def _lbl(text: str, size: str, color: str, bold: bool = False) -> QLabel:
     w = QLabel(text)
     weight = "700" if bold else "400"
@@ -591,6 +554,17 @@ def record_account_used(username: str) -> None:
         store = {}
     store[username] = stamp
     config.set("account_last_used", store)
+
+
+def _grace_remaining(expiry: datetime | None) -> str:
+    if expiry is None:
+        return "0 hours"
+    seconds = max(0, int((expiry - datetime.now(timezone.utc)).total_seconds()))
+    days, remainder = divmod(seconds, 86400)
+    hours = remainder // 3600
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h"
 
 
 def _relative_time(iso_str: str) -> str:

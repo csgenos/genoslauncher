@@ -35,6 +35,7 @@ from ..components.animated_button import OutlineButton, PrimaryButton
 from ..components.themed_controls import GComboBox
 from ..styles import COLORS as C, FONT, apply_theme, normalize_theme_mode
 from ...core.config import config, APP_DIR
+from ...core.discord_presence import discord_presence
 from ...core.java_manager import JVM_PRESETS, find_java_installations
 from ...core.secure_store import get_secret, set_secret
 from ..._version import __version__
@@ -631,11 +632,6 @@ class SettingsTab(QWidget):
         self._close_on_launch.toggled.connect(lambda v: config.set("close_on_launch", v))
         behav_layout.addWidget(self._close_on_launch)
 
-        self._allow_online_token = QCheckBox("Allow online launch token in process arguments")
-        self._allow_online_token.setChecked(config.get("allow_online_launch_token", False))
-        self._allow_online_token.toggled.connect(lambda v: config.set("allow_online_launch_token", v))
-        behav_layout.addWidget(self._allow_online_token)
-
         self._show_snapshots = QCheckBox("Show snapshot versions")
         self._show_snapshots.setChecked(config.get("show_snapshots", False))
         self._show_snapshots.toggled.connect(lambda v: config.set("show_snapshots", v))
@@ -645,6 +641,60 @@ class SettingsTab(QWidget):
         self._show_old.setChecked(config.get("show_old_versions", False))
         self._show_old.toggled.connect(lambda v: config.set("show_old_versions", v))
         behav_layout.addWidget(self._show_old)
+
+        # Discord Rich Presence
+        discord_lbl = QLabel("Discord Rich Presence")
+        discord_lbl.setStyleSheet(f"font-size: {FONT['md']}; font-weight: 600; color: {C['text_primary']}; margin-top: 8px;")
+        behav_layout.addWidget(discord_lbl)
+        discord_hint = QLabel(
+            "Shows launcher/game status in Discord when the desktop Discord app is running. "
+            "Server addresses and Microsoft account names are never shown."
+        )
+        discord_hint.setStyleSheet(f"font-size: {FONT['xs']}; color: {C['text_tertiary']};")
+        discord_hint.setWordWrap(True)
+        behav_layout.addWidget(discord_hint)
+
+        self._discord_presence_enabled = QCheckBox("Enable Discord Rich Presence")
+        self._discord_presence_enabled.setChecked(config.get("discord_presence_enabled", True))
+        self._discord_presence_enabled.toggled.connect(self._on_discord_presence_toggled)
+        behav_layout.addWidget(self._discord_presence_enabled)
+
+        self._discord_client_input = QLineEdit()
+        self._discord_client_input.setPlaceholderText("Discord Application ID")
+        self._discord_client_input.setText(config.get("discord_presence_client_id", "1524019146030055444"))
+        self._discord_client_input.setFixedHeight(38)
+        self._discord_client_input.textChanged.connect(lambda t: self._debounced_set("discord_presence_client_id", t.strip()))
+        self._discord_client_input.editingFinished.connect(
+            lambda: config.set("discord_presence_client_id", self._discord_client_input.text().strip())
+        )
+        behav_layout.addWidget(
+            SettingRow(
+                "Application ID",
+                self._discord_client_input,
+                hint="Discord Developer Application ID used for Rich Presence.",
+            )
+        )
+
+        self._discord_asset_input = QLineEdit()
+        self._discord_asset_input.setPlaceholderText("glauncherlogo")
+        self._discord_asset_input.setText(config.get("discord_presence_large_image", "glauncherlogo"))
+        self._discord_asset_input.setFixedHeight(38)
+        self._discord_asset_input.textChanged.connect(lambda t: self._debounced_set("discord_presence_large_image", t.strip()))
+        self._discord_asset_input.editingFinished.connect(
+            lambda: config.set("discord_presence_large_image", self._discord_asset_input.text().strip())
+        )
+        behav_layout.addWidget(
+            SettingRow(
+                "Large Image Asset Key",
+                self._discord_asset_input,
+                hint="Upload assets/glauncherlogo.png in the Discord Developer Portal with asset key glauncherlogo.",
+            )
+        )
+
+        refresh_presence_btn = OutlineButton("Refresh Discord Presence")
+        refresh_presence_btn.setFixedHeight(34)
+        refresh_presence_btn.clicked.connect(self._refresh_discord_presence)
+        behav_layout.addWidget(refresh_presence_btn)
 
         self._modpack_update_policy = GComboBox()
         self._modpack_update_policy.setFixedHeight(34)
@@ -850,6 +900,24 @@ class SettingsTab(QWidget):
         except Exception as exc:
             self._cf_key_error.setText(f"Failed to save key: {exc}")
             self._cf_key_error.setVisible(True)
+
+    def _on_discord_presence_toggled(self, enabled: bool) -> None:
+        config.set("discord_presence_enabled", enabled)
+        if enabled:
+            discord_presence.set_launcher("Settings")
+        else:
+            discord_presence.clear()
+
+    def _refresh_discord_presence(self) -> None:
+        config.update({
+            "discord_presence_enabled": self._discord_presence_enabled.isChecked(),
+            "discord_presence_client_id": self._discord_client_input.text().strip(),
+            "discord_presence_large_image": self._discord_asset_input.text().strip(),
+        })
+        if config.get("discord_presence_enabled", True):
+            discord_presence.set_launcher("Settings")
+        else:
+            discord_presence.clear()
 
     def _on_preset_selected(self, key: str) -> None:
         config.set("jvm_preset", key)
